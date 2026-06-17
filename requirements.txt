@@ -1,0 +1,23 @@
+# Phase 1+ pipeline dependencies.
+# NOTE: src/fetch_openfda.py needs NONE of these (standard library only).
+
+# LLM + structured output
+openai>=1.40
+pydantic>=2.7
+python-dotenv>=1.0
+tenacity>=8.3            # retry / exponential backoff
+
+# Data handling
+pandas>=2.2
+numpy>=1.26
+
+# Vector search (pick one; Chroma is the simplest local option)
+chromadb>=0.5
+# faiss-cpu>=1.8         # alternative
+
+# Evaluation metrics (precision / recall / F1 / Cohen's kappa)
+scikit-learn>=1.5
+
+# Serving (Phase 5)
+fastapi>=0.111
+uvicorn>=0.30
