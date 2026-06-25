@@ -6,8 +6,7 @@ retrieval-augmented agent.
 
 > **Portfolio note.** This project reproduces — on 100% **public-domain data** — the
 > same applied-AI pipeline I built in industry (large-scale LLM ticket structuring,
-> vector search, and an analytics agent). No proprietary data or code is used. See
-> [数据敏感性分析与合规说明.md](数据敏感性分析与合规说明.md).
+> vector search, and an analytics agent). No proprietary data or code is used.
 
 ---
 
