@@ -4,16 +4,19 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-06-25T09:19Z · 23 files
+> Last generated: 2026-06-25T14:23Z · 26 files
 
 ## (root)
+- [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
 - [`.env.example`](.env.example) — Copy to .env and fill in. NEVER commit the real .env (it is git-ignored).
 - [`.gitignore`](.gitignore) — 真实公司数据：绝不提交 / 绝不上传 ----
 - [`AGENTS.md`](AGENTS.md) — AGENTS.md — Agent Operating Guide — **Read this first.** It is the always-on entry point of a *progressive-disclosure*
+- [`Dockerfile`](Dockerfile) — Container image for the FDAgent serving layer (Path 1: FastAPI /ask + static UI).
 - [`PLAN.md`](PLAN.md) — MRI Ticket Intelligence Agent — 详细开发计划 (v2) — 本计划取代旧的"重型结构化 pipeline"思路。
 - [`PROGRESS.md`](PROGRESS.md) — Progress — fdaAgent — Live project state for fast session pickup. This is the **dynamic** doc; the static
 - [`PROJECT_INDEX.md`](PROJECT_INDEX.md) — Auto-generated repository map (this file).
 - [`README.md`](README.md) — FDAgent — openFDA Drug-Recall Intelligence Agent — Ask natural-language questions about U.S. **FDA drug-recall enforcement reports** and get
+- [`requirements-serve.txt`](requirements-serve.txt) — Lean dependency set for the Docker serving image (Path 1: the /ask API only).
 - [`requirements.txt`](requirements.txt) — Phase 1+ pipeline dependencies.
 - [`频率查询系统设计-过滤检索校验.md`](频率查询系统设计-过滤检索校验.md) — 频率/聚合类查询系统设计（过滤 → 检索 → 校验） — 配套 [PLAN.md](PLAN.md)。本文专门解决一类高频需求：
 

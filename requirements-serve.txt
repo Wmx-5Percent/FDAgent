@@ -1,0 +1,10 @@
+# Lean dependency set for the Docker serving image (Path 1: the /ask API only).
+# Deliberately a SUBSET of requirements.txt: serving needs no chromadb / pandas / scikit-learn,
+# so the runtime image stays small and builds fast. Keep in sync with what src/api.py,
+# src/nl_query.py and src/analytics.py actually import.
+fastapi>=0.111
+uvicorn>=0.30
+openai>=1.40
+pydantic>=2.7
+python-dotenv>=1.0
+psycopg[binary]>=3.2

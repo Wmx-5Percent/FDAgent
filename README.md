@@ -63,10 +63,35 @@ createdb fda && psql -d fda -c "CREATE EXTENSION IF NOT EXISTS vector;"
 
 ---
 
+## Run in Docker
+
+The serving layer ships as a lean container ([Dockerfile](Dockerfile)): secrets and the database
+are supplied **at run time**, never baked into the image. On Docker Desktop, the container reaches
+the host's Postgres via `host.docker.internal`.
+
+```bash
+# build (the two --build-arg mirrors are only needed where Docker Hub / PyPI are slow, e.g. China)
+docker build -t fdagent .
+# docker build --build-arg REGISTRY=docker.m.daocloud.io \
+#              --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple -t fdagent .
+
+# run: pass the API key via .env, point DATABASE_URL at the host Postgres ($USER = your PG role)
+docker run --rm -p 8000:8000 --env-file .env \
+  -e DATABASE_URL="postgresql://$USER@host.docker.internal:5432/fda" \
+  fdagent
+# then open http://localhost:8000/
+```
+
+> Docker packages the app; it does **not** by itself make the site public. To open it to others,
+> push the image to a host (Hugging Face Spaces / Render / Fly.io) **and** use a managed
+> Postgres + pgvector — a cloud container cannot reach your `localhost`. See [PROGRESS.md](PROGRESS.md).
+
+---
+
 ## Tech stack
 
 Python 3.13 · PostgreSQL + `pgvector` + `hypopg` · `psycopg` 3 · OpenAI (Pydantic structured
-output) · FastAPI + a static Chart.js UI · a read-only Postgres MCP for safe schema exploration.
+output) · FastAPI + a static Chart.js UI · Docker · a read-only Postgres MCP for safe schema exploration.
 
 ---
 

@@ -1,0 +1,17 @@
+# Keep the build context small and secrets/artifacts OUT of the image.
+# Docker sends everything here to the daemon before building; ignoring these makes
+# builds faster and — critically — prevents .env (your API key) from ever entering an image.
+.venv/
+.git/
+.github/
+__pycache__/
+**/__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+data/
+.chroma/
+.vscode/
+.DS_Store
+*.log
