@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -37,7 +38,7 @@ TIMESTAMP_PREFIX = "> Last generated:"
 
 # Extensions we parse for a description. Anything else is listed name-only.
 TEXTLIKE = {".py", ".md", ".txt", ".cfg", ".ini", ".toml", ".yaml", ".yml",
-            ".json", ".sh", ".example", ".sql"}
+            ".json", ".sh", ".example", ".sql", ".html"}
 
 
 # --------------------------------------------------------------------------- #
@@ -119,6 +120,18 @@ def describe_markdown(text: str) -> str:
     return title or blurb
 
 
+def describe_html(text: str) -> str:
+    """Purpose line from an HTML file: the leading ``<!-- -->`` comment, else ``<title>``."""
+    m = re.search(r"<!--(.*?)-->", text, re.DOTALL)
+    if m:
+        for line in m.group(1).splitlines():
+            s = line.strip()
+            if s:
+                return s[:120]
+    m = re.search(r"<title>(.*?)</title>", text, re.IGNORECASE | re.DOTALL)
+    return m.group(1).strip()[:120] if m else ""
+
+
 def describe_generic(text: str) -> str:
     """First meaningful comment / non-empty line (skipping a shebang + comment markers)."""
     lines = text.splitlines()
@@ -147,6 +160,8 @@ def describe(root: Path, rel: str) -> tuple[str, list[str]]:
         return describe_python(text)
     if suffix == ".md":
         return describe_markdown(text), []
+    if suffix == ".html":
+        return describe_html(text), []
     # config-ish, scripts, and extensionless files (incl. .gitignore and git hooks);
     # describe_generic already skips a leading shebang.
     return describe_generic(text), []

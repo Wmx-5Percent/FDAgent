@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-06-25T09:08Z · 21 files
+> Last generated: 2026-06-25T09:19Z · 23 files
 
 ## (root)
 - [`.env.example`](.env.example) — Copy to .env and fill in. NEVER commit the real .env (it is git-ignored).
@@ -25,7 +25,7 @@
 
 ## scripts/
 - [`scripts/gen_index.py`](scripts/gen_index.py) — Generate PROJECT_INDEX.md — a reliable, auto-derived map of the repository.
-  - symbols: `repo_root`, `list_files`, `read_text`, `describe_python`, `describe_markdown`, `describe_generic`, `describe`, `group_key`, `render`, `strip_volatile`, `main`
+  - symbols: `repo_root`, `list_files`, `read_text`, `describe_python`, `describe_markdown`, `describe_html`, `describe_generic`, `describe`, `group_key`, `render`, `strip_volatile`, `main`
 - [`scripts/hooks/install.sh`](scripts/hooks/install.sh) — Install the version-controlled git hooks into .git/hooks.
 - [`scripts/hooks/pre-commit`](scripts/hooks/pre-commit) — Pre-commit hook: block the commit if PROJECT_INDEX.md is stale.
 
@@ -36,7 +36,12 @@
 ## src/
 - [`src/analytics.py`](src/analytics.py) — Deterministic frequency/aggregation query engine over drug_enforcement.
   - symbols: `Kind`, `Filter`, `Group`, `RecallAnalytics`
+- [`src/api.py`](src/api.py) — FastAPI service exposing the deterministic NL->SQL analytics engine (Path 1, serving half).
+  - symbols: `lifespan`, `AskRequest`, `serialize_answer`, `health`, `ask_endpoint`, `index`
 - [`src/fetch_openfda.py`](src/fetch_openfda.py) — Generic openFDA -> PostgreSQL ingester.
   - symbols: `parse_fda_date`, `record_id`, `fda_date_str`, `fetch_page`, `ensure_table`, `upsert_rows`, `max_report_date`, `build_search`, `run`, `parse_args`
 - [`src/nl_query.py`](src/nl_query.py) — Natural-language front-end for the deterministic analytics engine.
-  - symbols: `Intent`, `Op`, `FilterSpec`, `QuerySpec`, `Answer`, `build_schema_context`, `generate_spec`, `run_spec`, `summarize`, `ask`
+  - symbols: `Intent`, `Op`, `FilterSpec`, `QuerySpec`, `Answer`, `build_schema_context`, `generate_spec`, `run_spec`, `summarize`, `NLEngine`, `ask`
+
+## web/
+- [`web/index.html`](web/index.html) — Minimal single-page UI for the FDAgent /ask endpoint (Path 1 serving demo).

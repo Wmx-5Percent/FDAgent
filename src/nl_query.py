@@ -197,20 +197,39 @@ def summarize(spec: QuerySpec, result: Any) -> str:
     return f"{len(result)} example rows:\n{body}"
 
 
-def ask(question: str, *, dsn: str = DEFAULT_DSN, model: str = MODEL) -> Answer:
-    client = OpenAI()
-    with RecallAnalytics(dsn) as a:
-        schema_ctx = build_schema_context(a)
-        spec = generate_spec(client, question, schema_ctx, model)
-        try:
-            result = run_spec(a, spec)
-        except ValueError as exc:  # one repair attempt: feed the error back
-            spec = generate_spec(
-                client,
-                f"{question}\n\n(Your previous QuerySpec was invalid: {exc}. Return a corrected one.)",
-                schema_ctx, model)
-            result = run_spec(a, spec)
+class NLEngine:
+    """Reusable NL->SQL engine for long-running services (e.g. the FastAPI app).
+
+    Warms the expensive, request-invariant pieces ONCE — the OpenAI client and the schema
+    context (which runs several DISTINCT queries) — then answers each question with a fresh,
+    short-lived read-only DB connection (safe under concurrency; cheap on localhost).
+    """
+
+    def __init__(self, *, dsn: str = DEFAULT_DSN, model: str = MODEL) -> None:
+        self.dsn = dsn
+        self.model = model
+        self.client = OpenAI()
+        with RecallAnalytics(dsn) as a:
+            self.schema_ctx = build_schema_context(a)  # cached for the engine's lifetime
+
+    def ask(self, question: str) -> Answer:
+        spec = generate_spec(self.client, question, self.schema_ctx, self.model)
+        with RecallAnalytics(self.dsn) as a:
+            try:
+                result = run_spec(a, spec)
+            except ValueError as exc:  # one repair attempt: feed the error back
+                spec = generate_spec(
+                    self.client,
+                    f"{question}\n\n(Your previous QuerySpec was invalid: {exc}. Return a corrected one.)",
+                    self.schema_ctx, self.model)
+                result = run_spec(a, spec)
         return Answer(question, spec, summarize(spec, result), result)
+
+
+def ask(question: str, *, dsn: str = DEFAULT_DSN, model: str = MODEL) -> Answer:
+    """One-shot convenience used by the CLI: builds a throwaway engine and answers once.
+    Long-running callers should hold a single :class:`NLEngine` and reuse ``.ask``."""
+    return NLEngine(dsn=dsn, model=model).ask(question)
 
 
 DEMO = [

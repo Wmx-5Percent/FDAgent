@@ -11,8 +11,8 @@
 A deployed, demoable agent that answers natural-language questions about FDA drug recalls with **evidence-backed** results — **Path 1**: deterministic NL→SQL analytics (frequencies / trends / distributions, every number from SQL); **Path 2** (later): hybrid semantic retrieval for ad-hoc questions; served via FastAPI + a small UI, with an eval harness. Reproduces an industry LLM ticket-intelligence pipeline on 100% public-domain data (portfolio for NA AI/ML roles). Full roadmap in [PLAN.md](PLAN.md).
 
 ## Now
-- **State:** data foundation + deterministic analytics + the **NL→SQL layer** are done — the LLM turns a question into a validated `QuerySpec` and every number comes from SQL.
-- ▶️ **Next action:** serve it — FastAPI `/ask` + a minimal chart UI (per-dimension bar + evidence recall_numbers).
+- **State:** Path 1 is now **served end-to-end** — data foundation + deterministic analytics + NL→SQL + a FastAPI `/ask` endpoint and a static Chart.js UI. The LLM only picks the query *shape*; every number comes from SQL, carrying evidence recall numbers.
+- ▶️ **Next action:** Path 2 (ad-hoc questions) — chunk `reason_for_recall` / `product_description` → embed into pgvector → hybrid retrieval + LLM per-row verify, for questions the analytics engine can't answer.
 
 ## Works now (verified)
 1. **Ingest** — [src/fetch_openfda.py](src/fetch_openfda.py): generic openFDA→Postgres, idempotent JSONB upsert, `--since auto` incremental.
@@ -20,15 +20,16 @@ A deployed, demoable agent that answers natural-language questions about FDA dru
 3. **Schema docs** — verbatim openFDA column comments ([sql/002_drug_enforcement_comments.sql](sql/002_drug_enforcement_comments.sql)).
 4. **Analytics engine** — [src/analytics.py](src/analytics.py): `count_total` / `count_by` / `trend` / `sample`, read-only + parameterized, returns evidence `recall_number`s.
 5. **NL→SQL layer** — [src/nl_query.py](src/nl_query.py): question → LLM → validated Pydantic `QuerySpec` (columns/values whitelisted; schema + column comments + value-index injected) → `analytics.py`. All numbers come from SQL. Verified: count_total / count_by / trend / sample.
-6. **Harness** — [AGENTS.md](AGENTS.md) + auto-generated [PROJECT_INDEX.md](PROJECT_INDEX.md) ([scripts/gen_index.py](scripts/gen_index.py)) + pre-commit hook ([scripts/hooks/pre-commit](scripts/hooks/pre-commit)).
-7. **DB** — Postgres.app 17, db `fda`; extensions pgvector 0.8.1 / hypopg 1.4.3 / pg_stat_statements.
-8. **Read-only DB MCP** — `postgres-fda` ([.vscode/mcp.json](.vscode/mcp.json), restricted mode).
-9. **Skills** — under [.github/skills/](.github/skills/): db-column-docs-from-dictionary, openfda-data-download.
+6. **Serving** — [src/api.py](src/api.py): FastAPI `/ask` (+ `/health`) warms the engine once, returns a chart-friendly, evidence-backed payload; static UI [web/index.html](web/index.html) renders scalar / bar / line / table. Smoke-tested across all four intents.
+7. **Harness** — [AGENTS.md](AGENTS.md) + auto-generated [PROJECT_INDEX.md](PROJECT_INDEX.md) ([scripts/gen_index.py](scripts/gen_index.py)) + pre-commit hook ([scripts/hooks/pre-commit](scripts/hooks/pre-commit)).
+8. **DB** — Postgres.app 17, db `fda`; extensions pgvector 0.8.1 / hypopg 1.4.3 / pg_stat_statements.
+9. **Read-only DB MCP** — `postgres-fda` ([.vscode/mcp.json](.vscode/mcp.json), restricted mode).
+10. **Skills** — under [.github/skills/](.github/skills/): db-column-docs-from-dictionary, openfda-data-download.
 
 ## Next up (ordered)
-1. **Serve** — FastAPI `/ask` + minimal UI (per-dimension bar chart + evidence recall_numbers).
-2. **Path 2 (ad-hoc questions)** — chunk `reason_for_recall` / `product_description` → embed into pgvector → hybrid retrieval + LLM per-row verify.
-3. **Eval harness** — recall@k + answer correctness on a small hand-labeled golden set.
+1. **Path 2 (ad-hoc questions)** — chunk `reason_for_recall` / `product_description` → embed into pgvector → hybrid retrieval + LLM per-row verify.
+2. **Eval harness** — recall@k + answer correctness on a small hand-labeled golden set.
+3. **Deploy (optional)** — Dockerfile + Hugging Face Spaces / Render for a public live demo.
 
 ## Blockers & gotchas
 - ⚠️ **The venv is not relocatable** — it broke once after the folder was renamed (`find-jobs/ticket agent` → `fdaAgent`); recreated. Always run `.venv/bin/python …`, or re-`source .venv/bin/activate` after any move.

@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<!-- Minimal single-page UI for the FDAgent /ask endpoint (Path 1 serving demo).
+     Vanilla JS + Chart.js (CDN); served by src/api.py at "/". Renders the response by
+     data.kind: scalar / distribution (bar) / series (line) / rows (table), and shows the
+     evidence recall numbers that back every figure. No build step. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FDAgent — Drug-Recall Intelligence</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <style>
+    :root { --bg:#0f1620; --panel:#172230; --line:#243244; --fg:#e7edf4; --muted:#93a4b8;
+            --accent:#4ea1ff; --accent2:#7ee0c0; }
+    * { box-sizing: border-box; }
+    body { margin:0; font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+           background:var(--bg); color:var(--fg); }
+    header { padding:28px 20px 8px; max-width:880px; margin:0 auto; }
+    h1 { margin:0 0 4px; font-size:22px; }
+    .sub { color:var(--muted); font-size:13px; }
+    main { max-width:880px; margin:0 auto; padding:16px 20px 60px; }
+    .ask { display:flex; gap:8px; margin:14px 0 10px; }
+    input[type=text] { flex:1; padding:12px 14px; border:1px solid var(--line); border-radius:10px;
+            background:var(--panel); color:var(--fg); font-size:15px; }
+    input[type=text]:focus { outline:none; border-color:var(--accent); }
+    button { padding:12px 18px; border:0; border-radius:10px; background:var(--accent); color:#04101e;
+            font-weight:600; cursor:pointer; font-size:15px; }
+    button:disabled { opacity:.5; cursor:default; }
+    .chips { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:8px; }
+    .chip { padding:6px 11px; border:1px solid var(--line); border-radius:999px; background:transparent;
+            color:var(--muted); font-size:13px; cursor:pointer; }
+    .chip:hover { color:var(--fg); border-color:var(--accent); }
+    .card { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:18px;
+            margin-top:16px; }
+    .summary { white-space:pre-wrap; font-size:14px; }
+    .scalar { font-size:46px; font-weight:700; color:var(--accent2); }
+    .muted { color:var(--muted); font-size:13px; }
+    table { border-collapse:collapse; width:100%; font-size:13px; margin-top:8px; }
+    th,td { text-align:left; padding:7px 9px; border-bottom:1px solid var(--line); vertical-align:top; }
+    th { color:var(--muted); font-weight:600; }
+    .evi { margin-top:10px; display:flex; flex-wrap:wrap; gap:6px; }
+    .badge { font:12px/1 ui-monospace,SFMono-Regular,Menlo,monospace; padding:4px 7px; border-radius:6px;
+            background:#0d2235; color:var(--accent); border:1px solid #1d3a52; }
+    .spec { font:12px/1.4 ui-monospace,Menlo,monospace; color:var(--muted); margin-top:10px;
+            word-break:break-all; }
+    .err { color:#ff8a8a; }
+    canvas { margin-top:6px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>FDAgent — Drug-Recall Intelligence</h1>
+    <div class="sub">Ask about U.S. FDA drug-recall enforcement reports. Every number is computed in
+      SQL and carries the recall numbers that back it.</div>
+  </header>
+  <main>
+    <form class="ask" id="form">
+      <input type="text" id="q" autocomplete="off"
+             placeholder="e.g. Which firms had the most Class I recalls?" />
+      <button type="submit" id="go">Ask</button>
+    </form>
+    <div class="chips" id="chips"></div>
+    <div id="out"></div>
+  </main>
+
+  <script>
+    const EXAMPLES = [
+      "How many Class I drug recalls have there been?",
+      "Which firms had the most Class I recalls?",
+      "What is the yearly trend of recalls in California?",
+      "Show me a few sterility-related recalls.",
+    ];
+    const out = document.getElementById("out");
+    const qinput = document.getElementById("q");
+    const go = document.getElementById("go");
+    let chart = null;
+
+    const chips = document.getElementById("chips");
+    for (const ex of EXAMPLES) {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "chip"; b.textContent = ex;
+      b.onclick = () => { qinput.value = ex; submit(); };
+      chips.appendChild(b);
+    }
+
+    const esc = (s) => String(s ?? "").replace(/[&<>"]/g,
+      c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]));
+
+    function evidenceHtml(list) {
+      if (!list || !list.length) return "";
+      return `<div class="evi">` +
+        list.map(r => `<span class="badge">${esc(r)}</span>`).join("") + `</div>`;
+    }
+
+    function render(res) {
+      if (chart) { chart.destroy(); chart = null; }
+      const d = res.data;
+      let body = `<div class="summary">${esc(res.summary)}</div>`;
+
+      if (d.kind === "scalar") {
+        body += `<div class="scalar">${d.value.toLocaleString()}</div>`;
+      } else if (d.kind === "distribution") {
+        body += `<canvas id="chart" height="220"></canvas>`;
+        const allEvi = [];
+        for (const it of d.items) for (const e of (it.evidence || [])) allEvi.push(e);
+        body += `<div class="muted" style="margin-top:12px">Evidence recall numbers (samples):</div>`;
+        body += evidenceHtml(allEvi.slice(0, 18));
+      } else if (d.kind === "series") {
+        body += `<canvas id="chart" height="220"></canvas>`;
+      } else if (d.kind === "rows") {
+        const cols = d.rows.length ? Object.keys(d.rows[0]) : [];
+        body += `<table><thead><tr>` + cols.map(c => `<th>${esc(c)}</th>`).join("") +
+          `</tr></thead><tbody>` +
+          d.rows.map(r => `<tr>` + cols.map(c => `<td>${esc(r[c])}</td>`).join("") + `</tr>`).join("") +
+          `</tbody></table>`;
+      }
+      body += `<div class="spec">intent=${esc(res.intent)} · spec=${esc(JSON.stringify(res.spec))}</div>`;
+      out.innerHTML = `<div class="card">${body}</div>`;
+
+      if (d.kind === "distribution") {
+        const items = d.items.slice(0, 15);
+        drawChart("bar", items.map(i => i.value), items.map(i => i.count), d.dimension);
+      } else if (d.kind === "series") {
+        drawChart("line", d.points.map(p => p.period), d.points.map(p => p.count), `count / ${d.grain}`);
+      }
+    }
+
+    function drawChart(type, labels, data, label) {
+      const ctx = document.getElementById("chart").getContext("2d");
+      const grid = "rgba(255,255,255,.08)", tick = "#93a4b8";
+      chart = new Chart(ctx, {
+        type,
+        data: { labels, datasets: [{
+          label, data,
+          backgroundColor: type === "bar" ? "#4ea1ff" : "rgba(126,224,192,.18)",
+          borderColor: "#7ee0c0", borderWidth: 2, tension: .25, pointRadius: 2, fill: type === "line",
+        }] },
+        options: {
+          plugins: { legend: { labels: { color: tick } } },
+          scales: {
+            x: { ticks: { color: tick, autoSkip: true, maxRotation: 60 }, grid: { color: grid } },
+            y: { ticks: { color: tick }, grid: { color: grid }, beginAtZero: true },
+          },
+        },
+      });
+    }
+
+    async function submit() {
+      const question = qinput.value.trim();
+      if (!question) return;
+      go.disabled = true; out.innerHTML = `<div class="card muted">Thinking…</div>`;
+      try {
+        const r = await fetch("/ask", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question }),
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.detail || `HTTP ${r.status}`);
+        render(j);
+      } catch (e) {
+        out.innerHTML = `<div class="card err">${esc(e.message)}</div>`;
+      } finally {
+        go.disabled = false;
+      }
+    }
+
+    document.getElementById("form").addEventListener("submit", (e) => { e.preventDefault(); submit(); });
+  </script>
+</body>
+</html>
