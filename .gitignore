@@ -24,6 +24,9 @@ data/processed/
 *.sqlite
 *.db
 
+# 个人学习笔记（本地回顾资料，不入库）
+learning-notes/
+
 # 向量库本地文件
 .chroma/
 chroma/
