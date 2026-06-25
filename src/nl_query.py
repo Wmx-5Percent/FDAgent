@@ -214,8 +214,8 @@ def ask(question: str, *, dsn: str = DEFAULT_DSN, model: str = MODEL) -> Answer:
 
 
 DEMO = [
-    "How many Class I drug recalls have there been?",
-    "Which firms had the most Class I recalls?",
+    # "How many Class I drug recalls have there been?",
+    # "Which firms had the most Class I recalls?",
     "What is the yearly trend of recalls in California?",
     "Show me a few sterility-related recalls.",
 ]
