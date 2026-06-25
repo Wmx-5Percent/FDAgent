@@ -20,8 +20,12 @@ for the frequency/aggregation design.
 ## Navigation protocol (do this in order)
 
 1. Read this file (always loaded).
-2. Open [`PROJECT_INDEX.md`](PROJECT_INDEX.md) and find the file(s) you need by purpose/symbol.
-3. Read those specific files for full detail. Avoid broad tree-wide searches when the index already answers "where".
+2. Read [`PROGRESS.md`](PROGRESS.md) for current state, the next action, and known blockers.
+3. Open [`PROJECT_INDEX.md`](PROJECT_INDEX.md) and find the file(s) you need by purpose/symbol.
+4. Read those specific files for full detail. Avoid broad tree-wide searches when the index already answers "where".
+
+> **Update ritual:** when you finish a chunk of work, update [`PROGRESS.md`](PROGRESS.md)
+> (Now / Next up / Blockers) so the next session starts oriented. Keep it short.
 
 ## Keep the index reliable (IMPORTANT)
 
