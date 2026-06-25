@@ -7,6 +7,9 @@
 > **Maintenance:** at the end of each work session, update *Now / Next up / Blockers*. Keep it short.
 > Last updated: 2026-06-25
 
+## Goal (end state)
+A deployed, demoable agent that answers natural-language questions about FDA drug recalls with **evidence-backed** results — **Path 1**: deterministic NL→SQL analytics (frequencies / trends / distributions, every number from SQL); **Path 2** (later): hybrid semantic retrieval for ad-hoc questions; served via FastAPI + a small UI, with an eval harness. Reproduces an industry LLM ticket-intelligence pipeline on 100% public-domain data (portfolio for NA AI/ML roles). Full roadmap in [PLAN.md](PLAN.md).
+
 ## Now
 - **State:** data foundation + deterministic analytics + the **NL→SQL layer** are done — the LLM turns a question into a validated `QuerySpec` and every number comes from SQL.
 - ▶️ **Next action:** serve it — FastAPI `/ask` + a minimal chart UI (per-dimension bar + evidence recall_numbers).

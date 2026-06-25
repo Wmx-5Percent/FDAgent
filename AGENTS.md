@@ -36,6 +36,18 @@ The index is **auto-generated from each file's docstring/heading** — never han
 - To verify it is in sync (CI / pre-commit): `python scripts/gen_index.py --check` (exits non-zero if stale).
 - So the map stays meaningful, **every source file must start with a one-line docstring/heading** stating its job. The generator surfaces any file missing one.
 
+## Keep docs from drifting (why the README went stale once)
+
+Each doc stays current by a *different* mechanism — know which, and **never duplicate project state**:
+
+- **Auto-generated, cannot drift:** [`PROJECT_INDEX.md`](PROJECT_INDEX.md) — rebuilt by `gen_index.py`, enforced by the pre-commit `--check`.
+- **Ritual-updated, the single source of truth for state:** [`PROGRESS.md`](PROGRESS.md) — what's done / next / blocked. Update it at the end of each session.
+- **Vision + setup, link-only:** [`README.md`](README.md) and [`PLAN.md`](PLAN.md) describe the stable goal and how to run things, and **link to `PROGRESS.md` for live state** — they must not restate "what works / current phase".
+
+**Root cause of the earlier stale README:** it *duplicated* project state (dataset, architecture, "Phase 0 done") into a doc with **no freshness mechanism** — unlike the auto-generated index or the ritual-bound PROGRESS, nothing triggered or checked it, so the drug/enforcement pivot left it behind.
+
+**Prevention — in the same commit as the change:** when you change the **dataset, primary components, or project direction**, update `PROGRESS.md` (always), then fix any sentence in `README.md` / `PLAN.md` that no longer matches (prefer replacing restated state with a link to `PROGRESS.md`).
+
 ## Repo facts (verified)
 
 - **Python**: use the venv — `.venv/bin/python ...` (Python 3.13). Install deps: `.venv/bin/python -m pip install -r requirements.txt`.

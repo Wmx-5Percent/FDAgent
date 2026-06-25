@@ -120,11 +120,11 @@ def describe_markdown(text: str) -> str:
 
 
 def describe_generic(text: str) -> str:
-    """First meaningful comment / non-empty line (skipping a shebang)."""
+    """First meaningful comment / non-empty line (skipping a shebang + comment markers)."""
     lines = text.splitlines()
     start = 1 if lines and lines[0].startswith("#!") else 0
     for raw in lines[start:]:
-        s = raw.strip().lstrip("#;").strip()
+        s = raw.strip().lstrip("#;/").strip().lstrip("-").strip()
         if s:
             return s[:120]
     return ""
@@ -147,12 +147,8 @@ def describe(root: Path, rel: str) -> tuple[str, list[str]]:
         return describe_python(text)
     if suffix == ".md":
         return describe_markdown(text), []
-    if suffix == "":
-        # Only describe extensionless files that are shebang scripts (e.g. git hooks).
-        if text.startswith("#!"):
-            body = "\n".join(text.splitlines()[1:])
-            return describe_generic(body), []
-        return "", []
+    # config-ish, scripts, and extensionless files (incl. .gitignore and git hooks);
+    # describe_generic already skips a leading shebang.
     return describe_generic(text), []
 
 
