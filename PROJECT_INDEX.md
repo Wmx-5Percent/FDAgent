@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-06-25T07:07Z · 15 files
+> Last generated: 2026-06-25T07:43Z · 16 files
 
 ## (root)
 - [`.env.example`](.env.example) — Copy to .env and fill in. NEVER commit the real .env (it is git-ignored).
@@ -15,6 +15,9 @@
 - [`README.md`](README.md) — MRI Ticket Intelligence Agent — An LLM-powered system that turns **unstructured medical-device service tickets** into
 - [`requirements.txt`](requirements.txt) — Phase 1+ pipeline dependencies.
 - [`频率查询系统设计-过滤检索校验.md`](频率查询系统设计-过滤检索校验.md) — 频率/聚合类查询系统设计（过滤 → 检索 → 校验） — 配套 [PLAN.md](PLAN.md)。本文专门解决一类高频需求：
+
+## .github/
+- [`.github/skills/db-column-docs-from-dictionary/SKILL.md`](.github/skills/db-column-docs-from-dictionary/SKILL.md) — Documenting DB columns from an upstream field dictionary — - **Type**: Workflow
 
 ## scripts/
 - [`scripts/gen_index.py`](scripts/gen_index.py) — Generate PROJECT_INDEX.md — a reliable, auto-derived map of the repository.
