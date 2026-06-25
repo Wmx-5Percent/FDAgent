@@ -4,20 +4,24 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-06-25T07:43Z · 16 files
+> Last generated: 2026-06-25T08:40Z · 21 files
 
 ## (root)
 - [`.env.example`](.env.example) — Copy to .env and fill in. NEVER commit the real .env (it is git-ignored).
 - [`.gitignore`](.gitignore) — _(no description; add a one-line docstring/heading)_
 - [`AGENTS.md`](AGENTS.md) — AGENTS.md — Agent Operating Guide — **Read this first.** It is the always-on entry point of a *progressive-disclosure*
 - [`PLAN.md`](PLAN.md) — MRI Ticket Intelligence Agent — 详细开发计划 (v2) — 本计划取代旧的"重型结构化 pipeline"思路。
+- [`PROGRESS.md`](PROGRESS.md) — Progress — fdaAgent — Live project state for fast session pickup. This is the **dynamic** doc; the static
 - [`PROJECT_INDEX.md`](PROJECT_INDEX.md) — Auto-generated repository map (this file).
 - [`README.md`](README.md) — MRI Ticket Intelligence Agent — An LLM-powered system that turns **unstructured medical-device service tickets** into
 - [`requirements.txt`](requirements.txt) — Phase 1+ pipeline dependencies.
 - [`频率查询系统设计-过滤检索校验.md`](频率查询系统设计-过滤检索校验.md) — 频率/聚合类查询系统设计（过滤 → 检索 → 校验） — 配套 [PLAN.md](PLAN.md)。本文专门解决一类高频需求：
 
 ## .github/
+- [`.github/skills/INDEX.md`](.github/skills/INDEX.md) — Skills Index — Reusable skills for this repo — workflows, API guides, and best practices an agent can load on demand.
 - [`.github/skills/db-column-docs-from-dictionary/SKILL.md`](.github/skills/db-column-docs-from-dictionary/SKILL.md) — Documenting DB columns from an upstream field dictionary — - **Type**: Workflow
+- [`.github/skills/openfda-data-download/SKILL.md`](.github/skills/openfda-data-download/SKILL.md) — Downloading / ingesting openFDA data — - **Type**: API Guide + Workflow
+- [`.github/skills/skill-writing/SKILL.md`](.github/skills/skill-writing/SKILL.md) — Skill 写作指南（Meta-Skill） — - **类型**: BestPractice
 
 ## scripts/
 - [`scripts/gen_index.py`](scripts/gen_index.py) — Generate PROJECT_INDEX.md — a reliable, auto-derived map of the repository.
@@ -34,3 +38,5 @@
   - symbols: `Kind`, `Filter`, `Group`, `RecallAnalytics`
 - [`src/fetch_openfda.py`](src/fetch_openfda.py) — Generic openFDA -> PostgreSQL ingester.
   - symbols: `parse_fda_date`, `record_id`, `fda_date_str`, `fetch_page`, `ensure_table`, `upsert_rows`, `max_report_date`, `build_search`, `run`, `parse_args`
+- [`src/nl_query.py`](src/nl_query.py) — Natural-language front-end for the deterministic analytics engine.
+  - symbols: `Intent`, `Op`, `FilterSpec`, `QuerySpec`, `Answer`, `build_schema_context`, `generate_spec`, `run_spec`, `summarize`, `ask`
