@@ -77,7 +77,18 @@ def serialize_answer(ans: Answer) -> dict[str, Any]:
         "spec": spec.model_dump(exclude_none=True),
         "summary": ans.summary,
     }
-    if spec.intent is Intent.count_total:
+    if spec.semantic_query:  # concept query -> ranked semantic hits
+        payload["data"] = {
+            "kind": "retrieval",
+            "query": spec.semantic_query,
+            "items": [
+                {"recall_number": h.recall_number, "field": h.field,
+                 "similarity": round(h.similarity, 3), "content": h.content,
+                 "recalling_firm": h.recalling_firm, "classification": h.classification}
+                for h in ans.result
+            ],
+        }
+    elif spec.intent is Intent.count_total:
         payload["data"] = {"kind": "scalar", "value": int(ans.result)}
     elif spec.intent is Intent.count_by:
         payload["data"] = {

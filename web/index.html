@@ -41,6 +41,9 @@
     .evi { margin-top:10px; display:flex; flex-wrap:wrap; gap:6px; }
     .badge { font:12px/1 ui-monospace,SFMono-Regular,Menlo,monospace; padding:4px 7px; border-radius:6px;
             background:#0d2235; color:var(--accent); border:1px solid #1d3a52; }
+    .hit { border:1px solid var(--line); border-radius:10px; padding:9px 12px; margin-top:8px; }
+    .hit .meta { color:var(--muted); font-size:12px; margin-left:6px; }
+    .hit .txt { font-size:13px; margin-top:4px; }
     .spec { font:12px/1.4 ui-monospace,Menlo,monospace; color:var(--muted); margin-top:10px;
             word-break:break-all; }
     .err { color:#ff8a8a; }
@@ -113,6 +116,12 @@
           `</tr></thead><tbody>` +
           d.rows.map(r => `<tr>` + cols.map(c => `<td>${esc(r[c])}</td>`).join("") + `</tr>`).join("") +
           `</tbody></table>`;
+      } else if (d.kind === "retrieval") {
+        body += `<div class="muted" style="margin-top:4px">Top ${d.items.length} semantic matches for “${esc(d.query)}”:</div>`;
+        body += d.items.map(it => `<div class="hit">` +
+          `<span class="badge">${esc(it.recall_number)}</span>` +
+          `<span class="meta">sim ${it.similarity} · ${esc(it.classification || '-')} · ${esc(it.recalling_firm || '-')}</span>` +
+          `<div class="txt">${esc(it.content || '')}</div></div>`).join("");
       }
       body += `<div class="spec">intent=${esc(res.intent)} · spec=${esc(JSON.stringify(res.spec))}</div>`;
       out.innerHTML = `<div class="card">${body}</div>`;

@@ -85,7 +85,8 @@ class Group:
     evidence: list[str] = field(default_factory=list)
 
 
-def _build_where(filters: Sequence[Filter]) -> tuple[sql.Composable, list[Any]]:
+def _conditions(filters: Sequence[Filter]) -> tuple[list[sql.Composable], list[Any]]:
+    """WHERE conditions (unprefixed) + bound params for a set of whitelisted filters."""
     conds: list[sql.Composable] = []
     params: list[Any] = []
     for f in filters:
@@ -105,6 +106,11 @@ def _build_where(filters: Sequence[Filter]) -> tuple[sql.Composable, list[Any]]:
             conds.append(sql.SQL("{} BETWEEN %s AND %s").format(col)); params += [lo, hi]
         elif f.op == "ilike":
             conds.append(sql.SQL("{} ILIKE %s").format(col)); params.append(f"%{f.value}%")
+    return conds, params
+
+
+def _build_where(filters: Sequence[Filter]) -> tuple[sql.Composable, list[Any]]:
+    conds, params = _conditions(filters)
     if not conds:
         return sql.SQL(""), params
     return sql.SQL(" WHERE ") + sql.SQL(" AND ").join(conds), params

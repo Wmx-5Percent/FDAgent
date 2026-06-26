@@ -20,6 +20,10 @@ from typing import Optional, Sequence
 import psycopg
 from dotenv import load_dotenv
 from openai import OpenAI
+from psycopg import sql
+
+# reuse the whitelisted filter -> SQL builder so semantic search can honor hard filters
+from analytics import Filter, _conditions
 
 load_dotenv()
 DEFAULT_DSN = os.environ.get("DATABASE_URL", "postgresql://localhost:5432/fda")
@@ -50,34 +54,40 @@ def embed_query(client: OpenAI, text: str) -> list[float]:
 
 
 def search(conn: psycopg.Connection, client: OpenAI, query: str, *,
-           k: int = 10, field: str = "reason_for_recall") -> list[Hit]:
-    """Nearest recalls to ``query`` by cosine distance. field='both' dedupes to one row/recall."""
+           k: int = 10, field: str = "reason_for_recall",
+           filters: Sequence[Filter] = ()) -> list[Hit]:
+    """Nearest recalls to ``query`` by cosine distance, optionally pre-filtered by hard
+    constraints (Tier-A columns on drug_enforcement). field='both' dedupes to one row/recall."""
     qvec = _vec_literal(embed_query(client, query))
+    fconds, fparams = _conditions(filters)  # conditions on the joined drug_enforcement (d)
     if field == "both":
         # search every field, keep the best-matching row per recall (exact scan; fine at ~35k).
-        q = (
+        where = (sql.SQL(" WHERE ") + sql.SQL(" AND ").join(fconds)) if fconds else sql.SQL("")
+        q = sql.SQL(
             "SELECT recall_number, field, dist, content, recalling_firm, classification FROM ("
             "  SELECT DISTINCT ON (e.recall_number)"
             "         e.recall_number, e.field, (e.embedding <=> %s::vector) AS dist,"
             "         e.content, d.recalling_firm, d.classification"
             "  FROM recall_embeddings e"
             "  JOIN drug_enforcement d ON d.recall_number = e.recall_number"
+            "  {where}"
             "  ORDER BY e.recall_number, dist"
             ") s ORDER BY s.dist LIMIT %s"
-        )
-        params: list = [qvec, k]
+        ).format(where=where)
+        params: list = [qvec, *fparams, k]
     else:
         # single field -> uses the HNSW index (ORDER BY <=> ... LIMIT).
-        q = (
+        where = sql.SQL(" WHERE ") + sql.SQL(" AND ").join([sql.SQL("e.field = %s"), *fconds])
+        q = sql.SQL(
             "SELECT e.recall_number, e.field, (e.embedding <=> %s::vector) AS dist,"
             "       e.content, d.recalling_firm, d.classification"
             "  FROM recall_embeddings e"
             "  JOIN drug_enforcement d ON d.recall_number = e.recall_number"
-            " WHERE e.field = %s"
-            " ORDER BY e.embedding <=> %s::vector"
-            " LIMIT %s"
-        )
-        params = [qvec, field, qvec, k]
+            "  {where}"
+            "  ORDER BY e.embedding <=> %s::vector"
+            "  LIMIT %s"
+        ).format(where=where)
+        params = [qvec, field, *fparams, qvec, k]
     with conn.cursor() as cur:
         cur.execute(q, params)
         return [Hit(*r) for r in cur.fetchall()]

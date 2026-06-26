@@ -11,8 +11,8 @@
 A deployed, demoable agent that answers natural-language questions about FDA drug recalls with **evidence-backed** results — **Path 1**: deterministic NL→SQL analytics (frequencies / trends / distributions, every number from SQL); **Path 2** (later): hybrid semantic retrieval for ad-hoc questions; served via FastAPI + a small UI, with an eval harness. Reproduces an industry LLM ticket-intelligence pipeline on 100% public-domain data (portfolio for NA AI/ML roles). Full roadmap in [PLAN.md](PLAN.md).
 
 ## Now
-- **State:** Path 1 served + containerized. **Path 2 slice 2.1 is done** — 35,446 embeddings (`reason_for_recall` + `product_description`, `text-embedding-3-small`) in `recall_embeddings` (HNSW + GIN); semantic vector search works ([src/retrieval.py](src/retrieval.py)). Not yet wired into `/ask`.
-- ▶️ **Next action:** finish **2.2** (add the Postgres-FTS keyword half + RRF fusion to [src/retrieval.py](src/retrieval.py)), then **2.3** (add `semantic_query` to `QuerySpec` and route concepts through retrieval instead of `ilike`).
+- **State:** Path 1 served + containerized. **Path 2 slices 2.1 + 2.3 done** — 35,446 embeddings in `recall_embeddings`; `/ask` now routes fuzzy concepts through `semantic_query` → semantic retrieval (vector, filter-aware), no more `ilike`. Verified on web ("pills too strong" → Superpotent; "Class I glass fragments" → Class I particulate).
+- ▶️ **Next action:** **2.2** — add the Postgres-FTS keyword half + RRF fusion to [src/retrieval.py](src/retrieval.py) (for exact terms like NDMA / child-resistant that pure vector misses).
 
 ## Works now (verified)
 1. **Ingest** — [src/fetch_openfda.py](src/fetch_openfda.py): generic openFDA→Postgres, idempotent JSONB upsert, `--since auto` incremental.
@@ -26,7 +26,7 @@ A deployed, demoable agent that answers natural-language questions about FDA dru
 9. **Read-only DB MCP** — `postgres-fda` ([.vscode/mcp.json](.vscode/mcp.json), restricted mode).
 10. **Skills** — under [.github/skills/](.github/skills/): db-column-docs-from-dictionary, openfda-data-download, skill-writing, learning-session-notes.
 11. **Containerized (local)** — [Dockerfile](Dockerfile) (lean serving image; base-registry + PyPI mirrors are build-args) + [.dockerignore](.dockerignore) + [requirements-serve.txt](requirements-serve.txt). `docker run` serves `/ask` + UI, reaching host Postgres via `host.docker.internal`. Verified.
-12. **Embeddings + vector retrieval (Path 2, 2.1)** — [sql/003_recall_embeddings.sql](sql/003_recall_embeddings.sql) (table + HNSW + GIN), [src/embed.py](src/embed.py) (incremental batch embed; 35,446 vectors loaded), [src/retrieval.py](src/retrieval.py) (semantic vector search). Verified: `sterility` finds `Lack of Assurance of Sterility`. Hybrid (FTS+RRF) + `/ask` wiring still pending.
+12. **Path 2 — semantic retrieval wired into `/ask` (2.1 + 2.3)** — [sql/003_recall_embeddings.sql](sql/003_recall_embeddings.sql) + [src/embed.py](src/embed.py) (35,446 vectors) + [src/retrieval.py](src/retrieval.py) (vector search, filter-aware); [src/nl_query.py](src/nl_query.py) routes `semantic_query` (concepts → retrieval, never `ilike`), rendered as a ranked list in the UI. Hybrid (FTS + RRF) is the remaining **2.2** increment.
 
 ## Next up (ordered)
 **Path 2 — hybrid semantic retrieval** (fixes the literal-`ilike` gap so `sterility-related` stops missing `microbial contamination` etc.):

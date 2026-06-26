@@ -27,6 +27,7 @@ from psycopg import sql
 from pydantic import BaseModel, Field
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # allow `import analytics` as a script
+import retrieval  # noqa: E402  (semantic search for concept queries)
 from analytics import CATALOG, GRAINS, OPS, Filter, Kind, RecallAnalytics  # noqa: E402
 
 load_dotenv()
@@ -60,6 +61,7 @@ class FilterSpec(BaseModel):
 
 class QuerySpec(BaseModel):
     intent: Intent
+    semantic_query: Optional[str] = None  # fuzzy concept -> semantic retrieval over recall text
     filters: list[FilterSpec] = Field(default_factory=list)
     group_by: Optional[str] = None      # count_by: a dimension column
     grain: Optional[str] = None         # trend: year/quarter/month/week/day
@@ -80,9 +82,15 @@ Rules:
 - Use ONLY columns and values from the SCHEMA below. Never invent a column or a value.
 - Choose intent: count_total (one number), count_by (distribution across a dimension -> set group_by),
   trend (counts over time -> set grain and date_column), sample (a few example rows).
-- Filters: use a column's listed allowed values exactly. Dates are ISO YYYY-MM-DD. Use op
-  'ilike' for free-text contains on text columns, 'eq'/'in' for categories, 'between'/'gte'/'lte' for dates.
-- Keep filters minimal and faithful to the question."""
+- semantic_query: when the question asks to FIND or SHOW recalls about a fuzzy CONCEPT/topic in the
+  free text (e.g. "sterility problems", "cancer-causing impurity", "pills that are too strong",
+  "glass fragments"), put that concept here as a short natural-language phrase and use intent=sample.
+  This runs a semantic search over the recall text -- do NOT use an 'ilike' filter for a concept
+  (ilike only matches the literal word and misses synonyms like microbial / superpotent).
+- filters: only for HARD constraints -- categories (classification/state/...) via 'eq'/'in' with a
+  column's listed allowed values, and dates (ISO YYYY-MM-DD) via 'between'/'gte'/'lte'. You may combine
+  semantic_query (the concept) with filters (the hard constraints), e.g. "Class I sterility recalls".
+- Keep it minimal and faithful to the question."""
 
 
 # --------------------------------------------------------------------------- #
@@ -164,8 +172,11 @@ def _to_filters(spec: QuerySpec) -> list[Filter]:
     return out
 
 
-def run_spec(a: RecallAnalytics, spec: QuerySpec) -> Any:
+def run_spec(a: RecallAnalytics, spec: QuerySpec, client: OpenAI) -> Any:
     filters = _to_filters(spec)
+    if spec.semantic_query:  # concept query -> semantic retrieval (optionally hard-filtered)
+        return retrieval.search(a.conn, client, spec.semantic_query,
+                                k=spec.limit or 10, field="both", filters=filters)
     if spec.intent is Intent.count_total:
         return a.count_total(filters)
     if spec.intent is Intent.count_by:
@@ -182,6 +193,12 @@ def run_spec(a: RecallAnalytics, spec: QuerySpec) -> Any:
 
 
 def summarize(spec: QuerySpec, result: Any) -> str:
+    if spec.semantic_query:
+        head = f"Top {len(result)} recalls matching '{spec.semantic_query}':"
+        body = "\n".join(
+            f"  [{h.recall_number}] sim={h.similarity:.2f}  {h.recalling_firm or '-'}: "
+            f"{(h.content or '')[:70]}" for h in result)
+        return f"{head}\n{body}"
     if spec.intent is Intent.count_total:
         return f"Total matching recalls: {result:,}"
     if spec.intent is Intent.count_by:
@@ -216,13 +233,13 @@ class NLEngine:
         spec = generate_spec(self.client, question, self.schema_ctx, self.model)
         with RecallAnalytics(self.dsn) as a:
             try:
-                result = run_spec(a, spec)
+                result = run_spec(a, spec, self.client)
             except ValueError as exc:  # one repair attempt: feed the error back
                 spec = generate_spec(
                     self.client,
                     f"{question}\n\n(Your previous QuerySpec was invalid: {exc}. Return a corrected one.)",
                     self.schema_ctx, self.model)
-                result = run_spec(a, spec)
+                result = run_spec(a, spec, self.client)
         return Answer(question, spec, summarize(spec, result), result)
 
 
