@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-06-26T08:21Z · 32 files
+> Last generated: 2026-06-26T16:09Z · 36 files
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -27,11 +27,16 @@
 - [`.github/skills/openfda-data-download/SKILL.md`](.github/skills/openfda-data-download/SKILL.md) — Downloading / ingesting openFDA data — - **Type**: API Guide + Workflow
 - [`.github/skills/skill-writing/SKILL.md`](.github/skills/skill-writing/SKILL.md) — Skill 写作指南（Meta-Skill） — - **类型**: BestPractice
 
+## evals/
+- [`evals/golden/v1.json`](evals/golden/v1.json) — {"description": "FDAgent v1 golden eval set for /ask routing and retrieval recall@k.",
+
 ## scripts/
 - [`scripts/gen_index.py`](scripts/gen_index.py) — Generate PROJECT_INDEX.md — a reliable, auto-derived map of the repository.
   - symbols: `repo_root`, `list_files`, `read_text`, `describe_python`, `describe_markdown`, `describe_html`, `describe_generic`, `describe`, `group_key`, `render`, `strip_volatile`, `main`
 - [`scripts/hooks/install.sh`](scripts/hooks/install.sh) — Install the version-controlled git hooks into .git/hooks.
 - [`scripts/hooks/pre-commit`](scripts/hooks/pre-commit) — Pre-commit hook: block the commit if PROJECT_INDEX.md is stale.
+- [`scripts/run_eval.py`](scripts/run_eval.py) — Run local golden evals for /ask routing and retrieval recall@k.
+  - symbols: `EvalResult`, `EvalFailure`, `parse_args`, `main`
 
 ## sql/
 - [`sql/001_parse_drug_enforcement.sql`](sql/001_parse_drug_enforcement.sql) — Parse drug_enforcement.raw (JSONB) into typed, indexed columns.
@@ -39,6 +44,7 @@
 - [`sql/003_recall_embeddings.sql`](sql/003_recall_embeddings.sql) — Create recall_embeddings: per-(recall, field) text vectors + FTS for Path 2 hybrid retrieval.
 - [`sql/004_embeddings_multisource.sql`](sql/004_embeddings_multisource.sql) — Generalize recall_embeddings -> embeddings for MULTIPLE data sources (Path 2).
 - [`sql/005_embeddings_comments.sql`](sql/005_embeddings_comments.sql) — Column documentation for `embeddings` (Path 2 vector + full-text store).
+- [`sql/006_query_log.sql`](sql/006_query_log.sql) — Create query_log: L1 Postgres observability for every handled /ask request.
 
 ## src/
 - [`src/analytics.py`](src/analytics.py) — Deterministic frequency/aggregation query engine over drug_enforcement.
@@ -51,6 +57,8 @@
   - symbols: `parse_fda_date`, `record_id`, `fda_date_str`, `fetch_page`, `ensure_table`, `upsert_rows`, `max_report_date`, `build_search`, `run`, `parse_args`
 - [`src/nl_query.py`](src/nl_query.py) — Natural-language front-end for the deterministic analytics engine.
   - symbols: `Intent`, `Op`, `FilterSpec`, `QuerySpec`, `Answer`, `build_schema_context`, `generate_spec`, `run_spec`, `summarize`, `NLEngine`, `ask`
+- [`src/observability.py`](src/observability.py) — Postgres-backed query logging for the /ask API.
+  - symbols: `QueryLogEntry`, `QueryLogger`, `response_metadata`
 - [`src/retrieval.py`](src/retrieval.py) — Semantic (vector) retrieval over the `embeddings` table — Path 2 / slice 2.2 (v1: vector core).
   - symbols: `Hit`, `embed_query`, `search`, `parse_args`, `main`
 
