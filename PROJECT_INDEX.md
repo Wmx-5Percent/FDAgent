@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-06-26T08:00Z · 32 files
+> Last generated: 2026-06-26T08:21Z · 32 files
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -12,7 +12,7 @@
 - [`.gitignore`](.gitignore) — 真实公司数据：绝不提交 / 绝不上传 ----
 - [`AGENTS.md`](AGENTS.md) — AGENTS.md — Agent Operating Guide — **Read this first.** It is the always-on entry point of a *progressive-disclosure*
 - [`Dockerfile`](Dockerfile) — Container image for the FDAgent serving layer (Path 1: FastAPI /ask + static UI).
-- [`PLAN.md`](PLAN.md) — MRI Ticket Intelligence Agent — 详细开发计划 (v2) — 本计划取代旧的"重型结构化 pipeline"思路。
+- [`PLAN.md`](PLAN.md) — FDAgent — openFDA 药品召回智能体 · 开发计划 (v3) — **数据集：openFDA `drug/enforcement`**（美国 FDA 药品召回执法报告，100% 公开、无 PII）。
 - [`PROGRESS.md`](PROGRESS.md) — Progress — fdaAgent — Live project state for fast session pickup. This is the **dynamic** doc; the static
 - [`PROJECT_INDEX.md`](PROJECT_INDEX.md) — Auto-generated repository map (this file).
 - [`README.md`](README.md) — FDAgent — openFDA Drug-Recall Intelligence Agent — Ask natural-language questions about U.S. **FDA drug-recall enforcement reports** and get

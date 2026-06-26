@@ -8,7 +8,7 @@
 > Last updated: 2026-06-26
 
 ## Goal (end state)
-A deployed, demoable agent that answers natural-language questions about FDA drug recalls with **evidence-backed** results — **Path 1**: deterministic NL→SQL analytics (frequencies / trends / distributions, every number from SQL); **Path 2** (later): hybrid semantic retrieval for ad-hoc questions; served via FastAPI + a small UI, with an eval harness. Reproduces an industry LLM ticket-intelligence pipeline on 100% public-domain data (portfolio for NA AI/ML roles). Full roadmap in [PLAN.md](PLAN.md).
+A deployed, demoable agent that answers natural-language questions about FDA drug recalls with **evidence-backed** results — **Path 1**: deterministic NL→SQL analytics (frequencies / trends / distributions, every number from SQL); **Path 2** (later): hybrid semantic retrieval for ad-hoc questions; served via FastAPI + a small UI, with an eval harness. Reproduces an industry-style LLM structuring + retrieval pipeline on 100% public-domain data (portfolio for NA AI/ML roles). Full roadmap in [PLAN.md](PLAN.md).
 
 ## Now
 - **State:** Path 1 served + containerized. **Path 2 slices 2.1 + 2.3 done** — 35,446 embeddings in the multi-source `embeddings` table; `/ask` now routes fuzzy concepts through `semantic_query` → semantic retrieval (vector, filter-aware), no more `ilike`. Verified on web ("pills too strong" → Superpotent; "Class I glass fragments" → Class I particulate).
@@ -43,7 +43,7 @@ A deployed, demoable agent that answers natural-language questions about FDA dru
 **Phase 3 — agentic capstone** ("is this company safe?"): firm entity-resolution (`pg_trgm` fuzzy + known-subsidiary expansion + LLM verify) + tool-calling agent; reuses Path 2. **Public deploy (optional):** push the image to HF Spaces / Render + a managed Postgres + pgvector (Supabase / Neon).
 
 ## Blockers & gotchas
-- ⚠️ **The venv is not relocatable** — it broke once after the folder was renamed (`find-jobs/ticket agent` → `fdaAgent`); recreated. Always run `.venv/bin/python …`, or re-`source .venv/bin/activate` after any move.
+- ⚠️ **The venv is not relocatable** — it broke once after the project folder was renamed; recreated. Always run `.venv/bin/python …`, or re-`source .venv/bin/activate` after any move.
 - ⚠️ **`hypopg` is built into the Postgres.app bundle** — rebuild it after a Postgres.app major-version upgrade.
 - ⚠️ **Postgres MCP quirks** — `get_object_details` does not render column comments, and restricted-mode `execute_sql` rejects catalog queries (`col_description`, `::regclass`). Read comments via `psql \d+` or a direct connection; normal data `SELECT`s through the MCP are fine.
 - ℹ️ **`state` stores 2-letter codes** (`CA`, not `California`). The NL layer enumerates a column's allowed values into the prompt ("value index") so the LLM uses real codes — keep that pattern when adding categorical filters.

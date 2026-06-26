@@ -11,8 +11,8 @@
 ## What this project is
 
 `fdaAgent` — a portfolio RAG / tool-calling agent built on **public-domain openFDA**
-data. It reproduces an industry LLM "ticket-intelligence" pipeline on legal data
-(no proprietary content). Current dataset: `drug/enforcement` (~17.7k drug-recall
+data. It reproduces an industry-style LLM data-structuring + retrieval pipeline on legal,
+public data (no proprietary content). Current dataset: `drug/enforcement` (~17.7k drug-recall
 reports) ingested into PostgreSQL. See [README.md](README.md) and [PLAN.md](PLAN.md)
 for the roadmap, and [频率查询系统设计-过滤检索校验.md](频率查询系统设计-过滤检索校验.md)
 for the frequency/aggregation design.
