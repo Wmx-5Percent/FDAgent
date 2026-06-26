@@ -28,7 +28,7 @@ flowchart TB
   A[data/raw/tickets.csv<br/>openFDA 半结构化] --> B[P1.5 可选: 富化层<br/>LLM 抽工程级 taxonomy]
   B --> C[(PostgreSQL<br/>结构化字段)]
   A --> D[P1: 嵌入<br/>reason/product 字段]
-  D --> E[(pgvector<br/>recall_embeddings)]
+  D --> E[(pgvector<br/>embeddings 表)]
   C --> F[P2: 分析工具<br/>NL→SQL]
   E --> G[P1: 混合检索<br/>向量+FTS+元数据]
   G --> H[P3: 路由 Agent<br/>tool-calling]
@@ -50,7 +50,7 @@ flowchart TB
 | --- | --- | --- | --- |
 | 语言 | ✅ **Python 3.13** | — | 与你技能一致、生态最全 |
 | LLM（NL→QuerySpec / Agent 推理） | ✅ **gpt-4o-mini**（`OPENAI_MODEL` 可调） | gpt-4o / gpt-4.1 / Claude | 受约束 spec 生成够用又便宜；复杂 routing 可临时升级 |
-| Embedding | 🔜 **text-embedding-3-small**（1536 维） | -3-large / bge-small(本地免费) | 性价比最高；药品文本纯英文够用，~$0.05 |
+| Embedding | ✅ **text-embedding-3-small**（1536 维） | -3-large / bge-small(本地免费) | 性价比最高；药品文本纯英文够用，~$0.05 |
 | 向量库 | ✅ **pgvector**（Postgres 内） | Chroma / FAISS / Qdrant | 一个库搞定结构化 + 向量，无需额外服务 |
 | 关键词检索 | 🔜 **Postgres 全文检索（FTS, `ts_rank`）** | pg_search(真 BM25) / rank-bm25 / ES | v1 留在 Postgres、带词干化；FTS 召回不够再上真 BM25 |
 | 混合融合 | 🔜 **RRF**（Reciprocal Rank Fusion） | 加权和 | 无需调权重，简单稳健 |

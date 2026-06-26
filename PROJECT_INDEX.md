@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-06-26T03:05Z · 31 files
+> Last generated: 2026-06-26T08:00Z · 32 files
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -38,6 +38,7 @@
 - [`sql/002_drug_enforcement_comments.sql`](sql/002_drug_enforcement_comments.sql) — Column documentation for drug_enforcement.
 - [`sql/003_recall_embeddings.sql`](sql/003_recall_embeddings.sql) — Create recall_embeddings: per-(recall, field) text vectors + FTS for Path 2 hybrid retrieval.
 - [`sql/004_embeddings_multisource.sql`](sql/004_embeddings_multisource.sql) — Generalize recall_embeddings -> embeddings for MULTIPLE data sources (Path 2).
+- [`sql/005_embeddings_comments.sql`](sql/005_embeddings_comments.sql) — Column documentation for `embeddings` (Path 2 vector + full-text store).
 
 ## src/
 - [`src/analytics.py`](src/analytics.py) — Deterministic frequency/aggregation query engine over drug_enforcement.

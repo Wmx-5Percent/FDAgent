@@ -5,14 +5,14 @@
 > file map is [PROJECT_INDEX.md](PROJECT_INDEX.md). To avoid drift, this file **links** to
 > those rather than repeating them.
 > **Maintenance:** at the end of each work session, update *Now / Next up / Blockers*. Keep it short.
-> Last updated: 2026-06-25
+> Last updated: 2026-06-26
 
 ## Goal (end state)
 A deployed, demoable agent that answers natural-language questions about FDA drug recalls with **evidence-backed** results — **Path 1**: deterministic NL→SQL analytics (frequencies / trends / distributions, every number from SQL); **Path 2** (later): hybrid semantic retrieval for ad-hoc questions; served via FastAPI + a small UI, with an eval harness. Reproduces an industry LLM ticket-intelligence pipeline on 100% public-domain data (portfolio for NA AI/ML roles). Full roadmap in [PLAN.md](PLAN.md).
 
 ## Now
-- **State:** Path 1 served + containerized. **Path 2 slices 2.1 + 2.3 done** — 35,446 embeddings in `recall_embeddings`; `/ask` now routes fuzzy concepts through `semantic_query` → semantic retrieval (vector, filter-aware), no more `ilike`. Verified on web ("pills too strong" → Superpotent; "Class I glass fragments" → Class I particulate).
-- ▶️ **Next action:** **2.2** — add the Postgres-FTS keyword half + RRF fusion to [src/retrieval.py](src/retrieval.py) (for exact terms like NDMA / child-resistant that pure vector misses).
+- **State:** Path 1 served + containerized. **Path 2 slices 2.1 + 2.3 done** — 35,446 embeddings in the multi-source `embeddings` table; `/ask` now routes fuzzy concepts through `semantic_query` → semantic retrieval (vector, filter-aware), no more `ilike`. Verified on web ("pills too strong" → Superpotent; "Class I glass fragments" → Class I particulate).
+- ▶️ **Next action:** **frontend redesign** — a ChatGPT-style chat UI (thread + conversation sidebar + edit-message + stop-generation), then **2.2** hybrid (FTS + RRF). Plan in *Next up*.
 
 ## Works now (verified)
 1. **Ingest** — [src/fetch_openfda.py](src/fetch_openfda.py): generic openFDA→Postgres, idempotent JSONB upsert, `--since auto` incremental.
@@ -26,24 +26,21 @@ A deployed, demoable agent that answers natural-language questions about FDA dru
 9. **Read-only DB MCP** — `postgres-fda` ([.vscode/mcp.json](.vscode/mcp.json), restricted mode).
 10. **Skills** — under [.github/skills/](.github/skills/): db-column-docs-from-dictionary, openfda-data-download, skill-writing, learning-session-notes.
 11. **Containerized (local)** — [Dockerfile](Dockerfile) (lean serving image; base-registry + PyPI mirrors are build-args) + [.dockerignore](.dockerignore) + [requirements-serve.txt](requirements-serve.txt). `docker run` serves `/ask` + UI, reaching host Postgres via `host.docker.internal`. Verified.
-12. **Path 2 — semantic retrieval wired into `/ask` (2.1 + 2.3)** — multi-source `embeddings` table ([sql/003](sql/003_recall_embeddings.sql) + [sql/004](sql/004_embeddings_multisource.sql), keyed `(source, source_id, field)`) + [src/embed.py](src/embed.py) (`SOURCES` registry; 35,446 vectors) + [src/retrieval.py](src/retrieval.py) (vector search, filter-aware); [src/nl_query.py](src/nl_query.py) routes `semantic_query` (concepts → retrieval, never `ilike`), rendered as a ranked list in the UI. Hybrid (FTS + RRF) is the remaining **2.2** increment.
+12. **Path 2 — semantic retrieval wired into `/ask` (2.1 + 2.3)** — multi-source `embeddings` table ([sql/003](sql/003_recall_embeddings.sql) + [sql/004](sql/004_embeddings_multisource.sql), keyed `(source, source_id, field)`, every column documented in [sql/005](sql/005_embeddings_comments.sql)) + [src/embed.py](src/embed.py) (`SOURCES` registry; 35,446 vectors) + [src/retrieval.py](src/retrieval.py) (vector search, filter-aware); [src/nl_query.py](src/nl_query.py) routes `semantic_query` (concepts → retrieval, never `ilike`), rendered as a ranked list in the UI. Hybrid (FTS + RRF) is the remaining **2.2** increment.
 
 ## Next up (ordered)
-**Path 2 — hybrid semantic retrieval** (fixes the literal-`ilike` gap so `sterility-related` stops missing `microbial contamination` etc.):
-1. **2.1 Embedding foundation (offline)** — `sql/003` creates `recall_embeddings(recall_number, field, content, content_hash, embedding vector(1536), content_tsv)` + HNSW + GIN; `src/embed.py` batch-embeds `reason_for_recall` **and** `product_description` as TWO ROWS per recall (`text-embedding-3-small`, ~$0.05), with idempotent **incremental re-embed** (only new/changed text, like `--since auto`).
-2. **2.2 Hybrid retrieval engine (online)** — `src/retrieval.py`: hard-filter (reuse `QuerySpec.filters`) → candidates → vector `<=>` ⊕ Postgres FTS `ts_rank` fused via **RRF** → top-K.
-3. **2.3 Router + NL integration** — add `semantic_query` to `QuerySpec`; concepts route to retrieval (no more `ilike`); `sample` → ranked rows (default top-10).
+**Frontend — ChatGPT-style chat UI** (before 2.2; **plan ready**):
+1. Replace the single input box with a chat **thread** (user/assistant bubbles, per-message result rendering) + a left **conversation sidebar** (new / switch / rename / delete). Stay vanilla JS (zero-build → single Docker image); split into `web/index.html` + `app.js` + `styles.css` (api.py serves `web/` as static).
+2. **Edit a sent message** (→ truncate the thread after it → re-ask) and **Stop generation** (`AbortController`, client-side cancel). History in **localStorage** (no backend change). v1 = each turn is an independent `/ask` (no cross-turn context); conversational context + server-side history (tied to `query_log`) are v2.
+
+**Path 2 — finish hybrid retrieval:**
+3. **2.2 Hybrid** — add the Postgres-FTS keyword half (`content_tsv` ready) + **RRF** fusion to [src/retrieval.py](src/retrieval.py); fixes exact-term misses (NDMA, child-resistant). *(2.1 embed + 2.3 router/UI render already done — see Works now #12.)*
 4. **2.4 Per-item validation** — LLM yes/no + supporting snippet + threshold; **semantic counting** lands here (estimate + confidence).
-5. **2.5 Serve + UI** — `/ask` returns a ranked list (relevance + snippet + recall_number); UI renders it.
 
-**Observability + eval** (stop it being a black box):
-6. **`query_log` (L1, Postgres)** — persist every `/ask`: trace_id / question / spec(jsonb) / sql / row_count / latency / tokens / cost / repaired (doubles as the eval dataset + audit). Then wire **Langfuse** (L2) for the trace UI + eval experiments.
-7. **Eval harness** — versioned golden set; deterministic asserts where numbers come from SQL (e.g. `sterility-related` MUST emit `semantic_query`, not `ilike`); recall@k for retrieval; LLM-as-judge for faithfulness.
+**Observability + eval:**
+5. **`query_log` (L1, Postgres)** → **Langfuse (L2)**; **eval harness** — versioned golden set; deterministic asserts where numbers come from SQL (e.g. `sterility-related` MUST emit `semantic_query`, not `ilike`); recall@k for retrieval; LLM-as-judge for faithfulness.
 
-**Phase 3 — agentic capstone** ("is this company safe?"):
-8. **Firm entity-resolution + tool-calling agent** — a consumer's brand → parent company `[inferred]` → DB `recalling_firm` set (`pg_trgm` fuzzy + known-subsidiary expansion + LLM verify) → existing analytics engine → answer separating `[inferred]` from `[fact]`. Built AFTER Path 2 (reuses its embeddings/retrieval).
-
-**Public deploy (optional)** — local Docker works; to go public, push the image to a host (HF Spaces / Render / Fly.io) **and** point it at a managed Postgres + pgvector (Supabase / Neon) with data loaded — a cloud container can't reach `localhost`.
+**Phase 3 — agentic capstone** ("is this company safe?"): firm entity-resolution (`pg_trgm` fuzzy + known-subsidiary expansion + LLM verify) + tool-calling agent; reuses Path 2. **Public deploy (optional):** push the image to HF Spaces / Render + a managed Postgres + pgvector (Supabase / Neon).
 
 ## Blockers & gotchas
 - ⚠️ **The venv is not relocatable** — it broke once after the folder was renamed (`find-jobs/ticket agent` → `fdaAgent`); recreated. Always run `.venv/bin/python …`, or re-`source .venv/bin/activate` after any move.

@@ -53,6 +53,8 @@ Each doc stays current by a *different* mechanism — know which, and **never du
 - **Python**: use the venv — `.venv/bin/python ...` (Python 3.13). Install deps: `.venv/bin/python -m pip install -r requirements.txt`.
 - **Database**: PostgreSQL (Postgres.app) database `fda`. Extensions enabled: `pgvector` 0.8.1 (vector search) + `hypopg` 1.4.3 (hypothetical-index tuning). DSN `postgresql://localhost:5432/fda` (override via `DATABASE_URL`).
 - **Ingest openFDA → Postgres**: `.venv/bin/python src/fetch_openfda.py --endpoint <noun/endpoint> --table <table> [--since auto]`. Generic over any endpoint; idempotent JSONB upsert.
+- **Embed text → vectors (Path 2)**: `.venv/bin/python src/embed.py [--dry-run]` — embeds source text fields into the multi-source `embeddings` table (pgvector + FTS); incremental by content hash. Adding a dataset = one `SOURCES` entry in `src/embed.py`.
+- **Serve** (FastAPI `/ask` + static UI): `.venv/bin/python -m uvicorn src.api:app` → http://127.0.0.1:8000/. After editing code, fully restart — a lingering uvicorn serves stale code.
 - **Inspect data**: `psql -d fda -c "\dt"`. Tables store the full record in a `raw jsonb` column — query logical fields via `raw->>'field'` (the top-level columns are `id, source, report_date, raw, fetched_at`).
 - **Read-only DB MCP** (`postgres-fda`, Postgres MCP Pro): a restricted/read-only MCP server for safe schema exploration, `execute_sql` (SELECT), `explain_query` (+ hypothetical indexes), and `analyze_db_health`. Config: `.vscode/mcp.json` (git-ignored; binary at `.venv/bin/postgres-mcp`). Prefer it for reads; do schema changes via versioned scripts, not ad-hoc writes.
 
