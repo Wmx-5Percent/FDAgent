@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-06-26T08:21Z · 32 files
+> Last generated: 2026-06-26T15:42Z · 32 files
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -51,7 +51,7 @@
   - symbols: `parse_fda_date`, `record_id`, `fda_date_str`, `fetch_page`, `ensure_table`, `upsert_rows`, `max_report_date`, `build_search`, `run`, `parse_args`
 - [`src/nl_query.py`](src/nl_query.py) — Natural-language front-end for the deterministic analytics engine.
   - symbols: `Intent`, `Op`, `FilterSpec`, `QuerySpec`, `Answer`, `build_schema_context`, `generate_spec`, `run_spec`, `summarize`, `NLEngine`, `ask`
-- [`src/retrieval.py`](src/retrieval.py) — Semantic (vector) retrieval over the `embeddings` table — Path 2 / slice 2.2 (v1: vector core).
+- [`src/retrieval.py`](src/retrieval.py) — Hybrid retrieval over the `embeddings` table — Path 2 / slice 2.2.
   - symbols: `Hit`, `embed_query`, `search`, `parse_args`, `main`
 
 ## web/
