@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-06-26T16:24Z · 38 files
+> Last generated: 2026-06-26T16:27Z · 38 files
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -63,6 +63,6 @@
   - symbols: `Hit`, `embed_query`, `search`, `parse_args`, `main`
 
 ## web/
-- [`web/app.js`](web/app.js) — _(no description; add a one-line docstring/heading)_
+- [`web/app.js`](web/app.js) — ChatGPT-style zero-build frontend for FDAgent /ask conversations.
 - [`web/index.html`](web/index.html) — ChatGPT-style zero-build UI shell for the FDAgent /ask endpoint.
-- [`web/styles.css`](web/styles.css) — _(no description; add a one-line docstring/heading)_
+- [`web/styles.css`](web/styles.css) — ChatGPT-style layout and result rendering styles for the FDAgent static UI.

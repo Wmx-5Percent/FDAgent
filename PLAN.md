@@ -53,18 +53,18 @@ flowchart TB
 | LLM（NL→QuerySpec / Agent 推理） | ✅ **gpt-4o-mini**（`OPENAI_MODEL` 可调） | gpt-4o / gpt-4.1 / Claude | 受约束 spec 生成够用又便宜；复杂 routing 可临时升级 |
 | Embedding | ✅ **text-embedding-3-small**（1536 维） | -3-large / bge-small(本地免费) | 性价比最高；药品文本纯英文够用，~$0.05 |
 | 向量库 | ✅ **pgvector**（Postgres 内） | Chroma / FAISS / Qdrant | 一个库搞定结构化 + 向量，无需额外服务 |
-| 关键词检索 | 🔜 **Postgres 全文检索（FTS, `ts_rank`）** | pg_search(真 BM25) / rank-bm25 / ES | v1 留在 Postgres、带词干化；FTS 召回不够再上真 BM25 |
-| 混合融合 | 🔜 **RRF**（Reciprocal Rank Fusion） | 加权和 | 无需调权重，简单稳健 |
+| 关键词检索 | ✅ **Postgres 全文检索（FTS, `ts_rank`）** | pg_search(真 BM25) / rank-bm25 / ES | v1 留在 Postgres、带词干化；FTS 召回不够再上真 BM25 |
+| 混合融合 | ✅ **RRF**（Reciprocal Rank Fusion） | 加权和 | 无需调权重，简单稳健 |
 | 重排 / 校验 | 🔜 **LLM 逐条判定 + 证据片段** | bge-reranker / Cohere | 与“逐条校验”层合并；高精度 + 可解释 |
 | 结构化数据 | ✅ **PostgreSQL**（Postgres.app 17） | SQLite / DuckDB / Snowflake | 同库承载向量；生产可换 Snowflake |
 | 结构化输出 | ✅ **Pydantic v2 + OpenAI structured output** | Instructor 库 | schema 校验、防 LLM 漂移 |
 | 重试 / 限流 | **tenacity** | 自写 backoff | 指数退避、稳态批处理 |
 | Agent 框架 | 🔜 **OpenAI function calling 原生** | LangGraph（进阶可选） | 先用原生，别一上来上重框架 |
 | 实体解析（Phase 3） | 🔜 **pg_trgm 模糊 + 已知子公司展开 + LLM 核验** | fuzzystrmatch / dedupe | firm 名碎片化（1,634 个）；名变体 + 子公司需归并 |
-| 评估 | 🔜 **自写 harness + 版本化黄金集** | ragas / promptfoo | 数字来自 SQL → 可精确断言；模糊维度才用 LLM-judge |
-| 可观测 / 追踪 | 🔜 **query_log（Postgres, L1）→ Langfuse（L2）** | Phoenix / Helicone / OTel | 每次 /ask 一条 trace，`QuerySpec` 即可审计推理；自建表兼作 eval 数据集 |
+| 评估 | ✅ **自写 harness + 版本化黄金集（v1）** | ragas / promptfoo | 数字来自 SQL → 可精确断言；模糊维度才用 LLM-judge |
+| 可观测 / 追踪 | ✅ **query_log（Postgres, L1）**；🔜 Langfuse（L2） | Phoenix / Helicone / OTel | 每次 /ask 一条 trace，`QuerySpec` 即可审计推理；自建表兼作 eval 数据集 |
 | 后端 | ✅ **FastAPI + uvicorn** | Flask | 异步、自动文档、业界标配 |
-| 前端 | ✅ **静态 HTML + Chart.js（FastAPI 托管）** | Streamlit / Next.js | 单进程单镜像、零构建步骤 |
+| 前端 | ✅ **静态 HTML/CSS/JS 聊天 UI（FastAPI 托管）** | Streamlit / Next.js | 单进程单镜像、零构建步骤 |
 | 容器 | ✅ **Docker**（镜像源参数化、密钥运行时注入） | — | 部署一致性、简历必备 |
 | 托管（公开部署） | 🔜 **Hugging Face Spaces**（免费） | Render / Fly.io / Railway | 免费挂 live demo |
 | 数据库（公开部署） | 🔜 **Supabase / Neon**（自带 pgvector） | RDS | 云容器连不到本机 localhost，需托管库 |
@@ -83,23 +83,22 @@ flowchart TB
 - 安全（OWASP）：只读连接 + 只允许 SELECT + 列名走白名单 + 值走参数绑定（防注入）。
 - 落地：`src/analytics.py`（聚合引擎）+ `src/nl_query.py`（NL→QuerySpec）。
 
-### Path 2 — 语义 / 混合检索（🚧 进行中）
+### Path 2 — 语义 / 混合检索（🚧 进行中；混合检索已完成）
 答 Path 1 答不了的**模糊概念**问题（「无菌问题」「致癌杂质」「药效太强」）。
 - 嵌入 `reason_for_recall` + `product_description` 入 `embeddings`（pgvector）。详见
   [频率查询系统设计](频率查询系统设计-过滤检索校验.md) §9。✅
-- 概念走 `semantic_query` → 向量检索（可叠加 Tier-A 硬过滤），不再用字面 `ilike`。✅
-- **剩余**：加 Postgres 全文检索（FTS）+ **RRF** 融合（救精确术语，如 NDMA / child-resistant）；
-  逐条 LLM 校验 + 语义计数（估计值 + 置信区间）。
+- 概念走 `semantic_query` → 混合检索（pgvector + Postgres FTS + RRF，可叠加 Tier-A 硬过滤），不再用字面 `ilike`。✅
+- **剩余**：逐条 LLM 校验 + 语义计数（估计值 + 置信区间）。
 
-### 前端 — ChatGPT 式聊天 UI（🚧 计划中）
+### 前端 — ChatGPT 式聊天 UI（✅ v1 已完成）
 对话流 + 左侧会话栏 + 可编辑消息 + 随时停止。模块化静态文件（`index.html` / `app.js` /
-`styles.css`），原生 JS、零构建（保持单进程单镜像）。历史存浏览器 `localStorage`、随请求回传给模型做
-**对话上下文**——无需数据库、无需账号、不采集任何用户信息（对公开 demo 更安全）。
+`styles.css`），原生 JS、零构建（保持单进程单镜像）。历史存浏览器 `localStorage`；v1 每轮独立调用
+`/ask`，对话上下文留到 v2（可与 `query_log` 关联）。
 
 ### 可观测 + 评估（差异化加分）
-- **可观测**：每次 `/ask` 落 `query_log`（Postgres，L1）→ 接 **Langfuse**（L2）。`QuerySpec` 即可审计的「推理」。
-- **评估**：版本化黄金集；**数字来自 SQL → 可精确断言**（如「无菌」必须走 `semantic_query` 而非 `ilike`）；
-  检索 recall@k / MRR；答案忠实度用 LLM-as-judge；标签稳定性用 Cohen's κ。
+- **可观测**：每次 `/ask` 落 `query_log`（Postgres，L1）✅；接 **Langfuse**（L2）留到确认需要更强 trace UX 后。
+- **评估**：版本化黄金集 v1 ✅；**数字来自 SQL → 可精确断言**（如「无菌」必须走 `semantic_query` 而非 `ilike`）；
+  检索 recall@k 已覆盖，答案忠实度用 LLM-as-judge、标签稳定性用 Cohen's κ 留到后续。
 
 ### Phase 3 — 路由 Agent（tool-calling 资本式整合）
 一个 agent 自动在 **语义检索 / 统计分析 / 实体解析** 间路由。杀手级用例：「我买了某药，这家公司安不安全？」

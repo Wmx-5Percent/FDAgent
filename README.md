@@ -20,8 +20,8 @@ guessed by the model), each result carrying the recall numbers that back it.
 - **Parse** — [sql/001_parse_drug_enforcement.sql](sql/001_parse_drug_enforcement.sql): the `raw` JSONB → 23 typed, indexed columns, documented with verbatim openFDA definitions ([sql/002](sql/002_drug_enforcement_comments.sql)).
 - **Analytics engine** — [src/analytics.py](src/analytics.py): safe, parameterized, read-only `count / group-by / trend / sample`, returning evidence `recall_number`s.
 - **NL→SQL layer** — [src/nl_query.py](src/nl_query.py): an LLM turns a question into a *validated* `QuerySpec` (columns/values whitelisted, schema + column comments injected) that runs through the analytics engine — so every number comes from SQL.
-- **Serving** — [src/api.py](src/api.py): a FastAPI `/ask` endpoint + a static chart UI ([web/index.html](web/index.html)) that renders each answer (bar / line / table) with the evidence recall numbers; resources are warmed once at startup.
-- **Semantic retrieval (Path 2)** — [src/embed.py](src/embed.py) + [src/retrieval.py](src/retrieval.py): recall text embedded into a multi-source `pgvector` `embeddings` table; `/ask` routes fuzzy concepts (e.g. "pills that are too strong" → *superpotent* recalls) to vector search instead of a literal keyword match.
+- **Serving** — [src/api.py](src/api.py): a FastAPI `/ask` endpoint + a zero-build ChatGPT-style UI ([web/index.html](web/index.html), [web/app.js](web/app.js), [web/styles.css](web/styles.css)) that renders answers and evidence; resources are warmed once at startup and requests are logged to `query_log`.
+- **Hybrid retrieval (Path 2)** — [src/embed.py](src/embed.py) + [src/retrieval.py](src/retrieval.py): recall text embedded into a multi-source `pgvector` `embeddings` table; `/ask` routes fuzzy concepts (e.g. "pills that are too strong" → *superpotent* recalls) to pgvector + Postgres FTS with RRF instead of literal keyword matching.
 
 ```text
 openFDA API ─▶ src/fetch_openfda.py ─▶ Postgres (raw JSONB + parsed columns)
@@ -31,7 +31,7 @@ openFDA API ─▶ src/fetch_openfda.py ─▶ Postgres (raw JSONB + parsed colu
                                        web/index.html (chart + evidence)
 ```
 
-**Next:** the hybrid keyword half (Postgres FTS + RRF), a ChatGPT-style chat UI, and an eval harness — see [PROGRESS.md](PROGRESS.md).
+**Next:** per-item retrieval validation, semantic counting, and the agentic capstone — see [PROGRESS.md](PROGRESS.md).
 
 ---
 
