@@ -65,4 +65,8 @@ Each doc stays current by a *different* mechanism — know which, and **never du
 - **IP safety**: real company data is git-ignored and **never** committed. Only public-domain
   openFDA or synthetic data is allowed in git.
 - **Generated / rebuildable** (git-ignored): `.venv/`, `data/raw/`, `data/processed/`, vector-store files.
+- **Worktree handoff gotcha:** `.gitignore`'s `.venv/` pattern ignores a real directory, but
+  **does not ignore a `.venv` symlink**. If `git status` shows `?? .venv` and `ls -ld .venv`
+  confirms it is a symlink (e.g. to another checkout's venv), remove only the link with
+  `rm .venv` before handoff; do not remove the target venv.
 - **Secrets** live in `.env` (git-ignored); the template is [.env.example](.env.example).
