@@ -3,7 +3,8 @@
 > 本计划取代旧的"重型结构化 pipeline"思路。
 > 背景：openFDA 数据已是**半结构化**（FDA 模板提供了粗粒度字段），所以工作重心从"清洗脏数据"上移到 **检索质量 / Agent / 评估 / 部署** —— 这四块才是北美 MLE / AI Engineer JD 真正考察的。
 > 目标岗位信号：RAG、向量检索、Agentic tool-use、Evaluation、LLM 工程化、部署。
-> 最后更新：2026-06-17
+> **数据集已切到 openFDA `drug/enforcement`**（非 MRI 工单；MRI 仅作设计隐喻保留）。**实时状态以 [PROGRESS.md](PROGRESS.md) 为准**；本文是稳定路线图 + 选型。
+> 最后更新：2026-06-25
 
 ---
 
@@ -25,11 +26,11 @@
 ```mermaid
 flowchart TB
   A[data/raw/tickets.csv<br/>openFDA 半结构化] --> B[P1.5 可选: 富化层<br/>LLM 抽工程级 taxonomy]
-  B --> C[(SQLite/DuckDB<br/>结构化字段)]
-  A --> D[P1: 切块 + Embedding]
-  D --> E[(向量库<br/>Chroma/pgvector)]
+  B --> C[(PostgreSQL<br/>结构化字段)]
+  A --> D[P1: 嵌入<br/>reason/product 字段]
+  D --> E[(pgvector<br/>recall_embeddings)]
   C --> F[P2: 分析工具<br/>NL→SQL]
-  E --> G[P1: 混合检索<br/>BM25+dense+metadata]
+  E --> G[P1: 混合检索<br/>向量+FTS+元数据]
   G --> H[P3: 路由 Agent<br/>tool-calling]
   F --> H
   H --> I[P5: FastAPI + UI + Docker]
@@ -43,25 +44,29 @@ flowchart TB
 
 ## 2. 技术选型总表（务实、低成本、可上线）
 
+> 图例：✅ 已落地　🔜 已定·待建
+
 | 层 | 选型 | 备选 | 为什么 |
 | --- | --- | --- | --- |
-| 语言 | **Python 3.11** | — | 与你技能一致、生态最全 |
-| LLM（抽取/富化） | **gpt-4o-mini** | gpt-4.1-mini / Llama-3.1-8B(本地) | 便宜、够用、批量任务首选 |
-| LLM（Agent推理） | **gpt-4o** | gpt-4.1 / Claude | 复杂 routing/分析用强模型 |
-| Embedding | **text-embedding-3-small** (1536维) | -3-large / bge-small(本地免费) | 性价比最高；要省钱可换本地 |
-| 向量库 | **Chroma**（本地起步） | pgvector(Supabase) / FAISS / Qdrant | 零配置、本地可跑；上线再换 pgvector |
-| 关键词检索 | **rank-bm25** | Postgres FTS / Elasticsearch | 混合检索的稀疏分支，纯本地 |
-| 重排 Rerank | **bge-reranker-base**(本地) | Cohere Rerank API | 提升 top-k 精度，本地免费 |
-| 结构化数据 | **SQLite**（或 DuckDB） | Postgres | 分析查询用；DuckDB 更适合聚合 |
-| 结构化输出 | **Pydantic v2 + OpenAI structured output** | Instructor 库 | schema 校验、防 LLM 漂移 |
-| 重试/限流 | **tenacity** | 自写 backoff | 指数退避、稳态批处理 |
-| Agent 框架 | **OpenAI function calling 原生** | LangGraph(可选进阶) | 先用原生，别一上来上重框架 |
-| 评估 | **scikit-learn + 自写 harness** | ragas / promptfoo | recall@k、F1、κ、faithfulness |
-| 后端 | **FastAPI + uvicorn** | Flask | 异步、自动文档、业界标配 |
-| 前端 | **Streamlit**（快） | Next.js(更像产品) | demo 用 Streamlit 最快出活 |
-| 容器 | **Docker** | — | 部署一致性、简历必备 |
-| 托管 | **Hugging Face Spaces**（免费） | Render / Fly.io / Railway | 免费挂 live demo 给招聘官点 |
-| 实验追踪(可选) | **Weights & Biases** | MLflow | 记录 eval 结果，加分 |
+| 语言 | ✅ **Python 3.13** | — | 与你技能一致、生态最全 |
+| LLM（NL→QuerySpec / Agent 推理） | ✅ **gpt-4o-mini**（`OPENAI_MODEL` 可调） | gpt-4o / gpt-4.1 / Claude | 受约束 spec 生成够用又便宜；复杂 routing 可临时升级 |
+| Embedding | 🔜 **text-embedding-3-small**（1536 维） | -3-large / bge-small(本地免费) | 性价比最高；药品文本纯英文够用，~$0.05 |
+| 向量库 | ✅ **pgvector**（Postgres 内） | Chroma / FAISS / Qdrant | 一个库搞定结构化 + 向量，无需额外服务 |
+| 关键词检索 | 🔜 **Postgres 全文检索（FTS, `ts_rank`）** | pg_search(真 BM25) / rank-bm25 / ES | v1 留在 Postgres、带词干化；FTS 召回不够再上真 BM25 |
+| 混合融合 | 🔜 **RRF**（Reciprocal Rank Fusion） | 加权和 | 无需调权重，简单稳健 |
+| 重排 / 校验 | 🔜 **LLM 逐条判定 + 证据片段** | bge-reranker / Cohere | 与“逐条校验”层合并；高精度 + 可解释 |
+| 结构化数据 | ✅ **PostgreSQL**（Postgres.app 17） | SQLite / DuckDB / Snowflake | 同库承载向量；生产可换 Snowflake |
+| 结构化输出 | ✅ **Pydantic v2 + OpenAI structured output** | Instructor 库 | schema 校验、防 LLM 漂移 |
+| 重试 / 限流 | **tenacity** | 自写 backoff | 指数退避、稳态批处理 |
+| Agent 框架 | 🔜 **OpenAI function calling 原生** | LangGraph（进阶可选） | 先用原生，别一上来上重框架 |
+| 实体解析（Phase 3） | 🔜 **pg_trgm 模糊 + 已知子公司展开 + LLM 核验** | fuzzystrmatch / dedupe | firm 名碎片化（1,634 个）；名变体 + 子公司需归并 |
+| 评估 | 🔜 **自写 harness + 版本化黄金集** | ragas / promptfoo | 数字来自 SQL → 可精确断言；模糊维度才用 LLM-judge |
+| 可观测 / 追踪 | 🔜 **query_log（Postgres, L1）→ Langfuse（L2）** | Phoenix / Helicone / OTel | 每次 /ask 一条 trace，`QuerySpec` 即可审计推理；自建表兼作 eval 数据集 |
+| 后端 | ✅ **FastAPI + uvicorn** | Flask | 异步、自动文档、业界标配 |
+| 前端 | ✅ **静态 HTML + Chart.js（FastAPI 托管）** | Streamlit / Next.js | 单进程单镜像、零构建步骤 |
+| 容器 | ✅ **Docker**（镜像源参数化、密钥运行时注入） | — | 部署一致性、简历必备 |
+| 托管（公开部署） | 🔜 **Hugging Face Spaces**（免费） | Render / Fly.io / Railway | 免费挂 live demo |
+| 数据库（公开部署） | 🔜 **Supabase / Neon**（自带 pgvector） | RDS | 云容器连不到本机 localhost，需托管库 |
 
 > **省钱模式**：embedding 用本地 `bge-small`，LLM 用本地 `Llama-3.1-8B`（Ollama），全程 0 API 费用。但起步建议用 OpenAI（快、省心），2000 条成本仅几美元（见 §9）。
 

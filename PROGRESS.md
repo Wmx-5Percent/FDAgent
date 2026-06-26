@@ -11,8 +11,8 @@
 A deployed, demoable agent that answers natural-language questions about FDA drug recalls with **evidence-backed** results — **Path 1**: deterministic NL→SQL analytics (frequencies / trends / distributions, every number from SQL); **Path 2** (later): hybrid semantic retrieval for ad-hoc questions; served via FastAPI + a small UI, with an eval harness. Reproduces an industry LLM ticket-intelligence pipeline on 100% public-domain data (portfolio for NA AI/ML roles). Full roadmap in [PLAN.md](PLAN.md).
 
 ## Now
-- **State:** Path 1 is now **served end-to-end** — data foundation + deterministic analytics + NL→SQL + a FastAPI `/ask` endpoint and a static Chart.js UI. The LLM only picks the query *shape*; every number comes from SQL, carrying evidence recall numbers.
-- ▶️ **Next action:** Path 2 (ad-hoc questions) — chunk `reason_for_recall` / `product_description` → embed into pgvector → hybrid retrieval + LLM per-row verify, for questions the analytics engine can't answer.
+- **State:** Path 1 is **served + containerized** (FastAPI `/ask` + static Chart.js UI + Docker). The LLM only picks the query *shape*; every number comes from SQL with evidence recall numbers. Path 2 (semantic retrieval), observability, and the agentic capstone are now **planned with decisions settled** (see *Next up* + *Decisions*).
+- ▶️ **Next action:** Path 2 slice **2.1** — `sql/003` `recall_embeddings` table + `src/embed.py` (embed `reason_for_recall` + `product_description` as two rows/recall, `text-embedding-3-small`, incremental re-embed).
 
 ## Works now (verified)
 1. **Ingest** — [src/fetch_openfda.py](src/fetch_openfda.py): generic openFDA→Postgres, idempotent JSONB upsert, `--since auto` incremental.
@@ -28,9 +28,21 @@ A deployed, demoable agent that answers natural-language questions about FDA dru
 11. **Containerized (local)** — [Dockerfile](Dockerfile) (lean serving image; base-registry + PyPI mirrors are build-args) + [.dockerignore](.dockerignore) + [requirements-serve.txt](requirements-serve.txt). `docker run` serves `/ask` + UI, reaching host Postgres via `host.docker.internal`. Verified.
 
 ## Next up (ordered)
-1. **Path 2 (ad-hoc questions)** — chunk `reason_for_recall` / `product_description` → embed into pgvector → hybrid retrieval + LLM per-row verify.
-2. **Eval harness** — recall@k + answer correctness on a small hand-labeled golden set.
-3. **Public deploy (optional)** — the local Docker image works; to go public, push the image to a host (Hugging Face Spaces / Render / Fly.io) **and** point it at a managed Postgres + pgvector (Supabase / Neon) with the data loaded — a cloud container can't reach `localhost` / `host.docker.internal`.
+**Path 2 — hybrid semantic retrieval** (fixes the literal-`ilike` gap so `sterility-related` stops missing `microbial contamination` etc.):
+1. **2.1 Embedding foundation (offline)** — `sql/003` creates `recall_embeddings(recall_number, field, content, content_hash, embedding vector(1536), content_tsv)` + HNSW + GIN; `src/embed.py` batch-embeds `reason_for_recall` **and** `product_description` as TWO ROWS per recall (`text-embedding-3-small`, ~$0.05), with idempotent **incremental re-embed** (only new/changed text, like `--since auto`).
+2. **2.2 Hybrid retrieval engine (online)** — `src/retrieval.py`: hard-filter (reuse `QuerySpec.filters`) → candidates → vector `<=>` ⊕ Postgres FTS `ts_rank` fused via **RRF** → top-K.
+3. **2.3 Router + NL integration** — add `semantic_query` to `QuerySpec`; concepts route to retrieval (no more `ilike`); `sample` → ranked rows (default top-10).
+4. **2.4 Per-item validation** — LLM yes/no + supporting snippet + threshold; **semantic counting** lands here (estimate + confidence).
+5. **2.5 Serve + UI** — `/ask` returns a ranked list (relevance + snippet + recall_number); UI renders it.
+
+**Observability + eval** (stop it being a black box):
+6. **`query_log` (L1, Postgres)** — persist every `/ask`: trace_id / question / spec(jsonb) / sql / row_count / latency / tokens / cost / repaired (doubles as the eval dataset + audit). Then wire **Langfuse** (L2) for the trace UI + eval experiments.
+7. **Eval harness** — versioned golden set; deterministic asserts where numbers come from SQL (e.g. `sterility-related` MUST emit `semantic_query`, not `ilike`); recall@k for retrieval; LLM-as-judge for faithfulness.
+
+**Phase 3 — agentic capstone** ("is this company safe?"):
+8. **Firm entity-resolution + tool-calling agent** — a consumer's brand → parent company `[inferred]` → DB `recalling_firm` set (`pg_trgm` fuzzy + known-subsidiary expansion + LLM verify) → existing analytics engine → answer separating `[inferred]` from `[fact]`. Built AFTER Path 2 (reuses its embeddings/retrieval).
+
+**Public deploy (optional)** — local Docker works; to go public, push the image to a host (HF Spaces / Render / Fly.io) **and** point it at a managed Postgres + pgvector (Supabase / Neon) with data loaded — a cloud container can't reach `localhost`.
 
 ## Blockers & gotchas
 - ⚠️ **The venv is not relocatable** — it broke once after the folder was renamed (`find-jobs/ticket agent` → `fdaAgent`); recreated. Always run `.venv/bin/python …`, or re-`source .venv/bin/activate` after any move.
@@ -47,3 +59,10 @@ A deployed, demoable agent that answers natural-language questions about FDA dru
 - **One store = Postgres + pgvector** — no separate vector DB.
 - **MCP is read-only; schema changes go through versioned `sql/` scripts**, not ad-hoc writes.
 - **Column docs = verbatim openFDA text**; anything not from openFDA is marked `[inferred]`.
+- **Path 2 retrieval = hybrid, in Postgres** — pgvector (semantic) ⊕ Postgres FTS `ts_rank` (keyword) fused via RRF. True BM25 (`pg_search`) only if FTS recall proves insufficient.
+- **Embeddings = `text-embedding-3-small` (1536-d)** in a separate `recall_embeddings` table, **one row per (recall, field)** for both `reason_for_recall` and `product_description` — NOT extra columns on `drug_enforcement` (one HNSW index covers all fields; new fields need no migration). Incremental re-embed only new/changed text.
+- **Concepts route via `semantic_query`, never `ilike`** — hard facts go in `filters` (Tier-A columns), fuzzy concepts in `semantic_query`.
+- **Semantic counting is an estimate** — deferred to validation (2.4): retrieve-above-threshold → per-item verify → count + confidence. v1 retrieval returns top-K only.
+- **Observability before scale** — `query_log` (Postgres, L1) first, then Langfuse (L2); every `/ask` is a trace and the `QuerySpec` is the materialized, inspectable "reasoning".
+- **"Is this company safe?" = Phase 3 capstone, after Path 2** — brand→parent is `[inferred]` (LLM / Wikidata / NDC labeler, marked + confirmable); company→`recalling_firm` is entity resolution (`pg_trgm` fuzzy + known-subsidiary expansion + LLM verify), since firms are fragmented (1,634 distinct; Pfizer/Teva/McNeil appear under many names/subsidiaries).
+- **Cosmetics ≈ out of scope** — openFDA has cosmetic *adverse events* (`/food/event`), not a clean recall endpoint; the architecture generalizes to `device`/`food/enforcement` (same firm structure).
