@@ -26,7 +26,7 @@ A deployed, demoable agent that answers natural-language questions about FDA dru
 9. **Read-only DB MCP** — `postgres-fda` ([.vscode/mcp.json](.vscode/mcp.json), restricted mode).
 10. **Skills** — under [.github/skills/](.github/skills/): db-column-docs-from-dictionary, openfda-data-download, skill-writing, learning-session-notes.
 11. **Containerized (local)** — [Dockerfile](Dockerfile) (lean serving image; base-registry + PyPI mirrors are build-args) + [.dockerignore](.dockerignore) + [requirements-serve.txt](requirements-serve.txt). `docker run` serves `/ask` + UI, reaching host Postgres via `host.docker.internal`. Verified.
-12. **Path 2 — semantic retrieval wired into `/ask` (2.1 + 2.3)** — [sql/003_recall_embeddings.sql](sql/003_recall_embeddings.sql) + [src/embed.py](src/embed.py) (35,446 vectors) + [src/retrieval.py](src/retrieval.py) (vector search, filter-aware); [src/nl_query.py](src/nl_query.py) routes `semantic_query` (concepts → retrieval, never `ilike`), rendered as a ranked list in the UI. Hybrid (FTS + RRF) is the remaining **2.2** increment.
+12. **Path 2 — semantic retrieval wired into `/ask` (2.1 + 2.3)** — multi-source `embeddings` table ([sql/003](sql/003_recall_embeddings.sql) + [sql/004](sql/004_embeddings_multisource.sql), keyed `(source, source_id, field)`) + [src/embed.py](src/embed.py) (`SOURCES` registry; 35,446 vectors) + [src/retrieval.py](src/retrieval.py) (vector search, filter-aware); [src/nl_query.py](src/nl_query.py) routes `semantic_query` (concepts → retrieval, never `ilike`), rendered as a ranked list in the UI. Hybrid (FTS + RRF) is the remaining **2.2** increment.
 
 ## Next up (ordered)
 **Path 2 — hybrid semantic retrieval** (fixes the literal-`ilike` gap so `sterility-related` stops missing `microbial contamination` etc.):
@@ -61,7 +61,7 @@ A deployed, demoable agent that answers natural-language questions about FDA dru
 - **MCP is read-only; schema changes go through versioned `sql/` scripts**, not ad-hoc writes.
 - **Column docs = verbatim openFDA text**; anything not from openFDA is marked `[inferred]`.
 - **Path 2 retrieval = hybrid, in Postgres** — pgvector (semantic) ⊕ Postgres FTS `ts_rank` (keyword) fused via RRF. True BM25 (`pg_search`) only if FTS recall proves insufficient.
-- **Embeddings = `text-embedding-3-small` (1536-d)** in a separate `recall_embeddings` table, **one row per (recall, field)** for both `reason_for_recall` and `product_description` — NOT extra columns on `drug_enforcement` (one HNSW index covers all fields; new fields need no migration). Incremental re-embed only new/changed text.
+- **Embeddings = `text-embedding-3-small` (1536-d)** in a separate, **multi-source** `embeddings` table keyed `(source, source_id, field)` — one row per (record, field), e.g. `drug_enforcement` × {reason_for_recall, product_description} — NOT extra columns on the source table. One HNSW + one GIN index cover all sources/fields; adding an FDA dataset = one `SOURCES` entry in `embed.py` (no schema change). Incremental re-embed only new/changed text.
 - **Concepts route via `semantic_query`, never `ilike`** — hard facts go in `filters` (Tier-A columns), fuzzy concepts in `semantic_query`.
 - **Semantic counting is an estimate** — deferred to validation (2.4): retrieve-above-threshold → per-item verify → count + confidence. v1 retrieval returns top-K only.
 - **Observability before scale** — `query_log` (Postgres, L1) first, then Langfuse (L2); every `/ask` is a trace and the `QuerySpec` is the materialized, inspectable "reasoning".

@@ -1,4 +1,4 @@
-"""Semantic (vector) retrieval over recall_embeddings — Path 2 / slice 2.2 (v1: vector core).
+"""Semantic (vector) retrieval over the `embeddings` table — Path 2 / slice 2.2 (v1: vector core).
 
 Embeds a natural-language query with text-embedding-3-small and returns the nearest recalls by
 cosine distance (pgvector HNSW), joined back to drug_enforcement for metadata + evidence. This
@@ -55,39 +55,42 @@ def embed_query(client: OpenAI, text: str) -> list[float]:
 
 def search(conn: psycopg.Connection, client: OpenAI, query: str, *,
            k: int = 10, field: str = "reason_for_recall",
-           filters: Sequence[Filter] = ()) -> list[Hit]:
-    """Nearest recalls to ``query`` by cosine distance, optionally pre-filtered by hard
-    constraints (Tier-A columns on drug_enforcement). field='both' dedupes to one row/recall."""
+           filters: Sequence[Filter] = (), source: str = "drug_enforcement") -> list[Hit]:
+    """Nearest records to ``query`` by cosine distance, optionally pre-filtered by hard
+    constraints (Tier-A columns on the source table). field='both' dedupes to one row/record.
+    ``source`` selects the dataset; v1 enriches from drug_enforcement (one source)."""
     qvec = _vec_literal(embed_query(client, query))
-    fconds, fparams = _conditions(filters)  # conditions on the joined drug_enforcement (d)
+    fconds, fparams = _conditions(filters)  # conditions on the joined source table (d)
     if field == "both":
-        # search every field, keep the best-matching row per recall (exact scan; fine at ~35k).
-        where = (sql.SQL(" WHERE ") + sql.SQL(" AND ").join(fconds)) if fconds else sql.SQL("")
+        # search every field, keep the best-matching row per record (exact scan; fine at ~35k).
+        conds = [sql.SQL("e.source = %s"), *fconds]
+        where = sql.SQL(" WHERE ") + sql.SQL(" AND ").join(conds)
         q = sql.SQL(
             "SELECT recall_number, field, dist, content, recalling_firm, classification FROM ("
-            "  SELECT DISTINCT ON (e.recall_number)"
-            "         e.recall_number, e.field, (e.embedding <=> %s::vector) AS dist,"
+            "  SELECT DISTINCT ON (e.source_id)"
+            "         e.source_id AS recall_number, e.field, (e.embedding <=> %s::vector) AS dist,"
             "         e.content, d.recalling_firm, d.classification"
-            "  FROM recall_embeddings e"
-            "  JOIN drug_enforcement d ON d.recall_number = e.recall_number"
+            "  FROM embeddings e"
+            "  JOIN drug_enforcement d ON d.recall_number = e.source_id"
             "  {where}"
-            "  ORDER BY e.recall_number, dist"
+            "  ORDER BY e.source_id, dist"
             ") s ORDER BY s.dist LIMIT %s"
         ).format(where=where)
-        params: list = [qvec, *fparams, k]
+        params: list = [qvec, source, *fparams, k]
     else:
         # single field -> uses the HNSW index (ORDER BY <=> ... LIMIT).
-        where = sql.SQL(" WHERE ") + sql.SQL(" AND ").join([sql.SQL("e.field = %s"), *fconds])
+        conds = [sql.SQL("e.source = %s"), sql.SQL("e.field = %s"), *fconds]
+        where = sql.SQL(" WHERE ") + sql.SQL(" AND ").join(conds)
         q = sql.SQL(
-            "SELECT e.recall_number, e.field, (e.embedding <=> %s::vector) AS dist,"
+            "SELECT e.source_id, e.field, (e.embedding <=> %s::vector) AS dist,"
             "       e.content, d.recalling_firm, d.classification"
-            "  FROM recall_embeddings e"
-            "  JOIN drug_enforcement d ON d.recall_number = e.recall_number"
+            "  FROM embeddings e"
+            "  JOIN drug_enforcement d ON d.recall_number = e.source_id"
             "  {where}"
             "  ORDER BY e.embedding <=> %s::vector"
             "  LIMIT %s"
         ).format(where=where)
-        params = [qvec, field, *fparams, qvec, k]
+        params = [qvec, source, field, *fparams, qvec, k]
     with conn.cursor() as cur:
         cur.execute(q, params)
         return [Hit(*r) for r in cur.fetchall()]

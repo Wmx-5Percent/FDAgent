@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-06-26T02:30Z · 30 files
+> Last generated: 2026-06-26T03:05Z · 31 files
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -37,19 +37,20 @@
 - [`sql/001_parse_drug_enforcement.sql`](sql/001_parse_drug_enforcement.sql) — Parse drug_enforcement.raw (JSONB) into typed, indexed columns.
 - [`sql/002_drug_enforcement_comments.sql`](sql/002_drug_enforcement_comments.sql) — Column documentation for drug_enforcement.
 - [`sql/003_recall_embeddings.sql`](sql/003_recall_embeddings.sql) — Create recall_embeddings: per-(recall, field) text vectors + FTS for Path 2 hybrid retrieval.
+- [`sql/004_embeddings_multisource.sql`](sql/004_embeddings_multisource.sql) — Generalize recall_embeddings -> embeddings for MULTIPLE data sources (Path 2).
 
 ## src/
 - [`src/analytics.py`](src/analytics.py) — Deterministic frequency/aggregation query engine over drug_enforcement.
   - symbols: `Kind`, `Filter`, `Group`, `RecallAnalytics`
 - [`src/api.py`](src/api.py) — FastAPI service exposing the deterministic NL->SQL analytics engine (Path 1, serving half).
   - symbols: `lifespan`, `AskRequest`, `serialize_answer`, `health`, `ask_endpoint`, `index`
-- [`src/embed.py`](src/embed.py) — Embed drug_enforcement text fields into recall_embeddings (Path 2, offline half).
+- [`src/embed.py`](src/embed.py) — Embed FDA source text fields into the shared `embeddings` table (Path 2, offline half).
   - symbols: `run`, `parse_args`
 - [`src/fetch_openfda.py`](src/fetch_openfda.py) — Generic openFDA -> PostgreSQL ingester.
   - symbols: `parse_fda_date`, `record_id`, `fda_date_str`, `fetch_page`, `ensure_table`, `upsert_rows`, `max_report_date`, `build_search`, `run`, `parse_args`
 - [`src/nl_query.py`](src/nl_query.py) — Natural-language front-end for the deterministic analytics engine.
   - symbols: `Intent`, `Op`, `FilterSpec`, `QuerySpec`, `Answer`, `build_schema_context`, `generate_spec`, `run_spec`, `summarize`, `NLEngine`, `ask`
-- [`src/retrieval.py`](src/retrieval.py) — Semantic (vector) retrieval over recall_embeddings — Path 2 / slice 2.2 (v1: vector core).
+- [`src/retrieval.py`](src/retrieval.py) — Semantic (vector) retrieval over the `embeddings` table — Path 2 / slice 2.2 (v1: vector core).
   - symbols: `Hit`, `embed_query`, `search`, `parse_args`, `main`
 
 ## web/
