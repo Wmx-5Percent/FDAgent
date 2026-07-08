@@ -52,6 +52,23 @@
       }
     },
     {
+      "id": "fuzzy-sterility-count",
+      "kind": "ask",
+      "question": "How many sterility recalls?",
+      "assert": {
+        "route": "semantic",
+        "intents": ["count_total"],
+        "data_kinds": ["semantic_count"],
+        "no_ilike": true,
+        "semantic_query_contains_any": ["sterility", "sterile"],
+        "requires_estimate": true,
+        "min_estimated_count": 1,
+        "min_verified_count": 1,
+        "requires_confidence": true,
+        "requires_evidence": true
+      }
+    },
+    {
       "id": "retrieval-glass-particles",
       "kind": "retrieval_recall",
       "query": "glass particles in drug vials",

@@ -27,6 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # allow `import nl_query` under uvicorn
+import validation  # noqa: E402
 from nl_query import Answer, Intent, NLEngine  # noqa: E402
 from observability import QueryLogEntry, QueryLogger, response_metadata  # noqa: E402
 
@@ -84,13 +85,65 @@ def serialize_answer(ans: Answer) -> dict[str, Any]:
         "spec": spec.model_dump(exclude_none=True),
         "summary": ans.summary,
     }
-    if spec.semantic_query:  # concept query -> ranked semantic hits
+    if isinstance(ans.result, validation.SemanticCountResult):
+        result = ans.result
+        accepted = [item for item in result.validations if item.accepted]
+        evidence_items = [
+            {
+                "recall_number": item.hit.recall_number,
+                "field": item.hit.field,
+                "retrieval_score": round(item.hit.retrieval_score, 3),
+                "rrf_score": round(item.hit.rrf_score, 4),
+                "similarity": round(item.hit.similarity, 3),
+                "validation_confidence": round(item.validation.confidence, 3),
+                "supporting_snippet": item.validation.supporting_snippet,
+                "rationale": item.validation.rationale,
+                "content": item.hit.content,
+                "recalling_firm": item.hit.recalling_firm,
+                "classification": item.hit.classification,
+            }
+            for item in accepted
+        ]
+        base_data: dict[str, Any] = {
+            "query": result.query,
+            "estimated_count": result.estimated_count,
+            "confidence_interval": result.confidence_interval,
+            "confidence": result.confidence,
+            "verified_count": result.verified_count,
+            "candidate_count": result.candidate_count,
+            "validated_count": result.validated_count,
+            "retrieval_pool_count": result.retrieval_pool_count,
+            "verified_ratio": (
+                result.verified_count / result.validated_count
+                if result.validated_count else 0.0
+            ),
+            "verified": f"{result.verified_count}/{result.validated_count}",
+            "thresholds": result.thresholds,
+            "evidence": list(result.evidence),
+            "evidence_items": evidence_items,
+        }
+        if result.group_by:
+            payload["data"] = {
+                **base_data,
+                "kind": "semantic_distribution",
+                "dimension": result.group_by,
+                "items": [
+                    {"value": _json_safe(g.value), "count": g.count, "evidence": list(g.evidence)}
+                    for g in result.groups
+                ],
+            }
+        else:
+            payload["data"] = {**base_data, "kind": "semantic_count"}
+    elif spec.semantic_query:  # concept query -> ranked semantic hits
         payload["data"] = {
             "kind": "retrieval",
             "query": spec.semantic_query,
             "items": [
                 {"recall_number": h.recall_number, "field": h.field,
-                 "similarity": round(h.similarity, 3), "content": h.content,
+                 "similarity": round(h.similarity, 3),
+                 "retrieval_score": round(h.retrieval_score, 3),
+                 "rrf_score": round(h.rrf_score, 4),
+                 "content": h.content,
                  "recalling_firm": h.recalling_firm, "classification": h.classification}
                 for h in ans.result
             ],

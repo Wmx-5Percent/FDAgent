@@ -82,6 +82,35 @@ def _assert_no_ilike(spec: Mapping[str, Any]) -> None:
     _require(not offenders, f"expected no ilike filters, got {offenders}")
 
 
+def _assert_semantic_count(assertions: Mapping[str, Any], data: Mapping[str, Any]) -> None:
+    if assertions.get("requires_estimate"):
+        _require(isinstance(data.get("estimated_count"), int),
+                 "expected integer data.estimated_count")
+    if "min_estimated_count" in assertions:
+        value = data.get("estimated_count")
+        _require(isinstance(value, int),
+                 f"min_estimated_count requires integer estimated_count, got {value!r}")
+        _require(value >= int(assertions["min_estimated_count"]),
+                 f"expected estimated_count >= {assertions['min_estimated_count']}, got {value}")
+    if "min_verified_count" in assertions:
+        value = data.get("verified_count")
+        _require(isinstance(value, int),
+                 f"min_verified_count requires integer verified_count, got {value!r}")
+        _require(value >= int(assertions["min_verified_count"]),
+                 f"expected verified_count >= {assertions['min_verified_count']}, got {value}")
+    if assertions.get("requires_confidence"):
+        confidence = data.get("confidence")
+        interval = data.get("confidence_interval")
+        thresholds = data.get("thresholds")
+        _require(isinstance(confidence, Mapping), "expected data.confidence object")
+        _require(isinstance(interval, Mapping), "expected data.confidence_interval object")
+        _require(isinstance(thresholds, Mapping), "expected data.thresholds object")
+    if assertions.get("requires_evidence"):
+        evidence = data.get("evidence")
+        _require(isinstance(evidence, list) and bool(evidence),
+                 "expected non-empty data.evidence list")
+
+
 def _assert_ask_case(case: Mapping[str, Any], answer: Mapping[str, Any]) -> EvalResult:
     assertions = case.get("assert") or {}
     _require(isinstance(assertions, Mapping), "ask case assert must be an object")
@@ -102,6 +131,8 @@ def _assert_ask_case(case: Mapping[str, Any], answer: Mapping[str, Any]) -> Eval
                  f"expected data.kind in {expected_kinds}, got {data_kind!r}")
     if assertions.get("no_ilike"):
         _assert_no_ilike(spec)
+    if data_kind in {"semantic_count", "semantic_distribution"}:
+        _assert_semantic_count(assertions, data)
 
     if "value_equals" in assertions:
         _require(data_kind == "scalar",

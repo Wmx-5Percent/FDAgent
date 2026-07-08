@@ -96,10 +96,17 @@ def response_metadata(response: Mapping[str, Any], *, model: str | None = None) 
     count_fields = {
         "retrieval": "items",
         "distribution": "items",
+        "semantic_count": "evidence_items",
+        "semantic_distribution": "items",
         "series": "points",
         "rows": "rows",
     }
     field = count_fields.get(str(data_kind))
     if field and isinstance(data.get(field), list):
         metadata["result_count"] = len(data[field])
+    if str(data_kind) in {"semantic_count", "semantic_distribution"}:
+        for key in ("estimated_count", "verified_count", "validated_count", "candidate_count"):
+            value = data.get(key)
+            if isinstance(value, int):
+                metadata[key] = value
     return metadata
