@@ -19,15 +19,16 @@ from typing import Any, Optional, Sequence
 
 import psycopg
 from dotenv import load_dotenv
-from openai import OpenAI
 from psycopg import sql
 
+import llm
 # reuse the whitelisted filter -> SQL builder so hybrid search can honor hard filters
 from analytics import Filter, _conditions
 
 load_dotenv()
 DEFAULT_DSN = os.environ.get("DATABASE_URL", "postgresql://localhost:5432/fda")
-EMBED_MODEL = os.environ.get("OPENAI_EMBED_MODEL", "text-embedding-3-small")
+EMBED_MODEL = os.environ.get("EMBED_MODEL") or os.environ.get("OPENAI_EMBED_MODEL") \
+    or llm.DEFAULT_EMBED_MODEL
 FIELDS = ("reason_for_recall", "product_description", "both")
 RRF_K = 60
 MIN_CANDIDATES = 50
@@ -43,6 +44,10 @@ class Hit:
     recalling_firm: Optional[str]
     classification: Optional[str]
     rrf_score: float = 0.0
+    score: float = 0.0
+    score_kind: str = "similarity"
+    retrieval_mode: str = "hybrid"
+    embedding_fallback_reason: Optional[str] = None
 
     @property
     def similarity(self) -> float:
@@ -50,7 +55,7 @@ class Hit:
 
     @property
     def retrieval_score(self) -> float:
-        return self.similarity
+        return self.score if self.score > 0 else self.similarity
 
 
 @dataclass(frozen=True)
@@ -61,14 +66,15 @@ class _Candidate:
     content: str
     recalling_firm: Optional[str]
     classification: Optional[str]
+    rank_score: float = 0.0
 
 
 def _vec_literal(vec: Sequence[float]) -> str:
     return "[" + ",".join(repr(float(x)) for x in vec) + "]"
 
 
-def embed_query(client: OpenAI, text: str) -> list[float]:
-    return client.embeddings.create(model=EMBED_MODEL, input=[text]).data[0].embedding
+def embed_query(client: Any, config: llm.EmbeddingConfig, text: str) -> list[float]:
+    return llm.embed_text(client, config, text)
 
 
 def _candidate_limit(k: int) -> int:
@@ -80,17 +86,21 @@ def _where(conds: Sequence[sql.Composable]) -> sql.Composable:
 
 
 def _rows_to_candidates(rows: Sequence[tuple[Any, ...]]) -> list[_Candidate]:
-    return [
-        _Candidate(
+    out: list[_Candidate] = []
+    for r in rows:
+        distance = float(r[2] if r[2] is not None else 1.0)
+        default_score = max(0.0, 1.0 - distance)
+        rank_score = float(r[6]) if len(r) > 6 and r[6] is not None else default_score
+        out.append(_Candidate(
             recall_number=r[0],
             field=r[1],
-            distance=float(r[2] if r[2] is not None else 1.0),
+            distance=distance,
             content=r[3],
             recalling_firm=r[4],
             classification=r[5],
-        )
-        for r in rows
-    ]
+            rank_score=rank_score,
+        ))
+    return out
 
 
 def _vector_candidates(conn: psycopg.Connection, qvec: str, *, source: str, field: str,
@@ -136,44 +146,79 @@ def _vector_candidates(conn: psycopg.Connection, qvec: str, *, source: str, fiel
         return _rows_to_candidates(cur.fetchall())
 
 
-def _fts_candidates(conn: psycopg.Connection, query: str, qvec: str, *, source: str, field: str,
-                    filters: Sequence[Filter], limit: int) -> list[_Candidate]:
+def _fts_candidates(conn: psycopg.Connection, query: str, qvec: str | None, *, source: str,
+                    field: str, filters: Sequence[Filter], limit: int) -> list[_Candidate]:
     fconds, fparams = _conditions(filters)  # conditions on the joined source table (d)
     if field == "both":
         conds = [sql.SQL("e.source = %s"), *fconds]
         where = _where(conds)
-        q = sql.SQL(
-            "WITH q AS (SELECT websearch_to_tsquery('english', %s) AS tsq) "
-            "SELECT source_id, field, dist, content, recalling_firm, classification FROM ("
-            "  SELECT DISTINCT ON (e.source_id)"
-            "         e.source_id, e.field,"
-            "         COALESCE(e.embedding <=> %s::vector, 1.0) AS dist,"
-            "         e.content, d.recalling_firm, d.classification,"
-            "         ts_rank_cd(e.content_tsv, q.tsq) AS fts_rank"
-            "  FROM q"
-            "  JOIN embeddings e ON e.content_tsv @@ q.tsq"
-            "  JOIN drug_enforcement d ON d.recall_number = e.source_id"
-            "  {where}"
-            "  ORDER BY e.source_id, fts_rank DESC, dist"
-            ") s ORDER BY s.fts_rank DESC, s.dist LIMIT %s"
-        ).format(where=where)
-        params: list = [query, qvec, source, *fparams, limit]
+        if qvec is None:
+            q = sql.SQL(
+                "WITH q AS (SELECT websearch_to_tsquery('english', %s) AS tsq) "
+                "SELECT source_id, field, dist, content, recalling_firm, classification, fts_rank "
+                "FROM ("
+                "  SELECT DISTINCT ON (e.source_id)"
+                "         e.source_id, e.field, 1.0 AS dist,"
+                "         e.content, d.recalling_firm, d.classification,"
+                "         ts_rank_cd(e.content_tsv, q.tsq) AS fts_rank"
+                "  FROM q"
+                "  JOIN embeddings e ON e.content_tsv @@ q.tsq"
+                "  JOIN drug_enforcement d ON d.recall_number = e.source_id"
+                "  {where}"
+                "  ORDER BY e.source_id, fts_rank DESC"
+                ") s ORDER BY s.fts_rank DESC LIMIT %s"
+            ).format(where=where)
+            params: list = [query, source, *fparams, limit]
+        else:
+            q = sql.SQL(
+                "WITH q AS (SELECT websearch_to_tsquery('english', %s) AS tsq) "
+                "SELECT source_id, field, dist, content, recalling_firm, classification, fts_rank "
+                "FROM ("
+                "  SELECT DISTINCT ON (e.source_id)"
+                "         e.source_id, e.field,"
+                "         COALESCE(e.embedding <=> %s::vector, 1.0) AS dist,"
+                "         e.content, d.recalling_firm, d.classification,"
+                "         ts_rank_cd(e.content_tsv, q.tsq) AS fts_rank"
+                "  FROM q"
+                "  JOIN embeddings e ON e.content_tsv @@ q.tsq"
+                "  JOIN drug_enforcement d ON d.recall_number = e.source_id"
+                "  {where}"
+                "  ORDER BY e.source_id, fts_rank DESC, dist"
+                ") s ORDER BY s.fts_rank DESC, s.dist LIMIT %s"
+            ).format(where=where)
+            params = [query, qvec, source, *fparams, limit]
     else:
         conds = [sql.SQL("e.source = %s"), sql.SQL("e.field = %s"), *fconds]
         where = _where(conds)
-        q = sql.SQL(
-            "WITH q AS (SELECT websearch_to_tsquery('english', %s) AS tsq) "
-            "SELECT e.source_id, e.field,"
-            "       COALESCE(e.embedding <=> %s::vector, 1.0) AS dist,"
-            "       e.content, d.recalling_firm, d.classification"
-            "  FROM q"
-            "  JOIN embeddings e ON e.content_tsv @@ q.tsq"
-            "  JOIN drug_enforcement d ON d.recall_number = e.source_id"
-            "  {where}"
-            "  ORDER BY ts_rank_cd(e.content_tsv, q.tsq) DESC, dist"
-            "  LIMIT %s"
-        ).format(where=where)
-        params = [query, qvec, source, field, *fparams, limit]
+        if qvec is None:
+            q = sql.SQL(
+                "WITH q AS (SELECT websearch_to_tsquery('english', %s) AS tsq) "
+                "SELECT e.source_id, e.field, 1.0 AS dist,"
+                "       e.content, d.recalling_firm, d.classification,"
+                "       ts_rank_cd(e.content_tsv, q.tsq) AS fts_rank"
+                "  FROM q"
+                "  JOIN embeddings e ON e.content_tsv @@ q.tsq"
+                "  JOIN drug_enforcement d ON d.recall_number = e.source_id"
+                "  {where}"
+                "  ORDER BY fts_rank DESC"
+                "  LIMIT %s"
+            ).format(where=where)
+            params = [query, source, field, *fparams, limit]
+        else:
+            q = sql.SQL(
+                "WITH q AS (SELECT websearch_to_tsquery('english', %s) AS tsq) "
+                "SELECT e.source_id, e.field,"
+                "       COALESCE(e.embedding <=> %s::vector, 1.0) AS dist,"
+                "       e.content, d.recalling_firm, d.classification,"
+                "       ts_rank_cd(e.content_tsv, q.tsq) AS fts_rank"
+                "  FROM q"
+                "  JOIN embeddings e ON e.content_tsv @@ q.tsq"
+                "  JOIN drug_enforcement d ON d.recall_number = e.source_id"
+                "  {where}"
+                "  ORDER BY fts_rank DESC, dist"
+                "  LIMIT %s"
+            ).format(where=where)
+            params = [query, qvec, source, field, *fparams, limit]
     with conn.cursor() as cur:
         cur.execute(q, params)
         return _rows_to_candidates(cur.fetchall())
@@ -186,7 +231,8 @@ def _fusion_key(candidate: _Candidate, field: str) -> tuple[str, ...]:
 
 
 def _rrf_fuse(vector_hits: Sequence[_Candidate], fts_hits: Sequence[_Candidate], *,
-              k: int, field: str) -> list[Hit]:
+              k: int, field: str, retrieval_mode: str = "hybrid",
+              fallback_reason: str | None = None) -> list[Hit]:
     scores: dict[tuple[str, ...], float] = {}
     best: dict[tuple[str, ...], _Candidate] = {}
     best_component: dict[tuple[str, ...], float] = {}
@@ -221,14 +267,21 @@ def _rrf_fuse(vector_hits: Sequence[_Candidate], fts_hits: Sequence[_Candidate],
             recalling_firm=best[key].recalling_firm,
             classification=best[key].classification,
             rrf_score=scores[key],
+            score=best[key].rank_score if retrieval_mode == "fts_only"
+            else max(0.0, 1.0 - best[key].distance),
+            score_kind="fts_rank" if retrieval_mode == "fts_only" else "similarity",
+            retrieval_mode=retrieval_mode,
+            embedding_fallback_reason=fallback_reason,
         )
         for key in ranked_keys[:k]
     ]
 
 
-def search(conn: psycopg.Connection, client: OpenAI, query: str, *,
+def search(conn: psycopg.Connection, client: Any | None, query: str, *,
            k: int = 10, field: str = "reason_for_recall",
-           filters: Sequence[Filter] = (), source: str = "drug_enforcement") -> list[Hit]:
+           filters: Sequence[Filter] = (), source: str = "drug_enforcement",
+           embed_config: llm.EmbeddingConfig | None = None,
+           embedding_error: BaseException | None = None) -> list[Hit]:
     """Hybrid records for ``query``, optionally pre-filtered by hard constraints.
 
     The vector and FTS halves both honor the same filters on the joined source table.
@@ -237,8 +290,32 @@ def search(conn: psycopg.Connection, client: OpenAI, query: str, *,
     """
     if k <= 0:
         return []
-    qvec = _vec_literal(embed_query(client, query))
+    embed_config = embed_config or llm.embedding_config()
     limit = _candidate_limit(k)
+    try:
+        if embedding_error is not None:
+            raise embedding_error
+        if client is None:
+            raise llm.ProviderMissingKeyError(
+                "embedding client is not configured",
+                provider=embed_config.provider,
+                model=embed_config.model,
+                operation="embedding",
+            )
+        qvec = _vec_literal(embed_query(client, embed_config, query))
+    except Exception as exc:
+        if not llm.can_fallback_to_fts(exc):
+            raise
+        fts_hits = _fts_candidates(conn, query, None, source=source, field=field,
+                                   filters=filters, limit=limit)
+        return _rrf_fuse(
+            [],
+            fts_hits,
+            k=k,
+            field=field,
+            retrieval_mode="fts_only",
+            fallback_reason=type(exc).__name__,
+        )
     vector_hits = _vector_candidates(conn, qvec, source=source, field=field,
                                      filters=filters, limit=limit)
     fts_hits = _fts_candidates(conn, query, qvec, source=source, field=field,
@@ -257,13 +334,20 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    client = OpenAI()
+    embed_config = llm.embedding_config()
+    embedding_error: llm.ProviderError | None = None
+    try:
+        client = llm.create_embedding_client(embed_config)
+    except llm.ProviderError as exc:
+        client = None
+        embedding_error = exc
     with psycopg.connect(DEFAULT_DSN) as conn:
-        hits = search(conn, client, args.query, k=args.k, field=args.field)
+        hits = search(conn, client, args.query, k=args.k, field=args.field,
+                      embed_config=embed_config, embedding_error=embedding_error)
         print(f"Q: {args.query!r}  (field={args.field}, k={args.k})\n")
         for i, h in enumerate(hits, 1):
-            print(f"{i:>2}. [{h.recall_number}] sim={h.similarity:.3f}  "
-                  f"{h.classification or '-'}  {h.recalling_firm or '-'}")
+            print(f"{i:>2}. [{h.recall_number}] {h.score_kind}={h.retrieval_score:.3f}  "
+                  f"{h.retrieval_mode}  {h.classification or '-'}  {h.recalling_firm or '-'}")
             print(f"    {(h.content or '')[:150]}")
 
 

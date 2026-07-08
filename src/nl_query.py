@@ -8,7 +8,7 @@ whitelisted columns/values); we validate that against the catalog and run it thr
 Flow:  question -> (schema + column comments + allowed values injected) -> LLM -> QuerySpec
        -> validate against CATALOG -> RecallAnalytics call -> templated answer + evidence.
 
-Run a demo (needs OPENAI_API_KEY in .env and the populated DB):
+Run a demo (needs configured LLM credentials in .env and the populated DB):
     .venv/bin/python src/nl_query.py                # canned questions
     .venv/bin/python src/nl_query.py "your question"
 """
@@ -22,18 +22,18 @@ from enum import Enum
 from typing import Any, Optional
 
 from dotenv import load_dotenv
-from openai import OpenAI
 from psycopg import sql
 from pydantic import BaseModel, Field
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # allow `import analytics` as a script
+import llm  # noqa: E402  (OpenAI-compatible provider gateway)
 import retrieval  # noqa: E402  (semantic search for concept queries)
 import validation  # noqa: E402  (LLM validation for semantic counting)
 from analytics import CATALOG, GRAINS, OPS, Filter, Kind, RecallAnalytics  # noqa: E402
 
 load_dotenv()
 DEFAULT_DSN = os.environ.get("DATABASE_URL", "postgresql://localhost:5432/fda")
-MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+MODEL = llm.chat_config().model
 
 # Categorical columns small enough to enumerate every value into the prompt (value index).
 LOW_CARD = ["classification", "status", "product_type", "voluntary_mandated",
@@ -130,16 +130,16 @@ def build_schema_context(a: RecallAnalytics) -> str:
 # --------------------------------------------------------------------------- #
 # LLM call + validation + execution
 # --------------------------------------------------------------------------- #
-def generate_spec(client: OpenAI, question: str, schema_ctx: str, model: str) -> QuerySpec:
-    parse = getattr(client.chat.completions, "parse", None) or client.beta.chat.completions.parse
-    completion = parse(
-        model=model,
+def generate_spec(client: Any, config: llm.ChatConfig, question: str,
+                  schema_ctx: str) -> QuerySpec:
+    return llm.structured_completion(
+        client,
+        config,
+        [{"role": "system", "content": f"{SYSTEM}\n\nSCHEMA:\n{schema_ctx}"},
+         {"role": "user", "content": question}],
+        QuerySpec,
         temperature=0,
-        messages=[{"role": "system", "content": f"{SYSTEM}\n\nSCHEMA:\n{schema_ctx}"},
-                  {"role": "user", "content": question}],
-        response_format=QuerySpec,
     )
-    return completion.choices[0].message.parsed
 
 
 def _parse_date(v: str) -> date:
@@ -240,10 +240,12 @@ def _allocate_group_counts(pool_counts: dict[Any, int], estimated_total: int) ->
 def _run_semantic_count(
     a: RecallAnalytics,
     spec: QuerySpec,
-    client: OpenAI,
+    chat_client: Any,
+    chat_config: llm.ChatConfig,
+    embed_client: Any | None,
+    embed_config: llm.EmbeddingConfig,
+    embedding_error: BaseException | None,
     filters: list[Filter],
-    *,
-    model: str,
 ) -> validation.SemanticCountResult:
     if not spec.semantic_query:
         raise ValueError("semantic count needs semantic_query")
@@ -251,18 +253,28 @@ def _run_semantic_count(
         raise ValueError("count_by needs a valid group_by dimension")
     validation_limit = validation.bounded_validation_limit(spec.semantic_k)
     retrieval_pool_limit = validation.bounded_retrieval_pool_limit(validation_limit)
-    hits = retrieval.search(a.conn, client, spec.semantic_query,
-                            k=retrieval_pool_limit, field="both", filters=filters)
-    eligible_hits = [
+    hits = retrieval.search(
+        a.conn,
+        embed_client,
+        spec.semantic_query,
+        k=retrieval_pool_limit,
+        field="both",
+        filters=filters,
+        embed_config=embed_config,
+        embedding_error=embedding_error,
+    )
+    retrieval_mode = hits[0].retrieval_mode if hits else "hybrid"
+    fallback_reason = hits[0].embedding_fallback_reason if hits else None
+    eligible_hits = list(hits) if retrieval_mode == "fts_only" else [
         hit for hit in hits
         if hit.retrieval_score >= validation.MIN_RETRIEVAL_SCORE
     ]
     sample_hits = validation.select_validation_sample(eligible_hits, validation_limit)
     validations = validation.validate_hits(
-        client,
+        chat_client,
+        chat_config,
         spec.semantic_query,
         sample_hits,
-        model=model,
     )
     accepted = [item for item in validations if item.accepted]
     acceptance_rate = (len(accepted) / len(validations)) if validations else 0.0
@@ -279,18 +291,45 @@ def _run_semantic_count(
         retrieval_pool_limit=retrieval_pool_limit,
         validation_limit=validation_limit,
         validations=validations,
+        retrieval_mode=retrieval_mode,
+        embedding_fallback_reason=fallback_reason,
         group_by=spec.group_by if spec.intent is Intent.count_by else None,
         groups=groups,
     )
 
 
-def run_spec(a: RecallAnalytics, spec: QuerySpec, client: OpenAI, *, model: str = MODEL) -> Any:
+def run_spec(
+    a: RecallAnalytics,
+    spec: QuerySpec,
+    chat_client: Any,
+    chat_config: llm.ChatConfig,
+    embed_client: Any | None,
+    embed_config: llm.EmbeddingConfig,
+    embedding_error: BaseException | None = None,
+) -> Any:
     filters = _to_filters(spec)
     if spec.semantic_query and spec.intent is Intent.sample:  # preserve existing semantic retrieval
-        return retrieval.search(a.conn, client, spec.semantic_query,
-                                k=spec.limit or 10, field="both", filters=filters)
+        return retrieval.search(
+            a.conn,
+            embed_client,
+            spec.semantic_query,
+            k=spec.limit or 10,
+            field="both",
+            filters=filters,
+            embed_config=embed_config,
+            embedding_error=embedding_error,
+        )
     if spec.semantic_query and spec.intent in {Intent.count_total, Intent.count_by}:
-        return _run_semantic_count(a, spec, client, filters, model=model)
+        return _run_semantic_count(
+            a,
+            spec,
+            chat_client,
+            chat_config,
+            embed_client,
+            embed_config,
+            embedding_error,
+            filters,
+        )
     if spec.semantic_query:
         raise ValueError(f"semantic_query does not support intent {spec.intent.value!r}")
     if spec.intent is Intent.count_total:
@@ -310,8 +349,13 @@ def run_spec(a: RecallAnalytics, spec: QuerySpec, client: OpenAI, *, model: str 
 
 def summarize(spec: QuerySpec, result: Any) -> str:
     if isinstance(result, validation.SemanticCountResult):
+        mode_note = (
+            " using FTS-only fallback"
+            if result.retrieval_mode == "fts_only" else ""
+        )
         if result.group_by:
-            head = (f"Estimated {result.estimated_count:,} recalls matching '{result.query}' "
+            head = (f"Estimated {result.estimated_count:,} recalls matching '{result.query}'"
+                    f"{mode_note} "
                     f"across {result.candidate_count} retrieval candidates "
                     f"(verified {result.verified_count}/{result.validated_count} validated, "
                     f"avg confidence {result.confidence['accepted_avg']:.2f}), grouped by {result.group_by}:")
@@ -321,7 +365,7 @@ def summarize(spec: QuerySpec, result: Any) -> str:
             )
             return f"{head}\n{body}"
         return (
-            f"Estimated {result.estimated_count:,} recalls matching '{result.query}' "
+            f"Estimated {result.estimated_count:,} recalls matching '{result.query}'{mode_note} "
             f"across {result.candidate_count} retrieval candidates "
             f"(verified {result.verified_count}/{result.validated_count} validated, "
             f"avg confidence {result.confidence['accepted_avg']:.2f}; "
@@ -329,7 +373,11 @@ def summarize(spec: QuerySpec, result: Any) -> str:
             f"{result.confidence_interval['upper']})."
         )
     if spec.semantic_query:
-        head = f"Top {len(result)} recalls matching '{spec.semantic_query}':"
+        mode_note = (
+            " using FTS-only fallback"
+            if result and result[0].retrieval_mode == "fts_only" else ""
+        )
+        head = f"Top {len(result)} recalls matching '{spec.semantic_query}'{mode_note}:"
         body = "\n".join(
             f"  [{h.recall_number}] sim={h.similarity:.2f}  {h.recalling_firm or '-'}: "
             f"{(h.content or '')[:70]}" for h in result)
@@ -352,33 +400,82 @@ def summarize(spec: QuerySpec, result: Any) -> str:
 class NLEngine:
     """Reusable NL->SQL engine for long-running services (e.g. the FastAPI app).
 
-    Warms the expensive, request-invariant pieces ONCE — the OpenAI client and the schema
-    context (which runs several DISTINCT queries) — then answers each question with a fresh,
-    short-lived read-only DB connection (safe under concurrency; cheap on localhost).
+    Warms the expensive, request-invariant pieces ONCE — provider clients and the schema context
+    (which runs several DISTINCT queries) — then answers each question with a fresh, short-lived
+    read-only DB connection (safe under concurrency; cheap on localhost).
     """
 
-    def __init__(self, *, dsn: str = DEFAULT_DSN, model: str = MODEL) -> None:
+    def __init__(self, *, dsn: str = DEFAULT_DSN, model: str | None = None) -> None:
         self.dsn = dsn
-        self.model = model
-        self.client = OpenAI()
+        self.chat_config = llm.chat_config(model=model)
+        self.model = self.chat_config.model
+        self.chat_client: Any | None = None
+        self.chat_error: llm.ProviderError | None = None
+        try:
+            self.chat_client = llm.create_chat_client(self.chat_config)
+        except llm.ProviderError as exc:
+            self.chat_error = exc
+        self.client = self.chat_client  # backwards-compatible alias
+        self.embed_config = llm.embedding_config()
+        self.embed_client: Any | None = None
+        self.embedding_error: llm.ProviderError | None = None
+        try:
+            self.embed_client = llm.create_embedding_client(self.embed_config)
+        except llm.ProviderError as exc:
+            self.embedding_error = exc
         with RecallAnalytics(dsn) as a:
             self.schema_ctx = build_schema_context(a)  # cached for the engine's lifetime
 
+    def provider_status(self) -> dict[str, Any]:
+        status = llm.provider_status(self.chat_config, self.embed_config)
+        status["llm_available"] = self.chat_error is None
+        if self.chat_error is not None:
+            status["llm_error_type"] = type(self.chat_error).__name__
+        status["embed_available"] = self.embedding_error is None
+        if self.embedding_error is not None:
+            status["embed_error_type"] = type(self.embedding_error).__name__
+        return status
+
     def ask(self, question: str) -> Answer:
-        spec = generate_spec(self.client, question, self.schema_ctx, self.model)
+        if self.chat_client is None:
+            raise self.chat_error or llm.ProviderMissingKeyError(
+                "chat client is not configured",
+                provider=self.chat_config.provider,
+                model=self.chat_config.model,
+                operation="chat",
+            )
+        spec = generate_spec(self.chat_client, self.chat_config, question, self.schema_ctx)
         with RecallAnalytics(self.dsn) as a:
             try:
-                result = run_spec(a, spec, self.client, model=self.model)
+                result = run_spec(
+                    a,
+                    spec,
+                    self.chat_client,
+                    self.chat_config,
+                    self.embed_client,
+                    self.embed_config,
+                    self.embedding_error,
+                )
             except ValueError as exc:  # one repair attempt: feed the error back
                 spec = generate_spec(
-                    self.client,
+                    self.chat_client,
+                    self.chat_config,
                     f"{question}\n\n(Your previous QuerySpec was invalid: {exc}. Return a corrected one.)",
-                    self.schema_ctx, self.model)
-                result = run_spec(a, spec, self.client, model=self.model)
+                    self.schema_ctx,
+                )
+                result = run_spec(
+                    a,
+                    spec,
+                    self.chat_client,
+                    self.chat_config,
+                    self.embed_client,
+                    self.embed_config,
+                    self.embedding_error,
+                )
         return Answer(question, spec, summarize(spec, result), result)
 
 
-def ask(question: str, *, dsn: str = DEFAULT_DSN, model: str = MODEL) -> Answer:
+def ask(question: str, *, dsn: str = DEFAULT_DSN, model: str | None = None) -> Answer:
     """One-shot convenience used by the CLI: builds a throwaway engine and answers once.
     Long-running callers should hold a single :class:`NLEngine` and reuse ``.ask``."""
     return NLEngine(dsn=dsn, model=model).ask(question)

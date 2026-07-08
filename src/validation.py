@@ -8,9 +8,9 @@ from math import sqrt
 from statistics import mean
 from typing import Any, Sequence
 
-from openai import OpenAI
 from pydantic import BaseModel, Field
 
+import llm
 from retrieval import Hit
 
 DEFAULT_VALIDATION_LIMIT = int(os.environ.get("SEMANTIC_COUNT_K", "40"))
@@ -63,6 +63,7 @@ class SemanticCountGroup:
 class SemanticCountResult:
     query: str
     intent: str
+    retrieval_mode: str
     estimated_count: int
     candidate_count: int
     validated_count: int
@@ -73,16 +74,20 @@ class SemanticCountResult:
     confidence_interval: dict[str, int]
     thresholds: dict[str, Any]
     validations: list[ValidatedHit]
+    embedding_fallback_reason: str | None = None
     group_by: str | None = None
     groups: list[SemanticCountGroup] = field(default_factory=list)
 
 
-def threshold_policy(*, retrieval_pool_limit: int, validation_limit: int) -> dict[str, Any]:
+def threshold_policy(*, retrieval_pool_limit: int, validation_limit: int,
+                     retrieval_mode: str) -> dict[str, Any]:
+    score_name = "fts_rank" if retrieval_mode == "fts_only" else "similarity"
     return {
+        "retrieval_mode": retrieval_mode,
         "retrieval_pool_limit": retrieval_pool_limit,
         "validation_limit": validation_limit,
-        "retrieval_score": "similarity",
-        "min_retrieval_score": MIN_RETRIEVAL_SCORE,
+        "retrieval_score": score_name,
+        "min_retrieval_score": 0.0 if retrieval_mode == "fts_only" else MIN_RETRIEVAL_SCORE,
         "min_validation_confidence": MIN_VALIDATION_CONFIDENCE,
         "validation_sampling": "deterministic_rank_stratified",
         "snippet_grounding": "accepted matches require supporting_snippet grounded in candidate text",
@@ -147,12 +152,17 @@ def _validation_prompt(query: str, hits: Sequence[Hit]) -> str:
     )
 
 
-def validate_hits(client: OpenAI, query: str, hits: Sequence[Hit], *, model: str) -> list[ValidatedHit]:
+def validate_hits(
+    client: Any,
+    config: llm.ChatConfig,
+    query: str,
+    hits: Sequence[Hit],
+) -> list[ValidatedHit]:
     if not hits:
         return []
-    parse = getattr(client.chat.completions, "parse", None) or client.beta.chat.completions.parse
-    completion = parse(
-        model=model,
+    parsed = llm.structured_completion(
+        client,
+        config,
         temperature=0,
         messages=[
             {
@@ -165,9 +175,8 @@ def validate_hits(client: OpenAI, query: str, hits: Sequence[Hit], *, model: str
             },
             {"role": "user", "content": _validation_prompt(query, hits)},
         ],
-        response_format=ValidationBatch,
+        response_model=ValidationBatch,
     )
-    parsed = completion.choices[0].message.parsed
     expected = {(hit.recall_number, hit.field) for hit in hits}
     by_key: dict[tuple[str, str], CandidateValidation] = {}
     for item in parsed.items:
@@ -215,6 +224,8 @@ def build_count_result(
     retrieval_pool_limit: int,
     validation_limit: int,
     validations: Sequence[ValidatedHit],
+    retrieval_mode: str = "hybrid",
+    embedding_fallback_reason: str | None = None,
     group_by: str | None = None,
     groups: Sequence[SemanticCountGroup] = (),
 ) -> SemanticCountResult:
@@ -234,6 +245,7 @@ def build_count_result(
     return SemanticCountResult(
         query=query,
         intent=intent,
+        retrieval_mode=retrieval_mode,
         estimated_count=estimated_count,
         candidate_count=candidate_count,
         validated_count=validated_count,
@@ -245,8 +257,10 @@ def build_count_result(
         thresholds=threshold_policy(
             retrieval_pool_limit=retrieval_pool_limit,
             validation_limit=validation_limit,
+            retrieval_mode=retrieval_mode,
         ),
         validations=list(validations),
+        embedding_fallback_reason=embedding_fallback_reason,
         group_by=group_by,
         groups=list(groups),
     )

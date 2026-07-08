@@ -48,7 +48,7 @@ columns (`classification`, `status`, `reason_for_recall`, `recalling_firm`, `sta
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env            # add OPENAI_API_KEY and DATABASE_URL
+cp .env.example .env            # add provider keys and DATABASE_URL
 
 # Postgres (Postgres.app): create the db + enable pgvector
 createdb fda && psql -d fda -c "CREATE EXTENSION IF NOT EXISTS vector;"
@@ -91,8 +91,9 @@ docker run --rm -p 8000:8000 --env-file .env \
 
 ## Tech stack
 
-Python 3.13 · PostgreSQL + `pgvector` + `hypopg` · `psycopg` 3 · OpenAI (Pydantic structured
-output) · FastAPI + a static Chart.js UI · Docker · a read-only Postgres MCP for safe schema exploration.
+Python 3.13 · PostgreSQL + `pgvector` + `hypopg` · `psycopg` 3 · OpenAI-compatible chat
+providers with Pydantic-validated structured output · FastAPI + a static Chart.js UI · Docker ·
+a read-only Postgres MCP for safe schema exploration.
 
 ---
 
