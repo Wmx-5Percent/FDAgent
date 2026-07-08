@@ -18,28 +18,35 @@ import traceback
 from contextlib import asynccontextmanager
 from datetime import date, datetime
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # allow `import nl_query` under uvicorn
+import validation  # noqa: E402
 from nl_query import Answer, Intent, NLEngine  # noqa: E402
+from observability import QueryLogEntry, QueryLogger, response_metadata  # noqa: E402
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
 # Warmed at startup, reused across requests (see lifespan).
 _engine: Optional[NLEngine] = None
+_query_logger: Optional[QueryLogger] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Warm the OpenAI client + cached schema context once, before serving traffic."""
-    global _engine
+    global _engine, _query_logger
     _engine = NLEngine()
+    _query_logger = QueryLogger(_engine.dsn)
     yield
     _engine = None
+    _query_logger = None
 
 
 app = FastAPI(
@@ -49,6 +56,7 @@ app = FastAPI(
             "every figure is computed in SQL and carries the recall numbers that back it.",
     lifespan=lifespan,
 )
+app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
 
 class AskRequest(BaseModel):
@@ -77,13 +85,65 @@ def serialize_answer(ans: Answer) -> dict[str, Any]:
         "spec": spec.model_dump(exclude_none=True),
         "summary": ans.summary,
     }
-    if spec.semantic_query:  # concept query -> ranked semantic hits
+    if isinstance(ans.result, validation.SemanticCountResult):
+        result = ans.result
+        accepted = [item for item in result.validations if item.accepted]
+        evidence_items = [
+            {
+                "recall_number": item.hit.recall_number,
+                "field": item.hit.field,
+                "retrieval_score": round(item.hit.retrieval_score, 3),
+                "rrf_score": round(item.hit.rrf_score, 4),
+                "similarity": round(item.hit.similarity, 3),
+                "validation_confidence": round(item.validation.confidence, 3),
+                "supporting_snippet": item.validation.supporting_snippet,
+                "rationale": item.validation.rationale,
+                "content": item.hit.content,
+                "recalling_firm": item.hit.recalling_firm,
+                "classification": item.hit.classification,
+            }
+            for item in accepted
+        ]
+        base_data: dict[str, Any] = {
+            "query": result.query,
+            "estimated_count": result.estimated_count,
+            "confidence_interval": result.confidence_interval,
+            "confidence": result.confidence,
+            "verified_count": result.verified_count,
+            "candidate_count": result.candidate_count,
+            "validated_count": result.validated_count,
+            "retrieval_pool_count": result.retrieval_pool_count,
+            "verified_ratio": (
+                result.verified_count / result.validated_count
+                if result.validated_count else 0.0
+            ),
+            "verified": f"{result.verified_count}/{result.validated_count}",
+            "thresholds": result.thresholds,
+            "evidence": list(result.evidence),
+            "evidence_items": evidence_items,
+        }
+        if result.group_by:
+            payload["data"] = {
+                **base_data,
+                "kind": "semantic_distribution",
+                "dimension": result.group_by,
+                "items": [
+                    {"value": _json_safe(g.value), "count": g.count, "evidence": list(g.evidence)}
+                    for g in result.groups
+                ],
+            }
+        else:
+            payload["data"] = {**base_data, "kind": "semantic_count"}
+    elif spec.semantic_query:  # concept query -> ranked semantic hits
         payload["data"] = {
             "kind": "retrieval",
             "query": spec.semantic_query,
             "items": [
                 {"recall_number": h.recall_number, "field": h.field,
-                 "similarity": round(h.similarity, 3), "content": h.content,
+                 "similarity": round(h.similarity, 3),
+                 "retrieval_score": round(h.retrieval_score, 3),
+                 "rrf_score": round(h.rrf_score, 4),
+                 "content": h.content,
                  "recalling_firm": h.recalling_firm, "classification": h.classification}
                 for h in ans.result
             ],
@@ -113,6 +173,61 @@ def serialize_answer(ans: Answer) -> dict[str, Any]:
     return payload
 
 
+def _elapsed_ms(start: float) -> int:
+    return max(0, round((perf_counter() - start) * 1000))
+
+
+def _require_query_logger() -> QueryLogger:
+    if _query_logger is None:
+        raise RuntimeError("query logger not initialized")
+    return _query_logger
+
+
+def _request_payload(req: AskRequest) -> dict[str, Any]:
+    return req.model_dump(mode="json")
+
+
+def _log_success(req: AskRequest, ans: Answer, payload: dict[str, Any],
+                 *, start: float, model: str) -> None:
+    spec = ans.spec.model_dump(mode="json", exclude_none=True)
+    metadata = response_metadata(payload, model=model)
+    data_kind = metadata.get("data_kind")
+    _require_query_logger().write(QueryLogEntry(
+        route="/ask",
+        question=req.question,
+        request=_request_payload(req),
+        status_code=200,
+        ok=True,
+        latency_ms=_elapsed_ms(start),
+        query_intent=ans.spec.intent.value,
+        data_kind=str(data_kind) if data_kind else None,
+        semantic_query=ans.spec.semantic_query,
+        query_spec=spec,
+        decision={
+            "route": "semantic" if ans.spec.semantic_query else "sql",
+            "intent": ans.spec.intent.value,
+            "data_kind": data_kind,
+            "filter_count": len(ans.spec.filters),
+        },
+        response_metadata=metadata,
+    ))
+
+
+def _log_error(req: AskRequest, exc: Exception, *, start: float, status_code: int) -> None:
+    _require_query_logger().write(QueryLogEntry(
+        route="/ask",
+        question=req.question,
+        request=_request_payload(req),
+        status_code=status_code,
+        ok=False,
+        latency_ms=_elapsed_ms(start),
+        decision={"route": "error"},
+        error_type=type(exc).__name__,
+        error_message=str(exc),
+        error_detail={"status_code": status_code},
+    ))
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "engine": "ready" if _engine is not None else "starting"}
@@ -120,15 +235,21 @@ def health() -> dict[str, str]:
 
 @app.post("/ask")
 def ask_endpoint(req: AskRequest) -> dict[str, Any]:
+    start = perf_counter()
     if _engine is None:
+        exc = RuntimeError("engine not ready")
+        _log_error(req, exc, start=start, status_code=503)
         raise HTTPException(status_code=503, detail="engine not ready")
     try:
         ans = _engine.ask(req.question)
+        payload = serialize_answer(ans)
     except Exception as exc:  # noqa: BLE001 — log server-side, return a safe message
         traceback.print_exc()
+        _log_error(req, exc, start=start, status_code=400)
         raise HTTPException(status_code=400,
                             detail=f"could not answer this question ({type(exc).__name__})")
-    return serialize_answer(ans)
+    _log_success(req, ans, payload, start=start, model=_engine.model)
+    return payload
 
 
 @app.get("/")

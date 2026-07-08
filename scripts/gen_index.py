@@ -38,7 +38,7 @@ TIMESTAMP_PREFIX = "> Last generated:"
 
 # Extensions we parse for a description. Anything else is listed name-only.
 TEXTLIKE = {".py", ".md", ".txt", ".cfg", ".ini", ".toml", ".yaml", ".yml",
-            ".json", ".sh", ".example", ".sql", ".html"}
+            ".json", ".sh", ".example", ".sql", ".html", ".js", ".css"}
 
 
 # --------------------------------------------------------------------------- #
@@ -137,7 +137,8 @@ def describe_generic(text: str) -> str:
     lines = text.splitlines()
     start = 1 if lines and lines[0].startswith("#!") else 0
     for raw in lines[start:]:
-        s = raw.strip().lstrip("#;/").strip().lstrip("-").strip()
+        s = raw.strip().lstrip("#;/").strip().lstrip("*").strip().lstrip("-").strip()
+        s = s.removesuffix("*/").strip()
         if s:
             return s[:120]
     return ""

@@ -1,0 +1,81 @@
+{"description": "FDAgent v1 golden eval set for /ask routing and retrieval recall@k.",
+  "version": "v1",
+  "cases": [
+    {
+      "id": "numeric-class-i-count",
+      "kind": "ask",
+      "question": "How many Class I drug recalls have there been?",
+      "assert": {
+        "route": "sql",
+        "intents": ["count_total"],
+        "data_kinds": ["scalar"],
+        "value_equals": 1729,
+        "no_ilike": true
+      }
+    },
+    {
+      "id": "numeric-class-i-by-firm",
+      "kind": "ask",
+      "question": "Which firms had the most Class I recalls?",
+      "assert": {
+        "route": "sql",
+        "intents": ["count_by"],
+        "data_kinds": ["distribution"],
+        "top_items": [
+          {"value": "King Bio Inc.", "count": 465}
+        ],
+        "no_ilike": true
+      }
+    },
+    {
+      "id": "fuzzy-sterility-routing",
+      "kind": "ask",
+      "question": "Show me a few sterility-related recalls.",
+      "assert": {
+        "route": "semantic",
+        "intents": ["sample"],
+        "data_kinds": ["retrieval"],
+        "no_ilike": true,
+        "semantic_query_contains_any": ["sterility", "sterile"]
+      }
+    },
+    {
+      "id": "fuzzy-superpotent-routing",
+      "kind": "ask",
+      "question": "Show recalls where pills were too strong.",
+      "assert": {
+        "route": "semantic",
+        "intents": ["sample"],
+        "data_kinds": ["retrieval"],
+        "no_ilike": true,
+        "semantic_query_contains_any": ["strong", "superpotent", "potent"]
+      }
+    },
+    {
+      "id": "fuzzy-sterility-count",
+      "kind": "ask",
+      "question": "How many sterility recalls?",
+      "assert": {
+        "route": "semantic",
+        "intents": ["count_total"],
+        "data_kinds": ["semantic_count"],
+        "no_ilike": true,
+        "semantic_query_contains_any": ["sterility", "sterile"],
+        "requires_estimate": true,
+        "min_estimated_count": 1,
+        "min_verified_count": 1,
+        "requires_confidence": true,
+        "requires_evidence": true
+      }
+    },
+    {
+      "id": "retrieval-glass-particles",
+      "kind": "retrieval_recall",
+      "query": "glass particles in drug vials",
+      "field": "both",
+      "k": 10,
+      "expected_recall_numbers": ["D-0580-2026", "D-0412-2025", "D-0416-2025"],
+      "min_recall_at_k": 0.34
+    }
+  ]
+}

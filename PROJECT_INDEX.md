@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-07-08T08:51Z · 37 files
+> Last generated: 2026-07-08T09:42Z · 49 files
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -25,13 +25,19 @@
 - [`.github/skills/db-column-docs-from-dictionary/SKILL.md`](.github/skills/db-column-docs-from-dictionary/SKILL.md) — Documenting DB columns from an upstream field dictionary — - **Type**: Workflow
 - [`.github/skills/learning-session-notes/SKILL.md`](.github/skills/learning-session-notes/SKILL.md) — Learning Session Notes — - **Type**: Workflow + BestPractice
 - [`.github/skills/openfda-data-download/SKILL.md`](.github/skills/openfda-data-download/SKILL.md) — Downloading / ingesting openFDA data — - **Type**: API Guide + Workflow
+- [`.github/skills/parallel-dev-worktree-cleanup/SKILL.md`](.github/skills/parallel-dev-worktree-cleanup/SKILL.md) — Parallel-Dev Worktree Cleanup — - **Type**: Workflow + BestPractice
 - [`.github/skills/skill-writing/SKILL.md`](.github/skills/skill-writing/SKILL.md) — Skill 写作指南（Meta-Skill） — - **类型**: BestPractice
+
+## evals/
+- [`evals/golden/v1.json`](evals/golden/v1.json) — {"description": "FDAgent v1 golden eval set for /ask routing and retrieval recall@k.",
 
 ## scripts/
 - [`scripts/gen_index.py`](scripts/gen_index.py) — Generate PROJECT_INDEX.md — a reliable, auto-derived map of the repository.
   - symbols: `repo_root`, `list_files`, `read_text`, `describe_python`, `describe_markdown`, `describe_html`, `describe_generic`, `describe`, `group_key`, `render`, `strip_volatile`, `main`
 - [`scripts/hooks/install.sh`](scripts/hooks/install.sh) — Install the version-controlled git hooks into .git/hooks.
 - [`scripts/hooks/pre-commit`](scripts/hooks/pre-commit) — Pre-commit hook: block the commit if PROJECT_INDEX.md is stale.
+- [`scripts/run_eval.py`](scripts/run_eval.py) — Run local golden evals for /ask routing and retrieval recall@k.
+  - symbols: `EvalResult`, `EvalFailure`, `parse_args`, `main`
 
 ## sql/
 - [`sql/001_parse_drug_enforcement.sql`](sql/001_parse_drug_enforcement.sql) — Parse drug_enforcement.raw (JSONB) into typed, indexed columns.
@@ -39,7 +45,9 @@
 - [`sql/003_recall_embeddings.sql`](sql/003_recall_embeddings.sql) — Create recall_embeddings: per-(recall, field) text vectors + FTS for Path 2 hybrid retrieval.
 - [`sql/004_embeddings_multisource.sql`](sql/004_embeddings_multisource.sql) — Generalize recall_embeddings -> embeddings for MULTIPLE data sources (Path 2).
 - [`sql/005_embeddings_comments.sql`](sql/005_embeddings_comments.sql) — Column documentation for `embeddings` (Path 2 vector + full-text store).
+- [`sql/006_query_log.sql`](sql/006_query_log.sql) — Create query_log: L1 Postgres observability for every handled /ask request.
 - [`sql/007_taxonomy.sql`](sql/007_taxonomy.sql) — Create recall taxonomy sidecar tables for offline classification.
+- [`sql/008_firm_resolution.sql`](sql/008_firm_resolution.sql) — Create firm-resolution sidecar tables for offline FDA recalling-firm resolution.
 
 ## src/
 - [`src/analytics.py`](src/analytics.py) — Deterministic frequency/aggregation query engine over drug_enforcement.
@@ -57,10 +65,21 @@
   - symbols: `run`, `parse_args`
 - [`src/fetch_openfda.py`](src/fetch_openfda.py) — Generic openFDA -> PostgreSQL ingester.
   - symbols: `parse_fda_date`, `record_id`, `fda_date_str`, `fetch_page`, `ensure_table`, `upsert_rows`, `max_report_date`, `build_search`, `run`, `parse_args`
+- [`src/firm/__init__.py`](src/firm/__init__.py) — Offline firm and brand resolution helpers for FDA recall sidecar tables.
+- [`src/firm/brand.py`](src/firm/brand.py) — Resolve brand/product names to firm or parent candidates with provenance tiers.
+  - symbols: `BrandCandidate`, `BrandInference`, `collect_candidates`, `apply_candidates`, `print_candidates`, `run`, `parse_args`
+- [`src/firm/resolve.py`](src/firm/resolve.py) — Resolve FDA recalling_firm strings into conservative sidecar firm aliases.
+  - symbols: `FirmName`, `CandidatePair`, `Cluster`, `FirmPairVerification`, `UnionFind`, `normalize_name`, `load_firm_names`, `pg_trgm_pairs`, `build_candidate_pairs`, `deterministic_reason`, `verify_pair`, `classify_pairs`
 - [`src/nl_query.py`](src/nl_query.py) — Natural-language front-end for the deterministic analytics engine.
   - symbols: `Intent`, `Op`, `FilterSpec`, `QuerySpec`, `Answer`, `build_schema_context`, `generate_spec`, `run_spec`, `summarize`, `NLEngine`, `ask`
-- [`src/retrieval.py`](src/retrieval.py) — Semantic (vector) retrieval over the `embeddings` table — Path 2 / slice 2.2 (v1: vector core).
+- [`src/observability.py`](src/observability.py) — Postgres-backed query logging for the /ask API.
+  - symbols: `QueryLogEntry`, `QueryLogger`, `response_metadata`
+- [`src/retrieval.py`](src/retrieval.py) — Hybrid retrieval over the `embeddings` table — Path 2 / slice 2.2.
   - symbols: `Hit`, `embed_query`, `search`, `parse_args`, `main`
+- [`src/validation.py`](src/validation.py) — Validate semantic retrieval candidates and build semantic-count results.
+  - symbols: `CandidateValidation`, `ValidationBatch`, `SemanticValidationError`, `ValidatedHit`, `SemanticCountGroup`, `SemanticCountResult`, `threshold_policy`, `bounded_candidate_limit`, `bounded_validation_limit`, `bounded_retrieval_pool_limit`, `select_validation_sample`, `snippet_is_grounded`
 
 ## web/
-- [`web/index.html`](web/index.html) — Minimal single-page UI for the FDAgent /ask endpoint (Path 1 serving demo).
+- [`web/app.js`](web/app.js) — ChatGPT-style zero-build frontend for FDAgent /ask conversations.
+- [`web/index.html`](web/index.html) — ChatGPT-style zero-build UI shell for the FDAgent /ask endpoint.
+- [`web/styles.css`](web/styles.css) — ChatGPT-style layout and result rendering styles for the FDAgent static UI.
