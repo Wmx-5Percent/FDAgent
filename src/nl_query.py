@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # allow `import analytics` as a script
 import retrieval  # noqa: E402  (semantic search for concept queries)
+import validation  # noqa: E402  (LLM validation for semantic counting)
 from analytics import CATALOG, GRAINS, OPS, Filter, Kind, RecallAnalytics  # noqa: E402
 
 load_dotenv()
@@ -62,6 +63,7 @@ class FilterSpec(BaseModel):
 class QuerySpec(BaseModel):
     intent: Intent
     semantic_query: Optional[str] = None  # fuzzy concept -> semantic retrieval over recall text
+    semantic_k: Optional[int] = Field(default=None, ge=1, le=120)  # validation sample size for semantic counts
     filters: list[FilterSpec] = Field(default_factory=list)
     group_by: Optional[str] = None      # count_by: a dimension column
     grain: Optional[str] = None         # trend: year/quarter/month/week/day
@@ -82,11 +84,14 @@ Rules:
 - Use ONLY columns and values from the SCHEMA below. Never invent a column or a value.
 - Choose intent: count_total (one number), count_by (distribution across a dimension -> set group_by),
   trend (counts over time -> set grain and date_column), sample (a few example rows).
-- semantic_query: when the question asks to FIND or SHOW recalls about a fuzzy CONCEPT/topic in the
-  free text (e.g. "sterility problems", "cancer-causing impurity", "pills that are too strong",
-  "glass fragments"), put that concept here as a short natural-language phrase and use intent=sample.
-  This runs a semantic search over the recall text -- do NOT use an 'ilike' filter for a concept
-  (ilike only matches the literal word and misses synonyms like microbial / superpotent).
+- semantic_query: when the question asks about a fuzzy CONCEPT/topic in free text (e.g.
+  "sterility problems", "cancer-causing impurity", "pills that are too strong", "glass fragments"),
+  put that concept here as a short natural-language phrase. Use intent=sample for show/find/example
+  questions, intent=count_total for "how many" concept questions, and intent=count_by with group_by
+  for concept distribution questions. This runs semantic retrieval over the recall text -- do NOT
+  use an 'ilike' filter for a concept (ilike only matches literal words and misses synonyms like
+  microbial / superpotent). Leave semantic_k unset unless the user asks to validate a specific
+  sample size.
 - filters: only for HARD constraints -- categories (classification/state/...) via 'eq'/'in' with a
   column's listed allowed values, and dates (ISO YYYY-MM-DD) via 'between'/'gte'/'lte'. You may combine
   semantic_query (the concept) with filters (the hard constraints), e.g. "Class I sterility recalls".
@@ -172,11 +177,122 @@ def _to_filters(spec: QuerySpec) -> list[Filter]:
     return out
 
 
-def run_spec(a: RecallAnalytics, spec: QuerySpec, client: OpenAI) -> Any:
+def _semantic_groups(
+    a: RecallAnalytics,
+    group_by: str,
+    candidates: list[retrieval.Hit],
+    accepted: list[validation.ValidatedHit],
+    estimated_total: int,
+) -> list[validation.SemanticCountGroup]:
+    if group_by not in CATALOG:
+        raise ValueError("count_by needs a valid group_by dimension")
+    if not candidates:
+        return []
+    recall_numbers = [item.recall_number for item in candidates]
+    q = sql.SQL(
+        "SELECT recall_number, {dim} FROM drug_enforcement WHERE recall_number = ANY(%s)"
+    ).format(dim=sql.Identifier(group_by))
+    with a.conn.cursor() as cur:
+        cur.execute(q, [recall_numbers])
+        values = {r[0]: r[1] for r in cur.fetchall()}
+
+    pool_counts: dict[Any, int] = {}
+    evidence: dict[Any, list[str]] = {}
+    for hit in candidates:
+        value = values.get(hit.recall_number)
+        pool_counts[value] = pool_counts.get(value, 0) + 1
+    for item in accepted:
+        value = values.get(item.recall_number)
+        evidence.setdefault(value, [])
+        if len(evidence[value]) < 3:
+            evidence[value].append(item.recall_number)
+
+    allocated_counts = _allocate_group_counts(pool_counts, estimated_total)
+    return [
+        validation.SemanticCountGroup(
+            value=value,
+            count=allocated_counts.get(value, 0),
+            evidence=evidence.get(value, []),
+        )
+        for value, pool_count in sorted(pool_counts.items(), key=lambda kv: (-kv[1], str(kv[0])))
+    ]
+
+
+def _allocate_group_counts(pool_counts: dict[Any, int], estimated_total: int) -> dict[Any, int]:
+    if estimated_total <= 0 or not pool_counts:
+        return {value: 0 for value in pool_counts}
+    pool_total = sum(pool_counts.values())
+    raw = {
+        value: (count / pool_total) * estimated_total
+        for value, count in pool_counts.items()
+    }
+    out = {value: int(value_estimate) for value, value_estimate in raw.items()}
+    remaining = estimated_total - sum(out.values())
+    remainders = sorted(
+        raw,
+        key=lambda value: (-(raw[value] - out[value]), str(value)),
+    )
+    for value in remainders[:remaining]:
+        out[value] += 1
+    return out
+
+
+def _run_semantic_count(
+    a: RecallAnalytics,
+    spec: QuerySpec,
+    client: OpenAI,
+    filters: list[Filter],
+    *,
+    model: str,
+) -> validation.SemanticCountResult:
+    if not spec.semantic_query:
+        raise ValueError("semantic count needs semantic_query")
+    if spec.intent is Intent.count_by and (not spec.group_by or spec.group_by not in CATALOG):
+        raise ValueError("count_by needs a valid group_by dimension")
+    validation_limit = validation.bounded_validation_limit(spec.semantic_k)
+    retrieval_pool_limit = validation.bounded_retrieval_pool_limit(validation_limit)
+    hits = retrieval.search(a.conn, client, spec.semantic_query,
+                            k=retrieval_pool_limit, field="both", filters=filters)
+    eligible_hits = [
+        hit for hit in hits
+        if hit.retrieval_score >= validation.MIN_RETRIEVAL_SCORE
+    ]
+    sample_hits = validation.select_validation_sample(eligible_hits, validation_limit)
+    validations = validation.validate_hits(
+        client,
+        spec.semantic_query,
+        sample_hits,
+        model=model,
+    )
+    accepted = [item for item in validations if item.accepted]
+    acceptance_rate = (len(accepted) / len(validations)) if validations else 0.0
+    estimated_total = round(acceptance_rate * len(eligible_hits))
+    groups = (
+        _semantic_groups(a, spec.group_by, eligible_hits, accepted, estimated_total)
+        if spec.intent is Intent.count_by else []
+    )
+    return validation.build_count_result(
+        query=spec.semantic_query,
+        intent=spec.intent.value,
+        candidate_count=len(eligible_hits),
+        retrieval_pool_count=len(hits),
+        retrieval_pool_limit=retrieval_pool_limit,
+        validation_limit=validation_limit,
+        validations=validations,
+        group_by=spec.group_by if spec.intent is Intent.count_by else None,
+        groups=groups,
+    )
+
+
+def run_spec(a: RecallAnalytics, spec: QuerySpec, client: OpenAI, *, model: str = MODEL) -> Any:
     filters = _to_filters(spec)
-    if spec.semantic_query:  # concept query -> semantic retrieval (optionally hard-filtered)
+    if spec.semantic_query and spec.intent is Intent.sample:  # preserve existing semantic retrieval
         return retrieval.search(a.conn, client, spec.semantic_query,
                                 k=spec.limit or 10, field="both", filters=filters)
+    if spec.semantic_query and spec.intent in {Intent.count_total, Intent.count_by}:
+        return _run_semantic_count(a, spec, client, filters, model=model)
+    if spec.semantic_query:
+        raise ValueError(f"semantic_query does not support intent {spec.intent.value!r}")
     if spec.intent is Intent.count_total:
         return a.count_total(filters)
     if spec.intent is Intent.count_by:
@@ -193,6 +309,25 @@ def run_spec(a: RecallAnalytics, spec: QuerySpec, client: OpenAI) -> Any:
 
 
 def summarize(spec: QuerySpec, result: Any) -> str:
+    if isinstance(result, validation.SemanticCountResult):
+        if result.group_by:
+            head = (f"Estimated {result.estimated_count:,} recalls matching '{result.query}' "
+                    f"across {result.candidate_count} retrieval candidates "
+                    f"(verified {result.verified_count}/{result.validated_count} validated, "
+                    f"avg confidence {result.confidence['accepted_avg']:.2f}), grouped by {result.group_by}:")
+            body = "\n".join(
+                f"  {g.value}: ~{g.count:,}   e.g. {', '.join(g.evidence)}"
+                for g in result.groups[:10]
+            )
+            return f"{head}\n{body}"
+        return (
+            f"Estimated {result.estimated_count:,} recalls matching '{result.query}' "
+            f"across {result.candidate_count} retrieval candidates "
+            f"(verified {result.verified_count}/{result.validated_count} validated, "
+            f"avg confidence {result.confidence['accepted_avg']:.2f}; "
+            f"confidence band {result.confidence_interval['lower']}-"
+            f"{result.confidence_interval['upper']})."
+        )
     if spec.semantic_query:
         head = f"Top {len(result)} recalls matching '{spec.semantic_query}':"
         body = "\n".join(
@@ -233,13 +368,13 @@ class NLEngine:
         spec = generate_spec(self.client, question, self.schema_ctx, self.model)
         with RecallAnalytics(self.dsn) as a:
             try:
-                result = run_spec(a, spec, self.client)
+                result = run_spec(a, spec, self.client, model=self.model)
             except ValueError as exc:  # one repair attempt: feed the error back
                 spec = generate_spec(
                     self.client,
                     f"{question}\n\n(Your previous QuerySpec was invalid: {exc}. Return a corrected one.)",
                     self.schema_ctx, self.model)
-                result = run_spec(a, spec, self.client)
+                result = run_spec(a, spec, self.client, model=self.model)
         return Answer(question, spec, summarize(spec, result), result)
 
 

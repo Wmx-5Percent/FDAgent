@@ -42,10 +42,15 @@ class Hit:
     content: str
     recalling_firm: Optional[str]
     classification: Optional[str]
+    rrf_score: float = 0.0
 
     @property
     def similarity(self) -> float:
         return 1.0 - self.distance  # pgvector <=> is cosine distance
+
+    @property
+    def retrieval_score(self) -> float:
+        return self.similarity
 
 
 @dataclass(frozen=True)
@@ -215,6 +220,7 @@ def _rrf_fuse(vector_hits: Sequence[_Candidate], fts_hits: Sequence[_Candidate],
             content=best[key].content,
             recalling_firm=best[key].recalling_firm,
             classification=best[key].classification,
+            rrf_score=scores[key],
         )
         for key in ranked_keys[:k]
     ]

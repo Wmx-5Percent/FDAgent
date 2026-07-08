@@ -415,6 +415,8 @@
       renderRows(data, card);
     } else if (kind === "retrieval" || kind === "semantic") {
       renderRetrieval(data, card);
+    } else if (kind === "semantic_count" || kind === "semantic_distribution") {
+      renderSemanticCount(data, card);
     } else {
       const unknown = document.createElement("div");
       unknown.className = "status-text error";
@@ -434,6 +436,64 @@
     value.className = "scalar";
     value.textContent = Number(data.value ?? 0).toLocaleString();
     card.appendChild(value);
+  }
+
+  function renderSemanticCount(data, card) {
+    const value = document.createElement("div");
+    value.className = "scalar";
+    value.textContent = `~${Number(data.estimated_count ?? 0).toLocaleString()}`;
+    card.appendChild(value);
+
+    const interval = data.confidence_interval || {};
+    const confidence = data.confidence || {};
+    const meta = document.createElement("div");
+    meta.className = "muted";
+    meta.textContent = [
+      "Estimated semantic count",
+      `verified ${data.verified || `${data.verified_count ?? 0}/${data.candidate_count ?? 0}`}`,
+      `${data.candidate_count ?? 0} retrieval candidates`,
+      `avg confidence ${confidence.accepted_avg ?? "0.000"}`,
+      `band ${interval.lower ?? 0}-${interval.upper ?? 0}`,
+    ].join(" | ");
+    card.appendChild(meta);
+
+    if (data.kind === "semantic_distribution") {
+      renderDistribution(data, card);
+    } else if (Array.isArray(data.evidence) && data.evidence.length) {
+      const label = document.createElement("div");
+      label.className = "muted";
+      label.textContent = "Evidence recall numbers:";
+      card.appendChild(label);
+      card.appendChild(renderBadges(data.evidence.slice(0, 18)));
+    }
+
+    const evidenceItems = Array.isArray(data.evidence_items) ? data.evidence_items.slice(0, 5) : [];
+    for (const item of evidenceItems) {
+      const hit = document.createElement("div");
+      hit.className = "hit";
+
+      const top = document.createElement("div");
+      const badge = document.createElement("span");
+      badge.className = "badge";
+      badge.textContent = item.recall_number || "-";
+      top.appendChild(badge);
+
+      const hitMeta = document.createElement("span");
+      hitMeta.className = "hit-meta";
+      hitMeta.textContent = ` validation ${item.validation_confidence ?? "-"} | sim ${item.similarity ?? "-"} | ${item.classification || "-"} | ${item.recalling_firm || "-"}`;
+      top.appendChild(hitMeta);
+
+      const snippet = document.createElement("div");
+      snippet.className = "hit-content";
+      snippet.textContent = item.supporting_snippet || item.content || "";
+
+      const rationale = document.createElement("div");
+      rationale.className = "muted";
+      rationale.textContent = item.rationale || "";
+
+      hit.append(top, snippet, rationale);
+      card.appendChild(hit);
+    }
   }
 
   function renderDistribution(data, card) {
