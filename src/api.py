@@ -3,7 +3,7 @@
 A single ``POST /ask`` turns a natural-language question into a validated ``QuerySpec`` (via
 ``nl_query.NLEngine``), runs it through the SQL analytics engine, and returns a chart-friendly,
 evidence-backed JSON payload that the static page at ``web/index.html`` renders. Every number
-still comes from SQL — the model only picks the query shape. The OpenAI client and schema
+still comes from SQL — the model only picks the query shape. Provider clients and schema
 context are warmed ONCE at startup and reused across requests.
 
 Run (from the repo root):
@@ -24,10 +24,10 @@ from typing import Any, Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from openai import OpenAIError
 from pydantic import BaseModel, Field
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # allow `import nl_query` under uvicorn
+import llm  # noqa: E402
 import validation  # noqa: E402
 from nl_query import Answer, Intent, NLEngine  # noqa: E402
 from observability import QueryLogEntry, QueryLogger, response_metadata  # noqa: E402
@@ -43,7 +43,7 @@ _query_logger: Optional[QueryLogger] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Warm the OpenAI client + cached schema context once, before serving traffic."""
+    """Warm provider clients + cached schema context once, before serving traffic."""
     global _engine, _query_logger
     _engine = NLEngine()
     _query_logger = QueryLogger(_engine.dsn)
@@ -104,6 +104,8 @@ def serialize_answer(ans: Answer) -> dict[str, Any]:
             {
                 "recall_number": item.hit.recall_number,
                 "field": item.hit.field,
+                "retrieval_mode": item.hit.retrieval_mode,
+                "score_kind": item.hit.score_kind,
                 "retrieval_score": round(item.hit.retrieval_score, 3),
                 "rrf_score": round(item.hit.rrf_score, 4),
                 "similarity": round(item.hit.similarity, 3),
@@ -118,6 +120,8 @@ def serialize_answer(ans: Answer) -> dict[str, Any]:
         ]
         base_data: dict[str, Any] = {
             "query": result.query,
+            "retrieval_mode": result.retrieval_mode,
+            "embedding_fallback_reason": result.embedding_fallback_reason,
             "estimated_count": result.estimated_count,
             "confidence_interval": result.confidence_interval,
             "confidence": result.confidence,
@@ -147,11 +151,17 @@ def serialize_answer(ans: Answer) -> dict[str, Any]:
         else:
             payload["data"] = {**base_data, "kind": "semantic_count"}
     elif spec.semantic_query:  # concept query -> ranked semantic hits
+        retrieval_mode = ans.result[0].retrieval_mode if ans.result else "hybrid"
+        fallback_reason = ans.result[0].embedding_fallback_reason if ans.result else None
         payload["data"] = {
             "kind": "retrieval",
             "query": spec.semantic_query,
+            "retrieval_mode": retrieval_mode,
+            "embedding_fallback_reason": fallback_reason,
             "items": [
                 {"recall_number": h.recall_number, "field": h.field,
+                 "retrieval_mode": h.retrieval_mode,
+                 "score_kind": h.score_kind,
                  "similarity": round(h.similarity, 3),
                  "retrieval_score": round(h.retrieval_score, 3),
                  "rrf_score": round(h.rrf_score, 4),
@@ -201,8 +211,8 @@ def _require_engine() -> NLEngine:
     return _engine
 
 
-def _has_openai_credentials(engine: NLEngine) -> bool:
-    return bool(os.environ.get("OPENAI_API_KEY") or getattr(engine.client, "api_key", None))
+def _has_chat_credentials(engine: NLEngine) -> bool:
+    return engine.chat_config.configured and engine.chat_client is not None
 
 
 def _clean_title(raw: str) -> str:
@@ -223,11 +233,17 @@ def _clean_title(raw: str) -> str:
 
 
 def _generate_title(req: TitleRequest, engine: NLEngine) -> str:
-    completion = engine.client.chat.completions.create(
-        model=engine.model,
-        temperature=0,
-        max_tokens=24,
-        messages=[
+    if engine.chat_client is None:
+        raise engine.chat_error or llm.ProviderMissingKeyError(
+            "chat client is not configured",
+            provider=engine.chat_config.provider,
+            model=engine.chat_config.model,
+            operation="chat_completion",
+        )
+    content = llm.chat_completion_text(
+        engine.chat_client,
+        engine.chat_config,
+        [
             {
                 "role": "system",
                 "content": (
@@ -238,8 +254,9 @@ def _generate_title(req: TitleRequest, engine: NLEngine) -> str:
             },
             {"role": "user", "content": req.question},
         ],
+        temperature=0,
+        max_tokens=24,
     )
-    content = completion.choices[0].message.content or ""
     title = _clean_title(content)
     if not title:
         raise ValueError("empty title response")
@@ -253,7 +270,8 @@ def _request_payload(req: AskRequest) -> dict[str, Any]:
 def _log_success(req: AskRequest, ans: Answer, payload: dict[str, Any],
                  *, start: float, model: str) -> None:
     spec = ans.spec.model_dump(mode="json", exclude_none=True)
-    metadata = response_metadata(payload, model=model)
+    provider = _engine.chat_config.provider if _engine is not None else None
+    metadata = response_metadata(payload, model=model, provider=provider)
     data_kind = metadata.get("data_kind")
     _require_query_logger().write(QueryLogEntry(
         route="/ask",
@@ -276,6 +294,18 @@ def _log_success(req: AskRequest, ans: Answer, payload: dict[str, Any],
     ))
 
 
+def _error_detail(exc: Exception, status_code: int) -> dict[str, Any]:
+    detail: dict[str, Any] = {"status_code": status_code}
+    if isinstance(exc, llm.ProviderError):
+        detail.update({
+            "provider": exc.provider,
+            "model": exc.model,
+            "operation": exc.operation,
+            "retryable": exc.retryable,
+        })
+    return detail
+
+
 def _log_error(req: AskRequest, exc: Exception, *, start: float, status_code: int) -> None:
     _require_query_logger().write(QueryLogEntry(
         route="/ask",
@@ -287,30 +317,34 @@ def _log_error(req: AskRequest, exc: Exception, *, start: float, status_code: in
         decision={"route": "error"},
         error_type=type(exc).__name__,
         error_message=str(exc),
-        error_detail={"status_code": status_code},
+        error_detail=_error_detail(exc, status_code),
     ))
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok", "engine": "ready" if _engine is not None else "starting"}
+def health() -> dict[str, Any]:
+    provider_status = _engine.provider_status() if _engine is not None else llm.provider_status()
+    return {
+        "status": "ok",
+        "engine": "ready" if _engine is not None else "starting",
+        **provider_status,
+    }
 
 
 @app.post("/title", response_model=TitleResponse)
 def title_endpoint(req: TitleRequest) -> TitleResponse:
     engine = _require_engine()
-    if not _has_openai_credentials(engine):
+    if not _has_chat_credentials(engine):
         raise HTTPException(
             status_code=503,
-            detail="title generation unavailable: OpenAI credentials are not configured",
+            detail="title generation unavailable: LLM provider credentials are not configured",
         )
     try:
         return TitleResponse(title=_generate_title(req, engine))
-    except OpenAIError as exc:
-        traceback.print_exc()
+    except llm.ProviderError as exc:
         raise HTTPException(
-            status_code=502,
-            detail=f"could not generate title ({type(exc).__name__})",
+            status_code=llm.http_status(exc),
+            detail=llm.public_error_detail(exc),
         ) from exc
     except (IndexError, AttributeError, ValueError) as exc:
         traceback.print_exc()
@@ -330,10 +364,26 @@ def ask_endpoint(req: AskRequest) -> dict[str, Any]:
     try:
         ans = _engine.ask(req.question)
         payload = serialize_answer(ans)
-    except Exception as exc:  # noqa: BLE001 — log server-side, return a safe message
+    except llm.ProviderError as exc:
+        status_code = llm.http_status(exc)
+        _log_error(req, exc, start=start, status_code=status_code)
+        raise HTTPException(status_code=status_code, detail=llm.public_error_detail(exc)) from exc
+    except validation.SemanticValidationError as exc:
+        traceback.print_exc()
+        _log_error(req, exc, start=start, status_code=502)
+        raise HTTPException(
+            status_code=502,
+            detail=f"semantic validation failed ({type(exc).__name__})",
+        ) from exc
+    except ValueError as exc:
         traceback.print_exc()
         _log_error(req, exc, start=start, status_code=400)
         raise HTTPException(status_code=400,
+                            detail=f"could not answer this question ({type(exc).__name__})")
+    except Exception as exc:  # noqa: BLE001 — log server-side, return a safe message
+        traceback.print_exc()
+        _log_error(req, exc, start=start, status_code=500)
+        raise HTTPException(status_code=500,
                             detail=f"could not answer this question ({type(exc).__name__})")
     _log_success(req, ans, payload, start=start, model=_engine.model)
     return payload

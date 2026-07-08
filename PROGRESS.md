@@ -11,8 +11,8 @@
 A deployed, demoable agent that answers natural-language questions about FDA drug recalls with **evidence-backed** results — **Path 1**: deterministic NL→SQL analytics (frequencies / trends / distributions, every number from SQL); **Path 2**: hybrid semantic retrieval + validated semantic-count estimates for fuzzy concepts; served via FastAPI + a small UI, with an eval harness. Reproduces an industry-style LLM structuring + retrieval pipeline on 100% public-domain data (portfolio for NA AI/ML roles). Full roadmap in [PLAN.md](PLAN.md).
 
 ## Now
-- **State:** Path 1 served + containerized. **Path 2.4 semantic validation/counting, Phase 3/4 sidecar foundations, and Frontend v2 are merged** — `/ask` can route fuzzy concepts through retrieval → LLM yes/no validation → estimated counts with evidence/confidence; offline taxonomy and firm-resolution schemas/CLIs are in place; the UI has one-time server title generation and icon sidebar controls.
-- ▶️ **Next action:** **OpenRouter provider switch** — route chat / structured-output calls through `OPENROUTER_API_KEY` so the frontend works despite OpenAI quota exhaustion; keep embeddings as a separate provider boundary and add FTS-only fallback before resuming taxonomy / firm-agent work.
+- **State:** Path 1 served + containerized. **Path 2.4 semantic validation/counting, Phase 3/4 sidecar foundations, Frontend v2, and the serving-path OpenAI-compatible provider gateway are in place** — `/ask` can route fuzzy concepts through retrieval → LLM yes/no validation → estimated counts with evidence/confidence; chat / structured-output calls can use `LLM_PROVIDER=openrouter`; embeddings stay on a separate provider/model boundary with explicit FTS-only fallback when embedding credentials/quota are unavailable.
+- ▶️ **Next action:** Validate the OpenRouter serving path with the real `OPENROUTER_API_KEY` in the deployment shell / PR review, then resume taxonomy / firm-agent work.
 
 ## Works now (verified)
 1. **Ingest** — [src/fetch_openfda.py](src/fetch_openfda.py): generic openFDA→Postgres, idempotent JSONB upsert, `--since auto` incremental.
@@ -39,7 +39,7 @@ A deployed, demoable agent that answers natural-language questions about FDA dru
    - Replace direct OpenAI structured `.parse(...)` usage with a provider-neutral helper: OpenAI can keep native parse; OpenRouter should use JSON Schema structured output and validate locally with Pydantic.
    - Keep embedding/query-vector calls separate (`EMBED_PROVIDER` / `EMBED_MODEL`) because existing pgvector rows are `text-embedding-3-small` 1536-d; if embeddings are unavailable, degrade semantic retrieval to Postgres FTS-only instead of returning a generic frontend 400.
    - Improve provider error mapping: quota/auth/rate-limit should return safe 502/503-style errors, not user-shaped HTTP 400.
-   - **Done when:** with `OPENROUTER_API_KEY` configured and OpenAI quota exhausted, `/title` and non-embedding `/ask` LLM steps work via OpenRouter, exact SQL questions still work, and fuzzy retrieval either uses compatible embeddings or clearly falls back to FTS-only.
+   - **Done when:** with `OPENROUTER_API_KEY` configured in the runtime shell, `/title` and non-embedding `/ask` LLM steps work via OpenRouter, exact SQL questions still work, and fuzzy retrieval either uses compatible embeddings or clearly falls back to FTS-only.
 2. **Phase 4 — run + freeze taxonomy v1, then exact taxonomy counts.**
    - Run `src/classify/induce.py` on distinct `reason_for_recall` texts, review/freeze taxonomy v1, then run `src/classify/label.py --apply` to populate `recall_label`.
    - Wire `GROUP BY recall_label` in [src/analytics.py](src/analytics.py) / [src/nl_query.py](src/nl_query.py) so “sterility by firm” returns exact counts for known categories.
@@ -61,7 +61,7 @@ A deployed, demoable agent that answers natural-language questions about FDA dru
 - ℹ️ **`state` stores 2-letter codes** (`CA`, not `California`). The NL layer enumerates a column's allowed values into the prompt ("value index") so the LLM uses real codes — keep that pattern when adding categorical filters.
 - 🐳 **Docker build on this machine (CN network):** Docker Hub + PyPI time out — build with mirror build-args (`REGISTRY=docker.m.daocloud.io`, `PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple`). Don't hand-edit `~/.docker/daemon.json` (Docker Desktop overwrites it); the base-image registry is parameterized in the [Dockerfile](Dockerfile) instead.
 - 🐳 **Container → host Postgres:** use `DATABASE_URL=postgresql://<role>@host.docker.internal:5432/fda`. `host.docker.internal` reaches Postgres.app even though it only listens on `localhost`, but you MUST set the role — the container runs as `root` (no such Postgres role); the host role is `waywei`.
-- 🔑 **OpenAI quota:** frontend `/ask` can fail because chat/validation/title calls still use OpenAI by default and the account currently returns `insufficient_quota`. Short-term fix is OpenRouter for chat/structured-output calls; do not mix this with embeddings until the embedding provider/model compatibility is explicit.
+- 🔑 **OpenAI quota:** keep serving with `LLM_PROVIDER=openrouter` while the OpenAI account returns `insufficient_quota` for chat/title/validation. Do not mix this with embeddings unless the embedding provider/model is explicitly dimension-compatible with stored pgvector rows.
 
 ## Decisions (settled — don't re-litigate)
 - **Dataset = `drug/enforcement`** — right-sized (~17.7k), clean, single-file download.

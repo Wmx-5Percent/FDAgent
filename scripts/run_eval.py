@@ -17,8 +17,8 @@ SRC_DIR = REPO_ROOT / "src"
 sys.path.insert(0, str(SRC_DIR))
 
 import psycopg  # noqa: E402
-from openai import OpenAI  # noqa: E402
 
+import llm  # noqa: E402
 import retrieval  # noqa: E402
 from api import serialize_answer  # noqa: E402
 from nl_query import MODEL, NLEngine  # noqa: E402
@@ -183,9 +183,16 @@ def _run_retrieval_case(case: Mapping[str, Any], *, dsn: str) -> EvalResult:
     field = str(case.get("field", "both"))
     threshold = float(case.get("min_recall_at_k", 1.0))
 
-    client = OpenAI()
+    embed_config = llm.embedding_config()
+    embedding_error: llm.ProviderError | None = None
+    try:
+        client = llm.create_embedding_client(embed_config)
+    except llm.ProviderError as exc:
+        client = None
+        embedding_error = exc
     with psycopg.connect(dsn) as conn:
-        hits = retrieval.search(conn, client, query, k=k, field=field)
+        hits = retrieval.search(conn, client, query, k=k, field=field,
+                                embed_config=embed_config, embedding_error=embedding_error)
     returned = [h.recall_number for h in hits]
     matched = expected.intersection(returned)
     recall = len(matched) / len(expected)
@@ -224,7 +231,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dsn", default=DEFAULT_DSN,
                    help="Postgres DSN for in-process evals and retrieval recall@k")
     p.add_argument("--model", default=MODEL,
-                   help="OpenAI chat model for in-process /ask evals")
+                   help="chat model for in-process /ask evals")
     p.add_argument("--timeout", type=float, default=60.0,
                    help="HTTP timeout in seconds for --base-url mode")
     p.add_argument("--llm-judge", action="store_true",

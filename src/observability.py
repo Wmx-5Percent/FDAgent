@@ -81,13 +81,16 @@ class QueryLogger:
         return int(row[0])
 
 
-def response_metadata(response: Mapping[str, Any], *, model: str | None = None) -> dict[str, Any]:
+def response_metadata(response: Mapping[str, Any], *, model: str | None = None,
+                      provider: str | None = None) -> dict[str, Any]:
     data = response.get("data")
     data_kind = data.get("kind") if isinstance(data, Mapping) else None
     metadata: dict[str, Any] = {
         "data_kind": data_kind,
         "summary_chars": len(str(response.get("summary") or "")),
     }
+    if provider:
+        metadata["provider"] = provider
     if model:
         metadata["model"] = model
     if not isinstance(data, Mapping):
@@ -109,4 +112,8 @@ def response_metadata(response: Mapping[str, Any], *, model: str | None = None) 
             value = data.get(key)
             if isinstance(value, int):
                 metadata[key] = value
+    for key in ("retrieval_mode", "embedding_fallback_reason"):
+        value = data.get(key)
+        if value:
+            metadata[key] = value
     return metadata
