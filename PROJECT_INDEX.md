@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-06-26T16:27Z · 38 files
+> Last generated: 2026-07-08T07:02Z · 39 files
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -25,6 +25,7 @@
 - [`.github/skills/db-column-docs-from-dictionary/SKILL.md`](.github/skills/db-column-docs-from-dictionary/SKILL.md) — Documenting DB columns from an upstream field dictionary — - **Type**: Workflow
 - [`.github/skills/learning-session-notes/SKILL.md`](.github/skills/learning-session-notes/SKILL.md) — Learning Session Notes — - **Type**: Workflow + BestPractice
 - [`.github/skills/openfda-data-download/SKILL.md`](.github/skills/openfda-data-download/SKILL.md) — Downloading / ingesting openFDA data — - **Type**: API Guide + Workflow
+- [`.github/skills/parallel-dev-worktree-cleanup/SKILL.md`](.github/skills/parallel-dev-worktree-cleanup/SKILL.md) — Parallel-Dev Worktree Cleanup — - **Type**: Workflow + BestPractice
 - [`.github/skills/skill-writing/SKILL.md`](.github/skills/skill-writing/SKILL.md) — Skill 写作指南（Meta-Skill） — - **类型**: BestPractice
 
 ## evals/

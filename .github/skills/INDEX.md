@@ -10,6 +10,7 @@
 Complete workflows for a specific task.
 - [db-column-docs-from-dictionary](db-column-docs-from-dictionary/SKILL.md) — Attach an upstream field dictionary's **verbatim** definitions to a database table as Postgres column COMMENTs, with explicit `[inferred]` markers for anything the source does not document.
 - [learning-session-notes](learning-session-notes/SKILL.md) — Summarize project conversations into durable personal learning notes: concepts, interview Q&A, project examples, and strategy tradeoffs, while deduplicating against `learning-notes/INDEX.md`.
+- [parallel-dev-worktree-cleanup](parallel-dev-worktree-cleanup/SKILL.md) — Retire the local git worktree/clone folders from parallel multi-agent development after their branches merge, with a three-check safe-to-delete gate so no unmerged/unpushed work is lost (uses `git worktree remove`, not `rm -rf`).
 
 ### API Guide
 How to call an external system or data source.
