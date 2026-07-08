@@ -12,7 +12,7 @@ A deployed, demoable agent that answers natural-language questions about FDA dru
 
 ## Now
 - **State:** Path 1 served + containerized. **Path 2.4 semantic validation/counting, Phase 3/4 sidecar foundations, and Frontend v2 are merged** — `/ask` can route fuzzy concepts through retrieval → LLM yes/no validation → estimated counts with evidence/confidence; offline taxonomy and firm-resolution schemas/CLIs are in place; the UI has one-time server title generation and icon sidebar controls.
-- ▶️ **Next action:** run/freeze a Phase 4 taxonomy v1, label/backfill `recall_label`, then wire taxonomy `count_by` into `/ask`; after that populate firm aliases and build the Phase 3 “is this company safe?” agent.
+- ▶️ **Next action:** **OpenRouter provider switch** — route chat / structured-output calls through `OPENROUTER_API_KEY` so the frontend works despite OpenAI quota exhaustion; keep embeddings as a separate provider boundary and add FTS-only fallback before resuming taxonomy / firm-agent work.
 
 ## Works now (verified)
 1. **Ingest** — [src/fetch_openfda.py](src/fetch_openfda.py): generic openFDA→Postgres, idempotent JSONB upsert, `--since auto` incremental.
@@ -34,16 +34,22 @@ A deployed, demoable agent that answers natural-language questions about FDA dru
 ## Next up (ordered)
 > Each item lists **concrete deliverables + done-when**. Design rationale lives in [PLAN.md](PLAN.md); don't duplicate it here.
 
-1. **Phase 4 — run + freeze taxonomy v1, then exact taxonomy counts.**
+1. **Provider switch — OpenRouter for chat / structured output, embeddings separate.**
+   - Add a central LLM/provider gateway (e.g. `src/llm.py`) so `/ask`, `/title`, semantic validation, taxonomy CLIs, and firm CLIs can use `LLM_PROVIDER=openrouter` + OpenRouter model slugs without each module knowing provider details.
+   - Replace direct OpenAI structured `.parse(...)` usage with a provider-neutral helper: OpenAI can keep native parse; OpenRouter should use JSON Schema structured output and validate locally with Pydantic.
+   - Keep embedding/query-vector calls separate (`EMBED_PROVIDER` / `EMBED_MODEL`) because existing pgvector rows are `text-embedding-3-small` 1536-d; if embeddings are unavailable, degrade semantic retrieval to Postgres FTS-only instead of returning a generic frontend 400.
+   - Improve provider error mapping: quota/auth/rate-limit should return safe 502/503-style errors, not user-shaped HTTP 400.
+   - **Done when:** with `OPENROUTER_API_KEY` configured and OpenAI quota exhausted, `/title` and non-embedding `/ask` LLM steps work via OpenRouter, exact SQL questions still work, and fuzzy retrieval either uses compatible embeddings or clearly falls back to FTS-only.
+2. **Phase 4 — run + freeze taxonomy v1, then exact taxonomy counts.**
    - Run `src/classify/induce.py` on distinct `reason_for_recall` texts, review/freeze taxonomy v1, then run `src/classify/label.py --apply` to populate `recall_label`.
    - Wire `GROUP BY recall_label` in [src/analytics.py](src/analytics.py) / [src/nl_query.py](src/nl_query.py) so “sterility by firm” returns exact counts for known categories.
    - **Done when:** `recall_label` is populated + a `count_by` over a taxonomy node works end-to-end in `/ask`.
-2. **Phase 3 — populate firm aliases + tool-calling agent.**
+3. **Phase 3 — populate firm aliases + tool-calling agent.**
    - Run `src/firm/resolve.py` / `src/firm/brand.py` with reviewed thresholds/provenance, then add the OpenAI function-calling agent over analytics/retrieval/firm tools.
    - **Done when:** “is <brand> safe?” resolves brand→firm set and returns an evidence-backed profile with provenance tiers.
-3. **Conversational context v2.** Server-side conversation history keyed to `query_log`; `/ask` accepts a conversation id + prior turns so follow-ups carry context. **Done when:** a follow-up question resolves pronouns/ellipsis using prior turns.
-4. **Observability L2 — Langfuse.** Only after L1 `query_log` shows a concrete gap. Wrap the `/ask` LLM calls as Langfuse traces/spans; keep `query_log` as the SQL-queryable source of truth. **Done when:** a traced `/ask` is inspectable in Langfuse without losing the `query_log` row.
-5. **Public deploy (optional).** Build/push the image to HF Spaces or Render + a managed Postgres with pgvector (Supabase / Neon); load `sql/` + embeddings; set `DATABASE_URL` / `OPENAI_API_KEY` as secrets. **Done when:** a public URL serves `/ask` against the managed DB.
+4. **Conversational context v2.** Server-side conversation history keyed to `query_log`; `/ask` accepts a conversation id + prior turns so follow-ups carry context. **Done when:** a follow-up question resolves pronouns/ellipsis using prior turns.
+5. **Observability L2 — Langfuse.** Only after L1 `query_log` shows a concrete gap. Wrap the `/ask` LLM calls as Langfuse traces/spans; keep `query_log` as the SQL-queryable source of truth. **Done when:** a traced `/ask` is inspectable in Langfuse without losing the `query_log` row.
+6. **Public deploy (optional).** Build/push the image to HF Spaces or Render + a managed Postgres with pgvector (Supabase / Neon); load `sql/` + embeddings; set `DATABASE_URL` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY` as secrets. **Done when:** a public URL serves `/ask` against the managed DB.
 
 ## Backlog (unscheduled ideas)
 - **Company Exposure Index** — per-product-category ranking of firms/brands by openFDA "exposure" (à la Karpathy's AI-exposure), with a category dropdown → ranked chart. **Coupled, not standalone:** reuses generic ingest + Path 1 `count_by`, but **depends on Phase 3 entity resolution** for correct per-firm numbers; decoupled only from the LLM/agent/chat layer. Key nuance: exposure ≠ raw count → needs normalization (per product/NDC count) + severity weight (Class I/II/III) + recency. Full design in [PLAN.md](PLAN.md) 附录 A1.
@@ -55,7 +61,7 @@ A deployed, demoable agent that answers natural-language questions about FDA dru
 - ℹ️ **`state` stores 2-letter codes** (`CA`, not `California`). The NL layer enumerates a column's allowed values into the prompt ("value index") so the LLM uses real codes — keep that pattern when adding categorical filters.
 - 🐳 **Docker build on this machine (CN network):** Docker Hub + PyPI time out — build with mirror build-args (`REGISTRY=docker.m.daocloud.io`, `PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple`). Don't hand-edit `~/.docker/daemon.json` (Docker Desktop overwrites it); the base-image registry is parameterized in the [Dockerfile](Dockerfile) instead.
 - 🐳 **Container → host Postgres:** use `DATABASE_URL=postgresql://<role>@host.docker.internal:5432/fda`. `host.docker.internal` reaches Postgres.app even though it only listens on `localhost`, but you MUST set the role — the container runs as `root` (no such Postgres role); the host role is `waywei`.
-- 🔑 **OpenAI quota:** full `scripts/run_eval.py` currently hits OpenAI `insufficient_quota`; targeted compile/index/frontend checks pass, but live LLM eval needs quota restored.
+- 🔑 **OpenAI quota:** frontend `/ask` can fail because chat/validation/title calls still use OpenAI by default and the account currently returns `insufficient_quota`. Short-term fix is OpenRouter for chat/structured-output calls; do not mix this with embeddings until the embedding provider/model compatibility is explicit.
 
 ## Decisions (settled — don't re-litigate)
 - **Dataset = `drug/enforcement`** — right-sized (~17.7k), clean, single-file download.
@@ -68,6 +74,7 @@ A deployed, demoable agent that answers natural-language questions about FDA dru
 - **Embeddings = `text-embedding-3-small` (1536-d)** in a separate, **multi-source** `embeddings` table keyed `(source, source_id, field)` — one row per (record, field), e.g. `drug_enforcement` × {reason_for_recall, product_description} — NOT extra columns on the source table. One HNSW + one GIN index cover all sources/fields; adding an FDA dataset = one `SOURCES` entry in `embed.py` (no schema change). Incremental re-embed only new/changed text.
 - **Concepts route via `semantic_query`, never `ilike`** — hard facts go in `filters` (Tier-A columns), fuzzy concepts in `semantic_query`.
 - **Semantic counting is an estimate** — retrieve-above-threshold → per-item validate → count + confidence/evidence. Exact counts should come from taxonomy labels once Phase 4 is populated.
+- **Provider boundary:** chat / structured-output LLM calls may move to OpenRouter first (`LLM_PROVIDER=openrouter`, OpenRouter model slugs, `OPENROUTER_API_KEY`); embeddings remain a separate provider/model boundary because stored pgvector rows depend on the original embedding dimension/space. If embeddings are unavailable, prefer explicit FTS-only fallback over silent bad vectors.
 - **Observability before scale** — `query_log` (Postgres, L1) first, then Langfuse (L2); every `/ask` is a trace and the `QuerySpec` is the materialized, inspectable "reasoning".
 - **"Is this company safe?" = Phase 3 capstone, after Path 2** — brand→parent is `[inferred]` (LLM / Wikidata / NDC labeler, marked + confirmable); company→`recalling_firm` is entity resolution (`pg_trgm` fuzzy + known-subsidiary expansion + LLM verify), since firms are fragmented (1,634 distinct; Pfizer/Teva/McNeil appear under many names/subsidiaries).
 - **Vision = FDA-grounded vertical agent** (not just NL→DB): FDA = ground-truth fact layer; web/Wikidata = augmentation layer, strictly isolated (web numbers never enter counts; negative = "not found in FDA", not "safe"). Two scenarios: personal pull (Q&A) + enterprise push (monitor watched firms/device types; reuses `--since auto`).
