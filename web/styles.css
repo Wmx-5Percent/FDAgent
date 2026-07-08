@@ -161,9 +161,38 @@ button:disabled {
 }
 
 .icon-button {
+  display: inline-grid;
+  place-items: center;
   width: 30px;
   height: 30px;
   padding: 0;
+  border: 1px solid transparent;
+}
+
+.icon-button svg {
+  width: 16px;
+  height: 16px;
+  pointer-events: none;
+}
+
+.icon-button:hover:not(:disabled),
+.icon-button:focus-visible {
+  border-color: var(--line);
+  background: rgb(255 255 255 / 0.06);
+  color: var(--fg);
+  filter: none;
+}
+
+.icon-button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgb(78 161 255 / 0.32);
+}
+
+.icon-button.delete-button:hover:not(:disabled),
+.icon-button.delete-button:focus-visible {
+  border-color: rgb(255 138 138 / 0.32);
+  background: rgb(255 138 138 / 0.08);
+  color: var(--danger);
 }
 
 .chat-pane {

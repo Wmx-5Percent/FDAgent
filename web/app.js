@@ -3,6 +3,12 @@
   const STORE_KEY = "fdagent.chat.v1";
   const MAX_TITLE = 44;
   const SVG_NS = "http://www.w3.org/2000/svg";
+  const TITLE_NEW = "new";
+  const TITLE_PLACEHOLDER = "placeholder";
+  const TITLE_AUTO = "auto";
+  const TITLE_MANUAL = "manual";
+  const TITLE_LEGACY = "legacy";
+  const TITLE_SOURCES = [TITLE_NEW, TITLE_PLACEHOLDER, TITLE_AUTO, TITLE_MANUAL, TITLE_LEGACY];
   const EXAMPLES = [
     "How many Class I drug recalls have there been?",
     "Which firms had the most Class I recalls?",
@@ -87,19 +93,31 @@
       return null;
     }
     const id = typeof value.id === "string" && value.id ? value.id : makeId("conv");
-    const title = typeof value.title === "string" && value.title.trim()
-      ? value.title.trim()
-      : "New chat";
     const messages = value.messages
       .map(normalizeMessage)
       .filter(Boolean);
+    const title = typeof value.title === "string" && value.title.trim()
+      ? value.title.trim()
+      : "New chat";
+    const titleSource = normalizeTitleSource(value.titleSource, messages, title);
+    const migratedWithoutTitleMetadata = typeof value.titleSource !== "string";
     return {
       id,
       title,
+      titleSource,
+      titleRequested: Boolean(value.titleRequested) || (migratedWithoutTitleMetadata && messages.length > 0),
+      titlePromptMessageId: typeof value.titlePromptMessageId === "string" ? value.titlePromptMessageId : null,
+      titlePromptQuestion: typeof value.titlePromptQuestion === "string" ? value.titlePromptQuestion : null,
       messages,
       createdAt: value.createdAt || new Date().toISOString(),
       updatedAt: value.updatedAt || new Date().toISOString(),
     };
+  }
+
+  function normalizeTitleSource(value, messages, title) {
+    if (TITLE_SOURCES.includes(value)) return value;
+    if (messages.length) return TITLE_LEGACY;
+    return title === "New chat" ? TITLE_NEW : TITLE_MANUAL;
   }
 
   function normalizeMessage(value) {
@@ -118,7 +136,7 @@
 
   function saveState() {
     localStorage.setItem(STORE_KEY, JSON.stringify({
-      version: 1,
+      version: 2,
       activeId: state.activeId,
       conversations: state.conversations,
     }));
@@ -143,6 +161,10 @@
     return {
       id: makeId("conv"),
       title: "New chat",
+      titleSource: TITLE_NEW,
+      titleRequested: false,
+      titlePromptMessageId: null,
+      titlePromptQuestion: null,
       messages: [],
       createdAt: now,
       updatedAt: now,
@@ -208,17 +230,17 @@
       const rename = document.createElement("button");
       rename.type = "button";
       rename.className = "icon-button";
-      rename.textContent = "R";
       rename.title = "Rename conversation";
       rename.setAttribute("aria-label", `Rename ${conversation.title}`);
+      rename.appendChild(iconSvg("pencil"));
       rename.addEventListener("click", () => renameConversation(conversation.id));
 
       const remove = document.createElement("button");
       remove.type = "button";
-      remove.className = "icon-button";
-      remove.textContent = "D";
+      remove.className = "icon-button delete-button";
       remove.title = "Delete conversation";
       remove.setAttribute("aria-label", `Delete ${conversation.title}`);
+      remove.appendChild(iconSvg("trash"));
       remove.addEventListener("click", () => deleteConversation(conversation.id));
 
       row.append(select, rename, remove);
@@ -234,6 +256,8 @@
     const title = next.trim();
     if (!title) return;
     conversation.title = title.slice(0, MAX_TITLE);
+    conversation.titleSource = TITLE_MANUAL;
+    conversation.titleRequested = true;
     touch(conversation);
     saveState();
     render();
@@ -724,10 +748,15 @@
     const index = conversation.messages.findIndex((message) => message.id === messageId);
     if (index < 0) return;
 
-    conversation.messages[index].content = question;
+    const message = conversation.messages[index];
+    message.content = question;
     conversation.messages = conversation.messages.slice(0, index + 1);
-    if (index === 0) {
+    if (index === 0 && canUpdatePlaceholderTitle(conversation)) {
       conversation.title = titleFromQuestion(question);
+      conversation.titleSource = TITLE_PLACEHOLDER;
+      if (conversation.titlePromptMessageId === message.id) {
+        conversation.titlePromptQuestion = question;
+      }
     }
     editState = null;
     appendAssistantAndRequest(conversation, question);
@@ -743,12 +772,13 @@
       content: question,
       createdAt: new Date().toISOString(),
     };
+    const shouldRequestTitle = prepareTitleRequest(conversation, userMessage, question);
     conversation.messages.push(userMessage);
-    if (conversation.title === "New chat") {
-      conversation.title = titleFromQuestion(question);
-    }
     els.input.value = "";
     appendAssistantAndRequest(conversation, question);
+    if (shouldRequestTitle) {
+      requestTitle(conversation.id, userMessage.id, question);
+    }
   }
 
   function appendAssistantAndRequest(conversation, question) {
@@ -804,6 +834,67 @@
     }
   }
 
+  async function requestTitle(conversationId, messageId, question) {
+    try {
+      const response = await fetch("/title", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.detail || `HTTP ${response.status}`);
+      }
+      const title = typeof payload.title === "string" ? payload.title.trim() : "";
+      if (!title) {
+        throw new Error("Empty title response");
+      }
+      applyGeneratedTitle(conversationId, messageId, question, title);
+    } catch {
+      keepPlaceholderTitle(conversationId, messageId, question);
+    }
+  }
+
+  function prepareTitleRequest(conversation, userMessage, question) {
+    if (conversation.messages.length || conversation.titleRequested || conversation.titleSource === TITLE_MANUAL) {
+      return false;
+    }
+    conversation.title = titleFromQuestion(question);
+    conversation.titleSource = TITLE_PLACEHOLDER;
+    conversation.titleRequested = true;
+    conversation.titlePromptMessageId = userMessage.id;
+    conversation.titlePromptQuestion = question;
+    return true;
+  }
+
+  function canUpdatePlaceholderTitle(conversation) {
+    return conversation.titleSource === TITLE_NEW || conversation.titleSource === TITLE_PLACEHOLDER;
+  }
+
+  function isCurrentTitleRequest(conversation, messageId, question) {
+    if (conversation.titleSource === TITLE_MANUAL) return false;
+    if (!conversation.titleRequested || conversation.titlePromptMessageId !== messageId) return false;
+    if (conversation.titlePromptQuestion !== question) return false;
+    const firstUser = conversation.messages.find((message) => message.id === messageId);
+    return Boolean(firstUser && firstUser.role === "user" && firstUser.content === question);
+  }
+
+  function applyGeneratedTitle(conversationId, messageId, question, title) {
+    const conversation = state.conversations.find((conv) => conv.id === conversationId);
+    if (!conversation || !isCurrentTitleRequest(conversation, messageId, question)) return;
+    conversation.title = title.slice(0, MAX_TITLE);
+    conversation.titleSource = TITLE_AUTO;
+    saveState();
+    render();
+  }
+
+  function keepPlaceholderTitle(conversationId, messageId, question) {
+    const conversation = state.conversations.find((conv) => conv.id === conversationId);
+    if (!conversation || !isCurrentTitleRequest(conversation, messageId, question)) return;
+    conversation.titleSource = TITLE_PLACEHOLDER;
+    saveState();
+  }
+
   function updateAssistant(conversationId, assistantId, patch) {
     const conversation = state.conversations.find((conv) => conv.id === conversationId);
     const message = conversation?.messages.find((item) => item.id === assistantId);
@@ -832,6 +923,21 @@
 
   function titleFromQuestion(question) {
     return question.length > MAX_TITLE ? `${question.slice(0, MAX_TITLE - 3)}...` : question;
+  }
+
+  function iconSvg(name) {
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+
+    const path = document.createElementNS(SVG_NS, "path");
+    path.setAttribute("fill", "currentColor");
+    path.setAttribute("d", name === "trash"
+      ? "M7 21a2 2 0 0 1-2-2V8h14v11a2 2 0 0 1-2 2H7Zm2-11v8h2v-8H9Zm4 0v8h2v-8h-2ZM4 6h16v2H4V6Zm5-3h6l1 2H8l1-2Z"
+      : "M4 17.25V20h2.75L17.81 8.94l-2.75-2.75L4 17.25Zm15.71-10.04a1 1 0 0 0 0-1.41l-1.5-1.5a1 1 0 0 0-1.41 0l-1.08 1.08 2.75 2.75 1.24-.92Z");
+    svg.appendChild(path);
+    return svg;
   }
 
   function focusComposer() {
