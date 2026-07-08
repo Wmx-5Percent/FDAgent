@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-06-26T08:21Z · 32 files
+> Last generated: 2026-07-08T08:50Z · 36 files
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -39,6 +39,7 @@
 - [`sql/003_recall_embeddings.sql`](sql/003_recall_embeddings.sql) — Create recall_embeddings: per-(recall, field) text vectors + FTS for Path 2 hybrid retrieval.
 - [`sql/004_embeddings_multisource.sql`](sql/004_embeddings_multisource.sql) — Generalize recall_embeddings -> embeddings for MULTIPLE data sources (Path 2).
 - [`sql/005_embeddings_comments.sql`](sql/005_embeddings_comments.sql) — Column documentation for `embeddings` (Path 2 vector + full-text store).
+- [`sql/008_firm_resolution.sql`](sql/008_firm_resolution.sql) — Create firm-resolution sidecar tables for offline FDA recalling-firm resolution.
 
 ## src/
 - [`src/analytics.py`](src/analytics.py) — Deterministic frequency/aggregation query engine over drug_enforcement.
@@ -49,6 +50,11 @@
   - symbols: `run`, `parse_args`
 - [`src/fetch_openfda.py`](src/fetch_openfda.py) — Generic openFDA -> PostgreSQL ingester.
   - symbols: `parse_fda_date`, `record_id`, `fda_date_str`, `fetch_page`, `ensure_table`, `upsert_rows`, `max_report_date`, `build_search`, `run`, `parse_args`
+- [`src/firm/__init__.py`](src/firm/__init__.py) — Offline firm and brand resolution helpers for FDA recall sidecar tables.
+- [`src/firm/brand.py`](src/firm/brand.py) — Resolve brand/product names to firm or parent candidates with provenance tiers.
+  - symbols: `BrandCandidate`, `BrandInference`, `collect_candidates`, `apply_candidates`, `print_candidates`, `run`, `parse_args`
+- [`src/firm/resolve.py`](src/firm/resolve.py) — Resolve FDA recalling_firm strings into conservative sidecar firm aliases.
+  - symbols: `FirmName`, `CandidatePair`, `Cluster`, `FirmPairVerification`, `UnionFind`, `normalize_name`, `load_firm_names`, `pg_trgm_pairs`, `build_candidate_pairs`, `deterministic_reason`, `verify_pair`, `classify_pairs`
 - [`src/nl_query.py`](src/nl_query.py) — Natural-language front-end for the deterministic analytics engine.
   - symbols: `Intent`, `Op`, `FilterSpec`, `QuerySpec`, `Answer`, `build_schema_context`, `generate_spec`, `run_spec`, `summarize`, `NLEngine`, `ask`
 - [`src/retrieval.py`](src/retrieval.py) — Semantic (vector) retrieval over the `embeddings` table — Path 2 / slice 2.2 (v1: vector core).
