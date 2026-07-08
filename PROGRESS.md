@@ -5,7 +5,7 @@
 > file map is [PROJECT_INDEX.md](PROJECT_INDEX.md). To avoid drift, this file **links** to
 > those rather than repeating them.
 > **Maintenance:** at the end of each work session, update *Now / Next up / Blockers*. Keep it short.
-> Last updated: 2026-06-29
+> Last updated: 2026-07-08
 
 ## Goal (end state)
 A deployed, demoable agent that answers natural-language questions about FDA drug recalls with **evidence-backed** results — **Path 1**: deterministic NL→SQL analytics (frequencies / trends / distributions, every number from SQL); **Path 2** (later): hybrid semantic retrieval for ad-hoc questions; served via FastAPI + a small UI, with an eval harness. Reproduces an industry-style LLM structuring + retrieval pipeline on 100% public-domain data (portfolio for NA AI/ML roles). Full roadmap in [PLAN.md](PLAN.md).
@@ -30,15 +30,40 @@ A deployed, demoable agent that answers natural-language questions about FDA dru
 13. **Observability + eval (L1)** — [sql/006_query_log.sql](sql/006_query_log.sql) creates the idempotent `query_log` trace table; [src/observability.py](src/observability.py) logs request, QuerySpec, routing decision, compact response metadata, latency, and handled errors for `/ask`; [scripts/run_eval.py](scripts/run_eval.py) runs golden evals from [evals/golden/v1.json](evals/golden/v1.json). Verified: 5/5 golden cases pass, including SQL routing assertions and retrieval recall@10.
 
 ## Next up (ordered)
-1. **Path 2.4 per-item validation** — LLM yes/no + supporting snippet + threshold for each retrieved item; **semantic counting** lands here (estimate + confidence).
-2. **Phase 4 — automated recall classification** (PLAN §4): induce taxonomy (HDBSCAN over 4,390 distinct reasons + prefix mining) → human freeze v1 → closed-set auto-label (`recall_label`) → discovery loop. Fills the **"semantic × aggregate" gap**: labeled text → exact `GROUP BY` (e.g. "sterility by firm"), replacing the 2.4 estimate for known categories. New tables: `taxonomy` / `recall_label` / `taxonomy_candidate`.
-3. **Phase 3 entity-resolution offline build** — materialize `firm` / `firm_alias` / `parent_group` / `brand_alias` (pg_trgm + token-set + phonetic + name-embeddings union → union-find/community → LLM verify), then the tool-calling agent. `fda_present` flag; `resolution_log` for unresolved.
-4. **Observability L2** — add Langfuse only after L1 `query_log` proves what extra trace UX is needed.
-5. **Frontend v2 (one PR) — session titles + sidebar icons.** Self-contained UI PR; history stays in `localStorage` (full server-side persistence is item 6):
-   - **Auto-summary titles (Plan B):** new server-side `POST /title` (`gpt-4o-mini`) summarizes the **first question's topic** into a short (≤6-word) title; the UI calls it once per conversation, then the title is fixed (manual rename still wins). Replaces the first-question truncation in `titleFromQuestion` ([web/app.js](web/app.js)). The OpenAI key stays server-side — never exposed to the browser; optionally log the call as `route='/title'` in `query_log`.
-   - **Sidebar icon controls:** replace the "R"/"D" text buttons with inline-SVG icons — **pencil = rename** (existing `renameConversation`), **trash = delete** (existing `deleteConversation`); zero-build, no new deps.
-6. **Conversational context v2** — server-side history tied to `query_log`; current UI intentionally sends each turn as an independent `/ask`.
-7. **Public deploy (optional):** push the image to HF Spaces / Render + a managed Postgres + pgvector (Supabase / Neon).
+> Each item lists **concrete deliverables + done-when**. Design rationale lives in [PLAN.md](PLAN.md); don't duplicate it here.
+
+1. **Path 2.4 — per-item validation + semantic counting.** Turn a fuzzy-concept query from a top-K list into a *verified count with confidence*.
+   - **Verify step** (new `src/validation.py`, or extend [src/retrieval.py](src/retrieval.py)): after `retrieval.search()`, for each candidate ask the LLM **yes/no “does this recall actually describe <concept>?”** + a **supporting snippet** + confidence (Pydantic structured output).
+   - **Threshold**: keep items above a similarity/confidence cutoff; calibrate the cutoff on a small hand-labeled set (record precision/recall at the chosen cutoff).
+   - **Enable semantic + aggregate**: let `QuerySpec` carry `semantic_query` *together with* `intent=count_total/count_by` ([src/nl_query.py](src/nl_query.py)); `run_spec` runs the funnel (retrieve → verify → count) and returns **estimate + confidence interval + evidence `recall_number`s**.
+   - **Serve/UI**: [src/api.py](src/api.py) returns estimate + CI; UI renders “~N recalls (estimated, verified k/K)”.
+   - **Done when:** “how many sterility recalls?” returns a verified estimate with evidence, and a new golden case in [evals/golden/v1.json](evals/golden/v1.json) asserts it.
+
+2. **Phase 4 — automated recall classification** (design: PLAN §4). Make recall problems a **structured label** so counting is exact.
+   - **Schema** (`sql/007_taxonomy.sql`): `taxonomy(node_id,parent_id,label,definition,examples[],version,status)` + `recall_label(record_id,node_id,level,confidence,evidence,version,labeler)` + `taxonomy_candidate`.
+   - **P1 induce** (new `src/classify/induce.py`): HDBSCAN over the 4,390 distinct `reason_for_recall` embeddings + prefix mining → LLM names each cluster → draft 2-level taxonomy → **you review & freeze v1**.
+   - **P2 label** (new `src/classify/label.py`): closed-set LLM labeling of the 4,390 distinct texts (multi-label + confidence + evidence + `other`), hash-cached → write `recall_label`, backfill to 17.7k rows.
+   - **P3 discovery** (new `src/classify/discover.py`): cluster the `other`/low-confidence residual → LLM-name candidates → dedup vs taxonomy → emit a **“candidate new categories” report** (size/growth/coherence).
+   - **Wire query**: expose `GROUP BY recall_label` in [src/analytics.py](src/analytics.py) / [src/nl_query.py](src/nl_query.py) so “sterility by firm” returns **exact** counts (fills the semantic×aggregate gap; supersedes 2.4's estimate for known categories).
+   - **Done when:** `recall_label` populated + a `count_by` over a taxonomy node works end-to-end in `/ask`.
+
+3. **Phase 3 — firm entity resolution + tool-calling agent** (design: PLAN Phase 3). The capstone “is this company safe?”
+   - **Schema** (`sql/008_firm_resolution.sql`): `firm(…,fda_present,source,confidence)` + `firm_alias(raw_firm→firm_id)` + `parent_group` + `brand_alias` + `resolution_log`.
+   - **Offline build** (new `src/firm/resolve.py`): normalize the 1,634 firm strings → multi-signal candidate pairs (**pg_trgm + token-set + phonetic via `fuzzystrmatch` + name-embeddings**) → union-find / community cluster → **LLM verify** → materialize `firm`/`firm_alias`. Seed canonical firms from the NDC labeler for the 18% that have it.
+   - **Brand→parent** (new `src/firm/brand.py`): NDC labeler > Wikidata > LLM, each link marked `source`+`confidence`, user-confirmable.
+   - **Agent** (new `src/agent.py`): OpenAI function-calling over tools {analytics, retrieval, firm-resolution, web-search}; “is <brand> safe?” → resolve brand→firm set → **risk profile** (count by class / trend / top problems) with **3-tier provenance** (✅ FDA fact / ⚠️ inferred / 🌐 web).
+   - **Done when:** “is <brand> safe?” resolves brand→firm set and returns an evidence-backed profile with provenance tiers.
+
+4. **Observability L2 — Langfuse.** Only after L1 `query_log` shows a concrete gap. Wrap the `/ask` LLM calls as Langfuse traces/spans ([src/observability.py](src/observability.py)); keep `query_log` as the SQL-queryable source of truth. **Done when:** a traced `/ask` is inspectable in Langfuse without losing the `query_log` row.
+
+5. **Frontend v2 (one PR) — session titles + sidebar icons.** Self-contained UI PR; history stays in `localStorage` (server-side persistence is item 6).
+   - **Auto-summary titles:** new server-side `POST /title` (`gpt-4o-mini`) → ≤6-word title from the **first question**, called once per conversation (manual rename still wins); replaces the `titleFromQuestion` truncation in [web/app.js](web/app.js); OpenAI key stays server-side; optionally log `route='/title'` in `query_log`.
+   - **Sidebar icons:** replace the “R”/“D” text buttons with inline-SVG **pencil = rename** / **trash = delete** (existing `renameConversation` / `deleteConversation`); zero-build, no new deps.
+   - **Done when:** new conversations auto-title once and the sidebar shows icon controls.
+
+6. **Conversational context v2.** Server-side conversation history keyed to `query_log`; `/ask` accepts a conversation id + prior turns so follow-ups carry context (UI currently sends each turn independently). **Done when:** a follow-up question resolves pronouns/ellipsis using prior turns.
+
+7. **Public deploy (optional).** Build/push the image to HF Spaces or Render + a managed Postgres with pgvector (Supabase / Neon); load `sql/` + embeddings; set `DATABASE_URL` / `OPENAI_API_KEY` as secrets. **Done when:** a public URL serves `/ask` against the managed DB.
 
 ## Backlog (unscheduled ideas)
 - **Company Exposure Index** — per-product-category ranking of firms/brands by openFDA "exposure" (à la Karpathy's AI-exposure), with a category dropdown → ranked chart. **Coupled, not standalone:** reuses generic ingest + Path 1 `count_by`, but **depends on Phase 3 entity resolution** for correct per-firm numbers; decoupled only from the LLM/agent/chat layer. Key nuance: exposure ≠ raw count → needs normalization (per product/NDC count) + severity weight (Class I/II/III) + recency. Full design in [PLAN.md](PLAN.md) 附录 A1.
