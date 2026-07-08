@@ -24,6 +24,7 @@ from typing import Any, Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from openai import OpenAIError
 from pydantic import BaseModel, Field
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # allow `import nl_query` under uvicorn
@@ -32,6 +33,8 @@ from nl_query import Answer, Intent, NLEngine  # noqa: E402
 from observability import QueryLogEntry, QueryLogger, response_metadata  # noqa: E402
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
+TITLE_WORD_LIMIT = 6
+TITLE_MAX_CHARS = 44
 
 # Warmed at startup, reused across requests (see lifespan).
 _engine: Optional[NLEngine] = None
@@ -62,6 +65,15 @@ app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=500,
                           description="A natural-language question about FDA drug recalls.")
+
+
+class TitleRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=500,
+                          description="The first user question in a local chat conversation.")
+
+
+class TitleResponse(BaseModel):
+    title: str = Field(description="A concise chat title, capped at six words.")
 
 
 def _json_safe(v: Any) -> Any:
@@ -183,6 +195,57 @@ def _require_query_logger() -> QueryLogger:
     return _query_logger
 
 
+def _require_engine() -> NLEngine:
+    if _engine is None:
+        raise HTTPException(status_code=503, detail="engine not ready")
+    return _engine
+
+
+def _has_openai_credentials(engine: NLEngine) -> bool:
+    return bool(os.environ.get("OPENAI_API_KEY") or getattr(engine.client, "api_key", None))
+
+
+def _clean_title(raw: str) -> str:
+    title = " ".join(raw.replace("\n", " ").split()).strip(" \"'`")
+    for prefix in ("Title:", "title:"):
+        if title.startswith(prefix):
+            title = title[len(prefix):].strip(" \"'`")
+    while title.startswith(("-", "*")):
+        title = title[1:].lstrip()
+    if len(title) > 2 and title[0].isdigit() and title[1] == ".":
+        title = title[2:].lstrip()
+
+    words = title.split()
+    title = " ".join(words[:TITLE_WORD_LIMIT])
+    if len(title) > TITLE_MAX_CHARS:
+        title = f"{title[:TITLE_MAX_CHARS - 3].rstrip()}..."
+    return title.rstrip(" .,:;-")
+
+
+def _generate_title(req: TitleRequest, engine: NLEngine) -> str:
+    completion = engine.client.chat.completions.create(
+        model=engine.model,
+        temperature=0,
+        max_tokens=24,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Generate a concise title for a chat conversation about FDA drug recalls. "
+                    "Use only the user's first question. Return only the title, with no quotes, "
+                    "no period, and no more than six words."
+                ),
+            },
+            {"role": "user", "content": req.question},
+        ],
+    )
+    content = completion.choices[0].message.content or ""
+    title = _clean_title(content)
+    if not title:
+        raise ValueError("empty title response")
+    return title
+
+
 def _request_payload(req: AskRequest) -> dict[str, Any]:
     return req.model_dump(mode="json")
 
@@ -231,6 +294,30 @@ def _log_error(req: AskRequest, exc: Exception, *, start: float, status_code: in
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "engine": "ready" if _engine is not None else "starting"}
+
+
+@app.post("/title", response_model=TitleResponse)
+def title_endpoint(req: TitleRequest) -> TitleResponse:
+    engine = _require_engine()
+    if not _has_openai_credentials(engine):
+        raise HTTPException(
+            status_code=503,
+            detail="title generation unavailable: OpenAI credentials are not configured",
+        )
+    try:
+        return TitleResponse(title=_generate_title(req, engine))
+    except OpenAIError as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=502,
+            detail=f"could not generate title ({type(exc).__name__})",
+        ) from exc
+    except (IndexError, AttributeError, ValueError) as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=502,
+            detail=f"could not generate title ({type(exc).__name__})",
+        ) from exc
 
 
 @app.post("/ask")

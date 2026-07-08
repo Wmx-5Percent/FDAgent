@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-07-08T09:27Z · 44 files
+> Last generated: 2026-07-08T09:37Z · 44 files
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -52,7 +52,7 @@
 - [`src/analytics.py`](src/analytics.py) — Deterministic frequency/aggregation query engine over drug_enforcement.
   - symbols: `Kind`, `Filter`, `Group`, `RecallAnalytics`
 - [`src/api.py`](src/api.py) — FastAPI service exposing the deterministic NL->SQL analytics engine (Path 1, serving half).
-  - symbols: `lifespan`, `AskRequest`, `serialize_answer`, `health`, `ask_endpoint`, `index`
+  - symbols: `lifespan`, `AskRequest`, `TitleRequest`, `TitleResponse`, `serialize_answer`, `health`, `title_endpoint`, `ask_endpoint`, `index`
 - [`src/embed.py`](src/embed.py) — Embed FDA source text fields into the shared `embeddings` table (Path 2, offline half).
   - symbols: `run`, `parse_args`
 - [`src/fetch_openfda.py`](src/fetch_openfda.py) — Generic openFDA -> PostgreSQL ingester.
