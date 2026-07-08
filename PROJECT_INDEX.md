@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-07-08T09:37Z · 44 files
+> Last generated: 2026-07-08T09:48Z · 49 files
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -46,6 +46,7 @@
 - [`sql/004_embeddings_multisource.sql`](sql/004_embeddings_multisource.sql) — Generalize recall_embeddings -> embeddings for MULTIPLE data sources (Path 2).
 - [`sql/005_embeddings_comments.sql`](sql/005_embeddings_comments.sql) — Column documentation for `embeddings` (Path 2 vector + full-text store).
 - [`sql/006_query_log.sql`](sql/006_query_log.sql) — Create query_log: L1 Postgres observability for every handled /ask request.
+- [`sql/007_taxonomy.sql`](sql/007_taxonomy.sql) — Create recall taxonomy sidecar tables for offline classification.
 - [`sql/008_firm_resolution.sql`](sql/008_firm_resolution.sql) — Create firm-resolution sidecar tables for offline FDA recalling-firm resolution.
 
 ## src/
@@ -53,6 +54,13 @@
   - symbols: `Kind`, `Filter`, `Group`, `RecallAnalytics`
 - [`src/api.py`](src/api.py) — FastAPI service exposing the deterministic NL->SQL analytics engine (Path 1, serving half).
   - symbols: `lifespan`, `AskRequest`, `TitleRequest`, `TitleResponse`, `serialize_answer`, `health`, `title_endpoint`, `ask_endpoint`, `index`
+- [`src/classify/__init__.py`](src/classify/__init__.py) — Offline recall taxonomy induction, labeling, and discovery utilities.
+- [`src/classify/discover.py`](src/classify/discover.py) — Discover candidate taxonomy categories from residual recall reasons.
+  - symbols: `TaxonomyNode`, `ResidualReason`, `ResidualCluster`, `CandidateCategory`, `CandidateDraft`, `normalize_text`, `text_hash`, `safe_name`, `slugify`, `parse_vector`, `output_file`, `load_taxonomy`
+- [`src/classify/induce.py`](src/classify/induce.py) — Induce a draft recall-reason taxonomy from distinct reason_for_recall text.
+  - symbols: `ReasonText`, `ClusterSummary`, `DraftNode`, `TaxonomyDraft`, `normalize_text`, `text_hash`, `slugify`, `parse_vector`, `fetch_reason_texts`, `load_reason_vectors`, `attach_vectors`, `extract_prefix`
+- [`src/classify/label.py`](src/classify/label.py) — Label recall records against a frozen taxonomy version.
+  - symbols: `TaxonomyNode`, `ReasonBatch`, `LabelAssignment`, `LabelResult`, `normalize_text`, `text_hash`, `safe_name`, `default_cache_file`, `default_output_file`, `load_taxonomy`, `taxonomy_hash`, `fetch_reason_batches`
 - [`src/embed.py`](src/embed.py) — Embed FDA source text fields into the shared `embeddings` table (Path 2, offline half).
   - symbols: `run`, `parse_args`
 - [`src/fetch_openfda.py`](src/fetch_openfda.py) — Generic openFDA -> PostgreSQL ingester.
