@@ -75,9 +75,9 @@ single subagent's local next step; per-agent next steps belong in that PR's body
 - **Completed item:** parallel-plan **3a 实体解析离线** is merged as PR #8 (`feat: add firm resolution foundation`). It owns `sql/008_firm_resolution.sql` and `src/firm/{resolve,brand}.py`.
 - **Primary firm-track goal now:** productionize **company-name normalization**, not the final Agent yet. Do **3a+ incremental firm normalization** before starting 3b Agent wiring.
 - **Why:** production data is not static. New recalls arrive through `fetch_openfda.py --since auto`, so `recalling_firm` aliases must be discovered/updated incrementally, not by a one-time full batch.
-- **Next PR shape:** add a run/audit layer (likely `sql/009_firm_resolution_runs.sql` with `firm_resolution_run` + `firm_match_pair`), then upgrade `src/firm/resolve.py` with `--mode full|incremental`, source table/field options, idempotent alias refresh, candidate-pair audit, and golden-set threshold calibration.
+- **Next PR shape:** add a run/audit layer (`sql/009_firm_resolution_runs.sql` with `firm_resolution_run` + `firm_match_pair`), then upgrade `src/firm/resolve.py` with `--mode full|incremental`, source table/field options, idempotent alias refresh, candidate-pair audit, and golden-set threshold calibration.
 - **Do not do yet:** do not wire `src/agent.py`, `/ask`, `analytics.py`, or `nl_query.py` to firm resolution until the incremental/audited sidecar is populated and repeatable.
-- **Production sequence target:** `fetch_openfda.py --since auto` → apply firm-resolution audit DDL → `src/firm/resolve.py --mode incremental --apply`. Unknown or ambiguous identities stay in `resolution_log`; never fabricate a firm.
+- **Production sequence target:** `.venv/bin/python src/fetch_openfda.py --endpoint drug/enforcement --table drug_enforcement --since auto` → `psql -d fda -v ON_ERROR_STOP=1 -f sql/009_firm_resolution_runs.sql` → `.venv/bin/python src/firm/resolve.py --mode incremental --apply`. Unknown or ambiguous identities stay in `resolution_log`; never fabricate a firm.
 
 ## Conventions
 
