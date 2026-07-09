@@ -22,6 +22,7 @@ from dotenv import load_dotenv
 from psycopg import sql
 
 import llm
+import agent_control
 # reuse the whitelisted filter -> SQL builder so hybrid search can honor hard filters
 from analytics import Filter, _conditions
 
@@ -281,7 +282,8 @@ def search(conn: psycopg.Connection, client: Any | None, query: str, *,
            k: int = 10, field: str = "reason_for_recall",
            filters: Sequence[Filter] = (), source: str = "drug_enforcement",
            embed_config: llm.EmbeddingConfig | None = None,
-           embedding_error: BaseException | None = None) -> list[Hit]:
+           embedding_error: BaseException | None = None,
+           fts_queries: Sequence[str] = ()) -> list[Hit]:
     """Hybrid records for ``query``, optionally pre-filtered by hard constraints.
 
     The vector and FTS halves both honor the same filters on the joined source table.
@@ -306,8 +308,12 @@ def search(conn: psycopg.Connection, client: Any | None, query: str, *,
     except Exception as exc:
         if not llm.can_fallback_to_fts(exc):
             raise
-        fts_hits = _fts_candidates(conn, query, None, source=source, field=field,
-                                   filters=filters, limit=limit)
+        fts_hits: list[_Candidate] = []
+        for fts_query in agent_control.broad_fts_queries(query, list(fts_queries)):
+            fts_hits.extend(_fts_candidates(conn, fts_query, None, source=source, field=field,
+                                            filters=filters, limit=limit))
+            if fts_hits:
+                break
         return _rrf_fuse(
             [],
             fts_hits,
@@ -318,8 +324,10 @@ def search(conn: psycopg.Connection, client: Any | None, query: str, *,
         )
     vector_hits = _vector_candidates(conn, qvec, source=source, field=field,
                                      filters=filters, limit=limit)
-    fts_hits = _fts_candidates(conn, query, qvec, source=source, field=field,
-                               filters=filters, limit=limit)
+    fts_hits: list[_Candidate] = []
+    for fts_query in agent_control.broad_fts_queries(query, list(fts_queries)):
+        fts_hits.extend(_fts_candidates(conn, fts_query, qvec, source=source, field=field,
+                                        filters=filters, limit=limit))
     return _rrf_fuse(vector_hits, fts_hits, k=k, field=field)
 
 

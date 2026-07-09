@@ -441,6 +441,8 @@
       renderRetrieval(data, card);
     } else if (kind === "semantic_count" || kind === "semantic_distribution") {
       renderSemanticCount(data, card);
+    } else if (kind === "message" || kind === "clarification") {
+      renderAgentMessage(data, card);
     } else {
       const unknown = document.createElement("div");
       unknown.className = "status-text error";
@@ -460,6 +462,31 @@
     value.className = "scalar";
     value.textContent = Number(data.value ?? 0).toLocaleString();
     card.appendChild(value);
+  }
+
+  function renderAgentMessage(data, card) {
+    if (Array.isArray(data.suggestions) && data.suggestions.length) {
+      const label = document.createElement("div");
+      label.className = "muted";
+      label.textContent = data.kind === "clarification" ? "Try a more specific question:" : "Examples:";
+      card.appendChild(label);
+
+      const examples = document.createElement("div");
+      examples.className = "badge-row";
+      for (const suggestion of data.suggestions.slice(0, 4)) {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "chip";
+        chip.textContent = suggestion;
+        chip.addEventListener("click", () => {
+          promptInput.value = suggestion;
+          promptInput.focus();
+          autoResizePrompt();
+        });
+        examples.appendChild(chip);
+      }
+      card.appendChild(examples);
+    }
   }
 
   function renderSemanticCount(data, card) {
