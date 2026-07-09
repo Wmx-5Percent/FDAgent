@@ -19,6 +19,7 @@ sys.path.insert(0, str(SRC_DIR))
 import psycopg  # noqa: E402
 
 import llm  # noqa: E402
+import agent_control  # noqa: E402
 import retrieval  # noqa: E402
 from api import serialize_answer  # noqa: E402
 from nl_query import MODEL, NLEngine  # noqa: E402
@@ -222,6 +223,29 @@ def _run_retrieval_case(case: Mapping[str, Any], *, dsn: str) -> EvalResult:
                       f"recall@{k}={recall:.2f} matched={sorted(matched)}")
 
 
+def _run_agent_control_case(case: Mapping[str, Any]) -> EvalResult:
+    question = str(case["question"])
+    assertions = case.get("assert") or {}
+    _require(isinstance(assertions, Mapping), "agent_control assert must be an object")
+    decision = agent_control.classify(question)
+    expected_route = assertions.get("route")
+    if expected_route:
+        _require(decision.route == expected_route,
+                 f"expected route {expected_route!r}, got {decision.route!r}")
+    if "refine_semantic_query" in assertions:
+        raw_query = str(assertions.get("raw_semantic_query") or question)
+        refined, aliases = agent_control.refine_semantic_query(question, raw_query)
+        expected_refined = assertions["refine_semantic_query"]
+        _require(refined == expected_refined,
+                 f"expected refined semantic_query {expected_refined!r}, got {refined!r}")
+        expected_alias = assertions.get("aliases_contain")
+        if expected_alias:
+            _require(str(expected_alias) in aliases,
+                     f"expected aliases to contain {expected_alias!r}, got {aliases!r}")
+    return EvalResult(str(case["id"]), True,
+                      f"route={decision.route} reason={decision.reason}")
+
+
 def _maybe_judge(case: Mapping[str, Any], answer: Mapping[str, Any], *, enabled: bool) -> EvalResult | None:
     judge = case.get("judge")
     if not enabled or not judge:
@@ -279,6 +303,8 @@ def main() -> int:
                     results.append(judge_result)
             elif kind == "retrieval_recall":
                 results.append(_run_retrieval_case(case, dsn=args.dsn))
+            elif kind == "agent_control":
+                results.append(_run_agent_control_case(case))
             else:
                 raise EvalFailure(f"unknown case kind {kind!r}")
         except Exception as exc:  # noqa: BLE001 - eval runner must report every case failure

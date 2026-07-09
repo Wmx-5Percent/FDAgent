@@ -22,6 +22,44 @@
       }
     },
     {
+      "id": "control-zh-meta-who-are-you",
+      "kind": "agent_control",
+      "question": "你是谁？",
+      "assert": {
+        "route": "chitchat_meta"
+      }
+    },
+    {
+      "id": "control-zh-weather",
+      "kind": "agent_control",
+      "question": "天气怎么样？",
+      "assert": {
+        "route": "out_of_domain"
+      }
+    },
+    {
+      "id": "control-zh-superpotent-in-domain",
+      "kind": "agent_control",
+      "question": "有多少药品是因为药效太强被召回？",
+      "assert": {
+        "route": "in_domain",
+        "raw_semantic_query": "药效太强",
+        "refine_semantic_query": "superpotent",
+        "aliases_contain": "high assay"
+      }
+    },
+    {
+      "id": "control-zh-bacterial-in-domain",
+      "kind": "agent_control",
+      "question": "有多少个关于细菌感染的 recall？",
+      "assert": {
+        "route": "in_domain",
+        "raw_semantic_query": "细菌感染",
+        "refine_semantic_query": "microbial contamination",
+        "aliases_contain": "bacterial contamination"
+      }
+    },
+    {
       "id": "numeric-class-i-count",
       "kind": "ask",
       "question": "How many Class I drug recalls have there been?",

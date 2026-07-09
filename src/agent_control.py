@@ -25,12 +25,15 @@ META_PATTERNS = [
     r"\bwhat\s+(are\s+you|can\s+you\s+do|do\s+you\s+do)\b",
     r"\bhow\s+can\s+you\s+help\b",
     r"\byour\s+(capabilities|purpose|scope)\b",
+    r"(你是谁|你是什么|你可以做什么|你能做什么|你会做什么|你的能力|你能帮我什么|介绍一下你自己)",
 ]
 OUT_OF_DOMAIN_PATTERNS = [
     r"\bjoke\b", r"\bweather\b", r"\bsports?\b", r"\bstock price\b",
     r"\bmovie\b", r"\brecipe\b", r"\bflight\b",
     r"\b(class\s+action|railroad)\b", r"\bshould\s+i\s+take\b",
     r"\b(product|products)\s+should\s+i\s+buy\b", r"\bwhat\s+product\s+should\b",
+    r"(天气|笑话|体育|股票|电影|菜谱|航班)",
+    r"(头疼|头痛).*(吃|服用|用|推荐|治疗).*(药|药品)",
 ]
 STOPWORDS = {
     "a", "about", "all", "an", "and", "are", "for", "has", "have", "how",
@@ -177,14 +180,16 @@ def refine_semantic_query(question: str, semantic_query: str | None) -> tuple[st
     if not semantic_query:
         return semantic_query, []
     haystack = f"{question} {semantic_query}".casefold()
-    if re.search(r"\b(non[- ]?)?steril(?:e|ity|ization|isation)?\b", haystack):
+    if re.search(r"\b(non[- ]?)?steril(?:e|ity|ization|isation)?\b", haystack) \
+            or re.search(r"(无菌|非无菌|灭菌)", haystack):
         return "sterility", [
             "sterile",
             "non-sterile",
             "lack of assurance of sterility",
             "lack of sterility assurance",
         ]
-    if re.search(r"\b(subpotent|sub[- ]?potent|low potency|low assay|below specification)\b", haystack):
+    if re.search(r"\b(subpotent|sub[- ]?potent|low potency|low assay|below specification)\b", haystack) \
+            or re.search(r"(药效不足|效价低|效价不足|含量不足|药力不足)", haystack):
         return "subpotent", [
             "low potency",
             "low assay",
@@ -195,12 +200,24 @@ def refine_semantic_query(question: str, semantic_query: str | None) -> tuple[st
         r"\b(superpotent|over[- ]?strength|too strong|high assay|high potency|"
         r"potency above|above specification for assay)\b",
         haystack,
-    ):
+    ) or re.search(r"(药效太强|药力太强|效价太高|含量过高|药效过强|太强)", haystack):
         return "superpotent", [
             "too strong",
             "over strength",
             "high assay",
             "potency above specification",
+        ]
+    if re.search(r"(细菌|微生物|感染|污染)", haystack):
+        return "microbial contamination", [
+            "bacterial contamination",
+            "microbial contamination",
+            "contamination",
+        ]
+    if re.search(r"(玻璃|颗粒|异物)", haystack):
+        return "glass particles", [
+            "glass particles",
+            "particulate matter",
+            "foreign matter",
         ]
     return semantic_query.strip(), []
 
@@ -235,6 +252,9 @@ def _normalized(text: str) -> str:
 def _strip_greeting(text: str) -> str:
     if re.fullmatch(r"\s*(hi|hello|hey)[!.]?\s*", text):
         return ""
+    if re.fullmatch(r"\s*(你好|您好|嗨)[!！。.]?\s*", text):
+        return ""
+    text = re.sub(r"^\s*(你好|您好|嗨)[,，!！\s]+", "", text, count=1).strip()
     return re.sub(r"^\s*(hi|hello|hey)[,!\s]+", "", text, count=1).strip()
 
 
@@ -250,9 +270,31 @@ def _looks_in_domain(text: str) -> bool:
     tokens = set(_tokens(text))
     if tokens.intersection(DOMAIN_TERMS):
         return True
+    if _has_chinese_recall_context(text):
+        return True
     return bool(re.search(r"\bclass\s+(i|ii|iii|1|2|3)\b", text))
 
 
 def _is_bare_recall_request(text: str) -> bool:
+    if _has_chinese_specific_context(text):
+        return False
     tokens = [tok for tok in _tokens(text) if tok not in STOPWORDS]
-    return tokens in (["recalls"], ["recall"], ["show", "recalls"], ["show", "recall"])
+    if tokens in (["recalls"], ["recall"], ["show", "recalls"], ["show", "recall"]):
+        return True
+    return text in {"召回", "看召回", "查召回", "药品召回", "药物召回"}
+
+
+def _has_chinese_recall_context(text: str) -> bool:
+    return bool(re.search(
+        r"(fda|openfda|召回|被召回|药品|药物|药效|效价|药力|无菌|非无菌|灭菌|"
+        r"污染|细菌|微生物|感染|玻璃|颗粒|异物|公司|厂家|企业)",
+        text,
+    ))
+
+
+def _has_chinese_specific_context(text: str) -> bool:
+    return bool(re.search(
+        r"(药品|药物|药效|效价|药力|无菌|非无菌|灭菌|污染|细菌|微生物|感染|"
+        r"玻璃|颗粒|异物|公司|厂家|企业)",
+        text,
+    ))
