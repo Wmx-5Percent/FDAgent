@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # allow `import nl_query` under uvicorn
 import llm  # noqa: E402
+import agent_control  # noqa: E402
 import validation  # noqa: E402
 from nl_query import Answer, Intent, NLEngine  # noqa: E402
 from observability import QueryLogEntry, QueryLogger, response_metadata  # noqa: E402
@@ -100,11 +101,13 @@ def serialize_answer(ans: Answer) -> dict[str, Any]:
     spec = ans.spec
     payload: dict[str, Any] = {
         "question": ans.question,
-        "intent": spec.intent.value,
-        "spec": spec.model_dump(exclude_none=True),
+        "intent": spec.intent.value if spec is not None else ans.metadata.get("control_route", "message"),
+        "spec": spec.model_dump(exclude_none=True) if spec is not None else {},
         "summary": ans.summary,
     }
-    if isinstance(ans.result, validation.SemanticCountResult):
+    if isinstance(ans.result, agent_control.AgentControlResult):
+        payload["data"] = ans.result.as_data()
+    elif isinstance(ans.result, validation.SemanticCountResult):
         result = ans.result
         accepted = [item for item in result.validations if item.accepted]
         evidence_items = [
@@ -157,14 +160,21 @@ def serialize_answer(ans: Answer) -> dict[str, Any]:
             }
         else:
             payload["data"] = {**base_data, "kind": "semantic_count"}
-    elif spec.semantic_query:  # concept query -> ranked semantic hits
-        retrieval_mode = ans.result[0].retrieval_mode if ans.result else "hybrid"
-        fallback_reason = ans.result[0].embedding_fallback_reason if ans.result else None
+    elif spec is not None and spec.semantic_query:  # concept query -> ranked semantic hits
+        retrieval_mode = (
+            ans.result[0].retrieval_mode
+            if ans.result else ans.metadata.get("retrieval_mode", "hybrid")
+        )
+        fallback_reason = (
+            ans.result[0].embedding_fallback_reason
+            if ans.result else ans.metadata.get("embedding_fallback_reason")
+        )
         payload["data"] = {
             "kind": "retrieval",
             "query": spec.semantic_query,
             "retrieval_mode": retrieval_mode,
             "embedding_fallback_reason": fallback_reason,
+            "degraded": bool(ans.metadata.get("degraded")),
             "items": [
                 {"recall_number": h.recall_number, "field": h.field,
                  "retrieval_mode": h.retrieval_mode,
@@ -177,9 +187,9 @@ def serialize_answer(ans: Answer) -> dict[str, Any]:
                 for h in ans.result
             ],
         }
-    elif spec.intent is Intent.count_total:
+    elif spec is not None and spec.intent is Intent.count_total:
         payload["data"] = {"kind": "scalar", "value": int(ans.result)}
-    elif spec.intent is Intent.count_by:
+    elif spec is not None and spec.intent is Intent.count_by:
         payload["data"] = {
             "kind": "distribution",
             "dimension": spec.group_by,
@@ -188,16 +198,22 @@ def serialize_answer(ans: Answer) -> dict[str, Any]:
                 for g in ans.result
             ],
         }
-    elif spec.intent is Intent.trend:
+    elif spec is not None and spec.intent is Intent.trend:
         payload["data"] = {
             "kind": "series",
             "grain": spec.grain or "year",
             "points": [{"period": _json_safe(p), "count": n} for p, n in ans.result],
         }
-    else:  # sample
+    elif spec is not None:  # sample
         payload["data"] = {
             "kind": "rows",
             "rows": [{k: _json_safe(v) for k, v in row.items()} for row in ans.result],
+        }
+    else:
+        payload["data"] = {
+            "kind": "message",
+            "route": ans.metadata.get("control_route", "message"),
+            "message": ans.summary,
         }
     return payload
 
@@ -292,10 +308,16 @@ def _request_payload(req: AskRequest) -> dict[str, Any]:
 
 def _log_success(req: AskRequest, ans: Answer, payload: dict[str, Any],
                  *, start: float, model: str) -> None:
-    spec = ans.spec.model_dump(mode="json", exclude_none=True)
+    spec = ans.spec.model_dump(mode="json", exclude_none=True) if ans.spec is not None else None
     provider = _engine.chat_config.provider if _engine is not None else None
     metadata = response_metadata(payload, model=model, provider=provider)
     data_kind = metadata.get("data_kind")
+    control = ans.control.as_dict() if ans.control is not None else None
+    route = (
+        control["route"]
+        if control is not None and control["route"] != "in_domain"
+        else ("semantic" if ans.spec is not None and ans.spec.semantic_query else "sql")
+    )
     _require_query_logger().write(QueryLogEntry(
         route="/ask",
         question=req.question,
@@ -303,15 +325,16 @@ def _log_success(req: AskRequest, ans: Answer, payload: dict[str, Any],
         status_code=200,
         ok=True,
         latency_ms=_elapsed_ms(start),
-        query_intent=ans.spec.intent.value,
+        query_intent=ans.spec.intent.value if ans.spec is not None else route,
         data_kind=str(data_kind) if data_kind else None,
-        semantic_query=ans.spec.semantic_query,
+        semantic_query=ans.spec.semantic_query if ans.spec is not None else None,
         query_spec=spec,
         decision={
-            "route": "semantic" if ans.spec.semantic_query else "sql",
-            "intent": ans.spec.intent.value,
+            "route": route,
+            "intent": ans.spec.intent.value if ans.spec is not None else route,
             "data_kind": data_kind,
-            "filter_count": len(ans.spec.filters),
+            "filter_count": len(ans.spec.filters) if ans.spec is not None else 0,
+            "control": control,
         },
         response_metadata=metadata,
     ))

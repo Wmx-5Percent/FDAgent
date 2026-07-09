@@ -103,6 +103,8 @@ def response_metadata(response: Mapping[str, Any], *, model: str | None = None,
         "semantic_distribution": "items",
         "series": "points",
         "rows": "rows",
+        "message": "suggestions",
+        "clarification": "suggestions",
     }
     field = count_fields.get(str(data_kind))
     if field and isinstance(data.get(field), list):
@@ -116,4 +118,11 @@ def response_metadata(response: Mapping[str, Any], *, model: str | None = None,
         value = data.get(key)
         if value:
             metadata[key] = value
+    if data.get("degraded"):
+        metadata["degraded"] = True
+    if data_kind in {"message", "clarification"}:
+        for key in ("route", "reason"):
+            value = data.get(key)
+            if value:
+                metadata[key] = value
     return metadata

@@ -32,6 +32,7 @@ class EvalResult:
     case_id: str
     passed: bool
     detail: str
+    skipped: bool = False
 
 
 class EvalFailure(AssertionError):
@@ -131,6 +132,8 @@ def _assert_ask_case(case: Mapping[str, Any], answer: Mapping[str, Any]) -> Eval
                  f"expected data.kind in {expected_kinds}, got {data_kind!r}")
     if assertions.get("no_ilike"):
         _assert_no_ilike(spec)
+    if assertions.get("spec_empty"):
+        _require(not spec, f"expected empty spec for guarded response, got {spec!r}")
     if data_kind in {"semantic_count", "semantic_distribution"}:
         _assert_semantic_count(assertions, data)
 
@@ -160,6 +163,11 @@ def _assert_ask_case(case: Mapping[str, Any], answer: Mapping[str, Any]) -> Eval
 
     route = assertions.get("route")
     semantic_query = spec.get("semantic_query")
+    banned_needles = [str(v).lower() for v in assertions.get("semantic_query_not_contains_any", [])]
+    if banned_needles and semantic_query:
+        haystack = str(semantic_query).lower()
+        _require(not any(n in haystack for n in banned_needles),
+                 f"semantic_query={semantic_query!r} unexpectedly contained one of {banned_needles}")
     if route == "sql":
         _require(not semantic_query, f"numeric/SQL case unexpectedly used semantic_query={semantic_query!r}")
         _require(data_kind in {"scalar", "distribution", "series", "rows"},
@@ -171,6 +179,13 @@ def _assert_ask_case(case: Mapping[str, Any], answer: Mapping[str, Any]) -> Eval
             haystack = str(semantic_query).lower()
             _require(any(n in haystack for n in needles),
                      f"semantic_query={semantic_query!r} did not contain any of {needles}")
+    elif route in {"chitchat_meta", "out_of_domain", "ambiguous"}:
+        _require(not semantic_query,
+                 f"guarded case unexpectedly emitted semantic_query={semantic_query!r}")
+        _require(data.get("route") == route,
+                 f"expected data.route={route!r}, got {data.get('route')!r}")
+        _require(data_kind in {"message", "clarification"},
+                 f"guarded case returned unexpected data.kind={data_kind!r}")
     return EvalResult(str(case["id"]), True,
                       f"intent={intent} data.kind={data_kind} route={route or '-'}")
 
@@ -187,9 +202,14 @@ def _run_retrieval_case(case: Mapping[str, Any], *, dsn: str) -> EvalResult:
     embedding_error: llm.ProviderError | None = None
     try:
         client = llm.create_embedding_client(embed_config)
+        llm.embed_text(client, embed_config, query)
     except llm.ProviderError as exc:
-        client = None
-        embedding_error = exc
+        return EvalResult(
+            str(case["id"]),
+            True,
+            f"skipped vector recall@{k}: embedding unavailable ({type(exc).__name__}: {exc})",
+            skipped=True,
+        )
     with psycopg.connect(dsn) as conn:
         hits = retrieval.search(conn, client, query, k=k, field=field,
                                 embed_config=embed_config, embedding_error=embedding_error)
@@ -264,11 +284,13 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001 - eval runner must report every case failure
             results.append(EvalResult(case_id, False, f"{type(exc).__name__}: {exc}"))
 
-    failed = [r for r in results if not r.passed]
+    failed = [r for r in results if not r.passed and not r.skipped]
+    skipped = [r for r in results if r.skipped]
     for result in results:
-        status = "PASS" if result.passed else "FAIL"
+        status = "SKIP" if result.skipped else ("PASS" if result.passed else "FAIL")
         print(f"{status} {result.case_id}: {result.detail}")
-    print(f"\nSummary: {len(results) - len(failed)} passed, {len(failed)} failed")
+    passed = len(results) - len(failed) - len(skipped)
+    print(f"\nSummary: {passed} passed, {len(failed)} failed, {len(skipped)} skipped")
     return 1 if failed else 0
 
 

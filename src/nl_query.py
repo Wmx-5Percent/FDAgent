@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import Enum
 from typing import Any, Optional
@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # allow `import analytics` as a script
 import llm  # noqa: E402  (OpenAI-compatible provider gateway)
+import agent_control  # noqa: E402  (/ask guard before the query pipeline)
 import retrieval  # noqa: E402  (semantic search for concept queries)
 import validation  # noqa: E402  (LLM validation for semantic counting)
 from analytics import CATALOG, GRAINS, OPS, Filter, Kind, RecallAnalytics  # noqa: E402
@@ -63,6 +64,7 @@ class FilterSpec(BaseModel):
 class QuerySpec(BaseModel):
     intent: Intent
     semantic_query: Optional[str] = None  # fuzzy concept -> semantic retrieval over recall text
+    semantic_aliases: list[str] = Field(default_factory=list)  # FTS fallback expansions only
     semantic_k: Optional[int] = Field(default=None, ge=1, le=120)  # validation sample size for semantic counts
     filters: list[FilterSpec] = Field(default_factory=list)
     group_by: Optional[str] = None      # count_by: a dimension column
@@ -74,9 +76,11 @@ class QuerySpec(BaseModel):
 @dataclass
 class Answer:
     question: str
-    spec: QuerySpec
+    spec: QuerySpec | None
     summary: str
     result: Any
+    control: agent_control.AgentControlDecision | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 SYSTEM = """You convert a question about U.S. FDA drug recall enforcement reports into a QuerySpec.
@@ -91,7 +95,8 @@ Rules:
   for concept distribution questions. This runs semantic retrieval over the recall text -- do NOT
   use an 'ilike' filter for a concept (ilike only matches literal words and misses synonyms like
   microbial / superpotent). Leave semantic_k unset unless the user asks to validate a specific
-  sample size.
+  sample size. If you know synonyms or phrase variants, put them in semantic_aliases; do not
+  narrow the core semantic_query by adding generic words such as "problems" unless the user did.
 - filters: only for HARD constraints -- categories (classification/state/...) via 'eq'/'in' with a
   column's listed allowed values, and dates (ISO YYYY-MM-DD) via 'between'/'gte'/'lte'. You may combine
   semantic_query (the concept) with filters (the hard constraints), e.g. "Class I sterility recalls".
@@ -132,7 +137,7 @@ def build_schema_context(a: RecallAnalytics) -> str:
 # --------------------------------------------------------------------------- #
 def generate_spec(client: Any, config: llm.ChatConfig, question: str,
                   schema_ctx: str) -> QuerySpec:
-    return llm.structured_completion(
+    spec = llm.structured_completion(
         client,
         config,
         [{"role": "system", "content": f"{SYSTEM}\n\nSCHEMA:\n{schema_ctx}"},
@@ -140,6 +145,20 @@ def generate_spec(client: Any, config: llm.ChatConfig, question: str,
         QuerySpec,
         temperature=0,
     )
+    return refine_spec(question, spec)
+
+
+def refine_spec(question: str, spec: QuerySpec) -> QuerySpec:
+    if spec.filters and agent_control.is_generic_recall_semantic_query(spec.semantic_query):
+        spec.semantic_query = None
+        spec.semantic_aliases = []
+        return spec
+    query, aliases = agent_control.refine_semantic_query(question, spec.semantic_query)
+    spec.semantic_query = query
+    for alias in aliases:
+        if alias != query and alias not in spec.semantic_aliases:
+            spec.semantic_aliases.append(alias)
+    return spec
 
 
 def _parse_date(v: str) -> date:
@@ -262,6 +281,7 @@ def _run_semantic_count(
         filters=filters,
         embed_config=embed_config,
         embedding_error=embedding_error,
+        fts_queries=spec.semantic_aliases,
     )
     fallback_reason = (
         hits[0].embedding_fallback_reason
@@ -325,6 +345,7 @@ def run_spec(
             filters=filters,
             embed_config=embed_config,
             embedding_error=embedding_error,
+            fts_queries=spec.semantic_aliases,
         )
     if spec.semantic_query and spec.intent in {Intent.count_total, Intent.count_by}:
         return _run_semantic_count(
@@ -351,6 +372,8 @@ def run_spec(
             raise ValueError(f"{dcol!r} is not a date column")
         grain = spec.grain if spec.grain in GRAINS else "year"
         return a.trend(filters, grain=grain, date_column=dcol)
+    if spec.intent is Intent.sample and not filters:
+        raise ValueError("sample needs filters or semantic_query")
     return a.sample(filters, n=spec.limit or 5)
 
 
@@ -454,6 +477,17 @@ class NLEngine:
         return status
 
     def ask(self, question: str) -> Answer:
+        control = agent_control.classify(question)
+        if control.terminal:
+            result = agent_control.result_from_decision(control)
+            return Answer(
+                question,
+                None,
+                result.message,
+                result,
+                control=control,
+                metadata={"control_route": control.route, "control_reason": control.reason},
+            )
         if self.chat_client is None:
             raise self.chat_error or llm.ProviderMissingKeyError(
                 "chat client is not configured",
@@ -474,6 +508,17 @@ class NLEngine:
                     self.embedding_error,
                 )
             except ValueError as exc:  # one repair attempt: feed the error back
+                if "sample needs filters or semantic_query" in str(exc):
+                    control = agent_control.clarification("empty_sample")
+                    agent_result = agent_control.result_from_decision(control)
+                    return Answer(
+                        question,
+                        None,
+                        agent_result.message,
+                        agent_result,
+                        control=control,
+                        metadata={"control_route": control.route, "control_reason": control.reason},
+                    )
                 spec = generate_spec(
                     self.chat_client,
                     self.chat_config,
@@ -489,7 +534,26 @@ class NLEngine:
                     self.embed_config,
                     self.embedding_error,
                 )
-        return Answer(question, spec, summarize(spec, result), result)
+        metadata: dict[str, Any] = {}
+        if (
+            spec.semantic_query
+            and spec.intent is Intent.sample
+            and not result
+            and self.embedding_error is not None
+            and llm.can_fallback_to_fts(self.embedding_error)
+        ):
+            metadata.update({
+                "retrieval_mode": "fts_only",
+                "embedding_fallback_reason": type(self.embedding_error).__name__,
+                "degraded": True,
+            })
+            summary = (
+                f"No keyword fallback matches for '{spec.semantic_query}'. Semantic vector retrieval "
+                "is currently unavailable, so this empty result is not a full semantic conclusion."
+            )
+        else:
+            summary = summarize(spec, result)
+        return Answer(question, spec, summary, result, control=control, metadata=metadata)
 
 
 def ask(question: str, *, dsn: str = DEFAULT_DSN, model: str | None = None) -> Answer:

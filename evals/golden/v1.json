@@ -2,6 +2,26 @@
   "version": "v1",
   "cases": [
     {
+      "id": "control-meta-who-are-you",
+      "kind": "ask",
+      "question": "who you are?",
+      "assert": {
+        "route": "chitchat_meta",
+        "data_kinds": ["message"],
+        "spec_empty": true
+      }
+    },
+    {
+      "id": "control-out-of-domain-joke",
+      "kind": "ask",
+      "question": "Tell me a joke.",
+      "assert": {
+        "route": "out_of_domain",
+        "data_kinds": ["message"],
+        "spec_empty": true
+      }
+    },
+    {
       "id": "numeric-class-i-count",
       "kind": "ask",
       "question": "How many Class I drug recalls have there been?",
@@ -61,11 +81,22 @@
         "data_kinds": ["semantic_count"],
         "no_ilike": true,
         "semantic_query_contains_any": ["sterility", "sterile"],
+        "semantic_query_not_contains_any": ["problem"],
         "requires_estimate": true,
         "min_estimated_count": 1,
         "min_verified_count": 1,
         "requires_confidence": true,
         "requires_evidence": true
+      }
+    },
+    {
+      "id": "control-empty-sample-guard",
+      "kind": "ask",
+      "question": "Show me recalls.",
+      "assert": {
+        "route": "ambiguous",
+        "data_kinds": ["clarification"],
+        "spec_empty": true
       }
     },
     {

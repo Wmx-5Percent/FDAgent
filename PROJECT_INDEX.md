@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-07-09T08:43Z · 58 files
+> Last generated: 2026-07-09T14:39Z · 59 files
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -54,6 +54,8 @@
 - [`sql/009_firm_resolution_runs.sql`](sql/009_firm_resolution_runs.sql) — Create firm-resolution run/pair audit tables for incremental company normalization.
 
 ## src/
+- [`src/agent_control.py`](src/agent_control.py) — Guard /ask prompts before they enter the FDA recall query pipeline.
+  - symbols: `AgentControlDecision`, `AgentControlResult`, `classify`, `clarification`, `result_from_decision`, `refine_semantic_query`, `is_generic_recall_semantic_query`, `broad_fts_queries`
 - [`src/analytics.py`](src/analytics.py) — Deterministic frequency/aggregation query engine over drug_enforcement.
   - symbols: `Kind`, `Filter`, `Group`, `RecallAnalytics`
 - [`src/api.py`](src/api.py) — FastAPI service exposing the deterministic NL->SQL analytics engine (Path 1, serving half).
@@ -85,7 +87,7 @@
 - [`src/llm.py`](src/llm.py) — OpenAI-compatible chat and embedding provider gateway for serving paths.
   - symbols: `ProviderError`, `ProviderConfigError`, `ProviderMissingKeyError`, `ProviderUnsupportedConfigError`, `ProviderAuthError`, `ProviderQuotaError`, `ProviderRateLimitError`, `ProviderConnectionError`, `ProviderCapabilityError`, `StructuredOutputError`, `ChatConfig`, `EmbeddingConfig`
 - [`src/nl_query.py`](src/nl_query.py) — Natural-language front-end for the deterministic analytics engine.
-  - symbols: `Intent`, `Op`, `FilterSpec`, `QuerySpec`, `Answer`, `build_schema_context`, `generate_spec`, `run_spec`, `summarize`, `NLEngine`, `ask`
+  - symbols: `Intent`, `Op`, `FilterSpec`, `QuerySpec`, `Answer`, `build_schema_context`, `generate_spec`, `refine_spec`, `run_spec`, `summarize`, `NLEngine`, `ask`
 - [`src/observability.py`](src/observability.py) — Postgres-backed query logging for the /ask API.
   - symbols: `QueryLogEntry`, `QueryLogger`, `response_metadata`
 - [`src/retrieval.py`](src/retrieval.py) — Hybrid retrieval over the `embeddings` table — Path 2 / slice 2.2.
