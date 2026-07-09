@@ -263,8 +263,15 @@ def _run_semantic_count(
         embed_config=embed_config,
         embedding_error=embedding_error,
     )
-    retrieval_mode = hits[0].retrieval_mode if hits else "hybrid"
-    fallback_reason = hits[0].embedding_fallback_reason if hits else None
+    fallback_reason = (
+        hits[0].embedding_fallback_reason
+        if hits else (
+            type(embedding_error).__name__
+            if embedding_error is not None and llm.can_fallback_to_fts(embedding_error)
+            else None
+        )
+    )
+    retrieval_mode = hits[0].retrieval_mode if hits else ("fts_only" if fallback_reason else "hybrid")
     eligible_hits = list(hits) if retrieval_mode == "fts_only" else [
         hit for hit in hits
         if hit.retrieval_score >= validation.MIN_RETRIEVAL_SCORE
@@ -416,6 +423,13 @@ class NLEngine:
         except llm.ProviderError as exc:
             self.chat_error = exc
         self.client = self.chat_client  # backwards-compatible alias
+        self.title_config = llm.title_config()
+        self.title_client: Any | None = None
+        self.title_error: llm.ProviderError | None = None
+        try:
+            self.title_client = llm.create_chat_client(self.title_config)
+        except llm.ProviderError as exc:
+            self.title_error = exc
         self.embed_config = llm.embedding_config()
         self.embed_client: Any | None = None
         self.embedding_error: llm.ProviderError | None = None
@@ -427,10 +441,13 @@ class NLEngine:
             self.schema_ctx = build_schema_context(a)  # cached for the engine's lifetime
 
     def provider_status(self) -> dict[str, Any]:
-        status = llm.provider_status(self.chat_config, self.embed_config)
+        status = llm.provider_status(self.chat_config, self.embed_config, self.title_config)
         status["llm_available"] = self.chat_error is None
         if self.chat_error is not None:
             status["llm_error_type"] = type(self.chat_error).__name__
+        status["title_llm_available"] = self.title_error is None
+        if self.title_error is not None:
+            status["title_llm_error_type"] = type(self.title_error).__name__
         status["embed_available"] = self.embedding_error is None
         if self.embedding_error is not None:
             status["embed_error_type"] = type(self.embedding_error).__name__
