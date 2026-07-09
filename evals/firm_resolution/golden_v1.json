@@ -1,0 +1,44 @@
+{"description": "FDAgent firm-resolution threshold calibration pairs. Labels are for raw-name aliasing only: same means safe spelling/legal-suffix variant, different means do not merge, uncertain means review rather than auto-merge.",
+  "pairs": [
+    {
+      "left": "Central Admixture Pharmacy Services, Inc.",
+      "right": "Central Admixture Pharmacy Services Inc",
+      "label": "same"
+    },
+    {
+      "left": "Aurobindo Pharma USA, Inc.",
+      "right": "Aurobindo Pharma USA Inc",
+      "label": "same"
+    },
+    {
+      "left": "Hospira, Inc.",
+      "right": "Hospira Inc",
+      "label": "same"
+    },
+    {
+      "left": "Cardinal Health Inc.",
+      "right": "Family Dollar Stores, Llc.",
+      "label": "different"
+    },
+    {
+      "left": "Pfizer Inc.",
+      "right": "Teva Pharmaceuticals USA, Inc.",
+      "label": "different"
+    },
+    {
+      "left": "Central Admixture Pharmacy Services, Inc.",
+      "right": "B. Braun Medical Inc.",
+      "label": "different"
+    },
+    {
+      "left": "Kenvue Brands LLC",
+      "right": "Johnson & Johnson Consumer Inc.",
+      "label": "uncertain"
+    },
+    {
+      "left": "McNeil Consumer Healthcare",
+      "right": "Johnson & Johnson Consumer Inc.",
+      "label": "uncertain"
+    }
+  ]
+}

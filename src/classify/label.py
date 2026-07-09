@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,14 +25,15 @@ from typing import Any
 
 import psycopg
 from dotenv import load_dotenv
-from openai import OpenAI
 from pydantic import BaseModel, Field, field_validator
 from tenacity import retry, stop_after_attempt, wait_exponential
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import llm  # noqa: E402  (OpenAI-compatible provider gateway)
 
 load_dotenv()
 
 DEFAULT_DSN = os.environ.get("DATABASE_URL", "postgresql://localhost:5432/fda")
-DEFAULT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 
 
 @dataclass(frozen=True)
@@ -238,17 +240,16 @@ Rules:
 
 @retry(stop=stop_after_attempt(4), wait=wait_exponential(multiplier=1, min=2, max=20))
 def classify_with_llm(
-    client: OpenAI,
+    client: Any,
     *,
-    model: str,
+    config: llm.ChatConfig,
     nodes: list[TaxonomyNode],
     reason: str,
 ) -> LabelResult:
-    parse = getattr(client.chat.completions, "parse", None) or client.beta.chat.completions.parse
-    completion = parse(
-        model=model,
-        temperature=0,
-        messages=[
+    return llm.structured_completion(
+        client,
+        config,
+        [
             {"role": "system", "content": SYSTEM},
             {
                 "role": "user",
@@ -260,9 +261,9 @@ def classify_with_llm(
                 ),
             },
         ],
-        response_format=LabelResult,
+        LabelResult,
+        temperature=0,
     )
-    return completion.choices[0].message.parsed
 
 
 def validate_result(
@@ -293,12 +294,13 @@ def label_reason(
     version: str,
     taxonomy_digest: str,
     model: str,
+    chat_config: llm.ChatConfig,
     other_node_id: str,
     cache: dict[str, dict[str, Any]],
     cache_file: str,
     cache_only: bool,
-    client: OpenAI | None,
-) -> tuple[LabelResult, bool, OpenAI | None]:
+    client: Any | None,
+) -> tuple[LabelResult, bool, Any | None]:
     key = cache_key(
         version=version,
         taxonomy_digest=taxonomy_digest,
@@ -317,8 +319,8 @@ def label_reason(
     if cache_only:
         raise ValueError(f"cache miss for text_hash={batch.text_hash}; unset --cache-only to call the LLM")
     if client is None:
-        client = OpenAI()
-    result = classify_with_llm(client, model=model, nodes=nodes, reason=batch.text)
+        client = llm.create_chat_client(chat_config)
+    result = classify_with_llm(client, config=chat_config, nodes=nodes, reason=batch.text)
     result = validate_result(
         result,
         nodes_by_id=nodes_by_id,
@@ -409,7 +411,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--version", default="v1", help="taxonomy version to use")
     parser.add_argument("--taxonomy-status", choices=("active", "draft", "deprecated", "any"),
                         default="active", help="taxonomy node status filter")
-    parser.add_argument("--model", default=DEFAULT_MODEL, help="OpenAI model for labeling")
+    parser.add_argument("--model", default=None, help="chat model override for labeling")
     parser.add_argument("--labeler", default=None, help="labeler id stored in recall_label")
     parser.add_argument("--cache-file", default=None, help="JSONL hash-cache path")
     parser.add_argument("--output-file", default=None, help="JSON report path")
@@ -422,9 +424,11 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    cache_file = args.cache_file or default_cache_file(args.version, args.model)
+    chat_config = llm.chat_config(model=args.model)
+    model = chat_config.model
+    cache_file = args.cache_file or default_cache_file(args.version, model)
     output_file = args.output_file or default_output_file(args.version)
-    labeler = args.labeler or f"llm:{args.model}"
+    labeler = args.labeler or f"llm:{model}"
 
     with psycopg.connect(args.dsn) as conn:
         nodes = load_taxonomy(conn, args.version, args.taxonomy_status)
@@ -435,7 +439,7 @@ def main() -> None:
             raise ValueError("no non-empty reason_for_recall texts found")
 
         cache = load_cache(cache_file)
-        client: OpenAI | None = None
+        client: Any | None = None
         cache_hits = 0
         applied_rows = 0
         counts: Counter[str] = Counter()
@@ -448,7 +452,8 @@ def main() -> None:
                 nodes_by_id=nodes_by_id,
                 version=args.version,
                 taxonomy_digest=digest,
-                model=args.model,
+                model=model,
+                chat_config=chat_config,
                 other_node_id=args.other_node_id,
                 cache=cache,
                 cache_file=cache_file,
@@ -467,7 +472,7 @@ def main() -> None:
                     nodes_by_id=nodes_by_id,
                     version=args.version,
                     labeler=labeler,
-                    model=args.model,
+                    model=model,
                 )
             results.append({
                 "text_hash": batch.text_hash,
@@ -483,7 +488,8 @@ def main() -> None:
             "version": args.version,
             "taxonomy_status": args.taxonomy_status,
             "taxonomy_hash": digest,
-            "model": args.model,
+            "provider": chat_config.provider,
+            "model": model,
             "labeler": labeler,
             "cache_file": cache_file,
             "dry_run": not args.apply,

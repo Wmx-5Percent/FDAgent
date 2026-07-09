@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-07-09T08:36Z · 53 files
+> Last generated: 2026-07-09T14:39Z · 59 files
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -31,6 +31,7 @@
 - [`.github/skills/skill-writing/SKILL.md`](.github/skills/skill-writing/SKILL.md) — Skill 写作指南（Meta-Skill） — - **类型**: BestPractice
 
 ## evals/
+- [`evals/firm_resolution/golden_v1.json`](evals/firm_resolution/golden_v1.json) — {"description": "FDAgent firm-resolution threshold calibration pairs. Labels are for raw-name aliasing only: same means 
 - [`evals/golden/v1.json`](evals/golden/v1.json) — {"description": "FDAgent v1 golden eval set for /ask routing and retrieval recall@k.",
 
 ## scripts/
@@ -50,6 +51,7 @@
 - [`sql/006_query_log.sql`](sql/006_query_log.sql) — Create query_log: L1 Postgres observability for every handled /ask request.
 - [`sql/007_taxonomy.sql`](sql/007_taxonomy.sql) — Create recall taxonomy sidecar tables for offline classification.
 - [`sql/008_firm_resolution.sql`](sql/008_firm_resolution.sql) — Create firm-resolution sidecar tables for offline FDA recalling-firm resolution.
+- [`sql/009_firm_resolution_runs.sql`](sql/009_firm_resolution_runs.sql) — Create firm-resolution run/pair audit tables for incremental company normalization.
 
 ## src/
 - [`src/agent_control.py`](src/agent_control.py) — Guard /ask prompts before they enter the FDA recall query pipeline.
@@ -59,12 +61,20 @@
 - [`src/api.py`](src/api.py) — FastAPI service exposing the deterministic NL->SQL analytics engine (Path 1, serving half).
   - symbols: `lifespan`, `AskRequest`, `TitleRequest`, `TitleResponse`, `serialize_answer`, `health`, `title_endpoint`, `ask_endpoint`, `index`
 - [`src/classify/__init__.py`](src/classify/__init__.py) — Offline recall taxonomy induction, labeling, and discovery utilities.
+- [`src/classify/audit.py`](src/classify/audit.py) — Audit taxonomy coverage and exact offline recall-label counts.
+  - symbols: `taxonomy_nodes`, `descendant_node_ids`, `coverage_report`, `count_by_report`, `write_or_print`, `parse_args`, `clean_labeler`, `main`
+- [`src/classify/backfill_v1_rules.py`](src/classify/backfill_v1_rules.py) — Backfill recall_label for taxonomy v1 with high-precision deterministic rules.
+  - symbols: `Rule`, `ReasonBatch`, `Assignment`, `normalize_text`, `text_hash`, `fetch_reason_batches`, `active_node_ids`, `classify_text`, `validate_rules`, `apply_batch`, `run`, `write_report`
 - [`src/classify/discover.py`](src/classify/discover.py) — Discover candidate taxonomy categories from residual recall reasons.
   - symbols: `TaxonomyNode`, `ResidualReason`, `ResidualCluster`, `CandidateCategory`, `CandidateDraft`, `normalize_text`, `text_hash`, `safe_name`, `slugify`, `parse_vector`, `output_file`, `load_taxonomy`
 - [`src/classify/induce.py`](src/classify/induce.py) — Induce a draft recall-reason taxonomy from distinct reason_for_recall text.
   - symbols: `ReasonText`, `ClusterSummary`, `DraftNode`, `TaxonomyDraft`, `normalize_text`, `text_hash`, `slugify`, `parse_vector`, `fetch_reason_texts`, `load_reason_vectors`, `attach_vectors`, `extract_prefix`
 - [`src/classify/label.py`](src/classify/label.py) — Label recall records against a frozen taxonomy version.
   - symbols: `TaxonomyNode`, `ReasonBatch`, `LabelAssignment`, `LabelResult`, `normalize_text`, `text_hash`, `safe_name`, `default_cache_file`, `default_output_file`, `load_taxonomy`, `taxonomy_hash`, `fetch_reason_batches`
+- [`src/classify/seed_v1.py`](src/classify/seed_v1.py) — Seed the frozen v1 recall-reason taxonomy into the taxonomy sidecar table.
+  - symbols: `node_rows`, `existing_nodes`, `apply_seed`, `write_report`, `report_payload`, `parse_args`, `main`
+- [`src/classify/taxonomy_v1.py`](src/classify/taxonomy_v1.py) — Frozen v1 recall-reason taxonomy nodes for offline classification.
+  - symbols: `TaxonomyNodeSpec`, `nodes_by_id`, `validate`
 - [`src/embed.py`](src/embed.py) — Embed FDA source text fields into the shared `embeddings` table (Path 2, offline half).
   - symbols: `run`, `parse_args`
 - [`src/fetch_openfda.py`](src/fetch_openfda.py) — Generic openFDA -> PostgreSQL ingester.
@@ -73,7 +83,7 @@
 - [`src/firm/brand.py`](src/firm/brand.py) — Resolve brand/product names to firm or parent candidates with provenance tiers.
   - symbols: `BrandCandidate`, `BrandInference`, `collect_candidates`, `apply_candidates`, `print_candidates`, `run`, `parse_args`
 - [`src/firm/resolve.py`](src/firm/resolve.py) — Resolve FDA recalling_firm strings into conservative sidecar firm aliases.
-  - symbols: `FirmName`, `CandidatePair`, `Cluster`, `FirmPairVerification`, `UnionFind`, `normalize_name`, `load_firm_names`, `pg_trgm_pairs`, `build_candidate_pairs`, `deterministic_reason`, `verify_pair`, `classify_pairs`
+  - symbols: `SourceConfig`, `FirmName`, `CandidatePair`, `Cluster`, `LoadedNames`, `FirmPairVerification`, `UnionFind`, `normalize_name`, `load_firm_names`, `pg_trgm_pairs`, `pair_signals`, `build_candidate_pairs`
 - [`src/llm.py`](src/llm.py) — OpenAI-compatible chat and embedding provider gateway for serving paths.
   - symbols: `ProviderError`, `ProviderConfigError`, `ProviderMissingKeyError`, `ProviderUnsupportedConfigError`, `ProviderAuthError`, `ProviderQuotaError`, `ProviderRateLimitError`, `ProviderConnectionError`, `ProviderCapabilityError`, `StructuredOutputError`, `ChatConfig`, `EmbeddingConfig`
 - [`src/nl_query.py`](src/nl_query.py) — Natural-language front-end for the deterministic analytics engine.
