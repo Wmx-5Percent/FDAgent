@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-07-09T14:50Z · 60 files
+> Last generated: 2026-07-09T15:48Z · 60 files
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -78,7 +78,7 @@
 - [`src/embed.py`](src/embed.py) — Embed FDA source text fields into the shared `embeddings` table (Path 2, offline half).
   - symbols: `run`, `parse_args`
 - [`src/fetch_openfda.py`](src/fetch_openfda.py) — Generic openFDA -> PostgreSQL ingester.
-  - symbols: `parse_fda_date`, `record_id`, `fda_date_str`, `fetch_page`, `ensure_table`, `upsert_rows`, `max_report_date`, `build_search`, `run`, `parse_args`
+  - symbols: `parse_fda_date`, `record_id`, `fda_date_str`, `fetch_page`, `ensure_table`, `upsert_rows`, `max_report_date`, `build_search`, `apply_sql_file`, `resolve_firms_after_ingest`, `run`, `parse_args`
 - [`src/firm/__init__.py`](src/firm/__init__.py) — Offline firm and brand resolution helpers for FDA recall sidecar tables.
 - [`src/firm/brand.py`](src/firm/brand.py) — Resolve brand/product names to firm or parent candidates with provenance tiers.
   - symbols: `BrandCandidate`, `BrandInference`, `collect_candidates`, `apply_candidates`, `print_candidates`, `run`, `parse_args`

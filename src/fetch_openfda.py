@@ -44,6 +44,7 @@ import os
 import sys
 import time
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any, Iterable
 
 import requests
@@ -239,6 +240,56 @@ def build_search(base_search: str | None, date_field: str | None,
     return f"({base_search}) AND {date_clause}" if base_search else date_clause
 
 
+def apply_sql_file(conn: "psycopg.Connection", path: Path) -> None:
+    """Apply a versioned SQL file that contains idempotent DDL."""
+    with conn.cursor() as cur:
+        cur.execute(path.read_text(encoding="utf-8"))
+    conn.commit()
+
+
+def resolve_firms_after_ingest(args: argparse.Namespace, dsn: str) -> None:
+    """Run incremental firm normalization after a successful ingest."""
+    if args.dry_run:
+        print("\nfirm resolution: skipped for --dry-run")
+        return
+    if args.resolve_firms_verification_policy == "web" and not os.environ.get("OPENROUTER_API_KEY"):
+        raise RuntimeError("--resolve-firms with web verification requires OPENROUTER_API_KEY")
+
+    root = Path(__file__).resolve().parents[1]
+    with psycopg.connect(dsn) as conn:
+        if args.resolve_firms_apply_ddl:
+            apply_sql_file(conn, root / "sql" / "008_firm_resolution.sql")
+            apply_sql_file(conn, root / "sql" / "009_firm_resolution_runs.sql")
+
+    from firm import resolve as firm_resolve  # imported lazily so normal ingest stays lightweight
+
+    firm_args = argparse.Namespace(
+        db=dsn,
+        mode="incremental",
+        source_table=args.table,
+        source_field=args.resolve_firms_field,
+        limit=args.resolve_firms_limit,
+        threshold=args.resolve_firms_threshold,
+        auto_merge_threshold=args.resolve_firms_auto_merge_threshold,
+        review_threshold=args.resolve_firms_review_threshold,
+        token_threshold=args.resolve_firms_token_threshold,
+        verification_policy=args.resolve_firms_verification_policy,
+        verify_llm=False,
+        llm_confidence_threshold=args.resolve_firms_confidence_threshold,
+        model=args.resolve_firms_llm_model,
+        web_model=args.resolve_firms_web_model,
+        web_engine=args.resolve_firms_web_engine,
+        web_max_results=args.resolve_firms_web_max_results,
+        web_concurrency=args.resolve_firms_web_concurrency,
+        web_max_tokens=args.resolve_firms_web_max_tokens,
+        calibrate_golden=None,
+        show_clusters=args.resolve_firms_show_clusters,
+        apply=True,
+    )
+    print("\nfirm resolution: running incremental resolver after ingest")
+    firm_resolve.run(firm_args)
+
+
 def run(args: argparse.Namespace) -> int:
     id_field, date_field = ENDPOINT_DEFAULTS.get(args.endpoint, (None, None))
     if args.id_field:
@@ -318,6 +369,8 @@ def run(args: argparse.Namespace) -> int:
 
         print(f"\nDone. {'(dry-run) ' if args.dry_run else ''}{written} rows upserted "
               f"into {args.table}.")
+        if args.resolve_firms:
+            resolve_firms_after_ingest(args, dsn)
         return 0
     finally:
         conn.close()
@@ -352,7 +405,44 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="Do not auto-create the table / indexes.")
     p.add_argument("--dry-run", action="store_true",
                    help="Fetch and report counts but do not write to the database.")
+    p.add_argument("--resolve-firms", action="store_true",
+                   help="After a successful write, run incremental firm normalization for this table.")
+    p.add_argument("--resolve-firms-field", default="recalling_firm",
+                   help="Source field to resolve when --resolve-firms is set (default: recalling_firm).")
+    p.add_argument("--no-resolve-firms-ddl", dest="resolve_firms_apply_ddl", action="store_false",
+                   help="Do not apply sql/008 and sql/009 before post-ingest firm resolution.")
+    p.add_argument("--resolve-firms-limit", type=int, default=None,
+                   help="Limit selected firm values for post-ingest testing.")
+    p.add_argument("--resolve-firms-threshold", type=float, default=0.86,
+                   help="pg_trgm candidate threshold for post-ingest firm resolution.")
+    p.add_argument("--resolve-firms-auto-merge-threshold", type=float, default=0.86,
+                   help="deterministic threshold used only when post-ingest policy is not web.")
+    p.add_argument("--resolve-firms-review-threshold", type=float, default=0.72,
+                   help="review threshold used only when post-ingest policy is not web.")
+    p.add_argument("--resolve-firms-token-threshold", type=float, default=0.80,
+                   help="token-overlap threshold used only when post-ingest policy is not web.")
+    p.add_argument("--resolve-firms-verification-policy",
+                   choices=("web", "deterministic", "llm"), default="web",
+                   help="verification policy for post-ingest firm resolution (default: web).")
+    p.add_argument("--resolve-firms-confidence-threshold", type=float, default=0.90,
+                   help="minimum AI confidence for post-ingest accept/reject decisions.")
+    p.add_argument("--resolve-firms-llm-model", default=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
+                   help="OpenAI model if --resolve-firms-verification-policy=llm.")
+    p.add_argument("--resolve-firms-web-model",
+                   default=os.environ.get("OPENROUTER_WEB_MODEL", "deepseek/deepseek-v4-pro"),
+                   help="OpenRouter model for web-verified firm resolution.")
+    p.add_argument("--resolve-firms-web-engine", default="exa",
+                   help="OpenRouter web plugin engine for post-ingest firm resolution.")
+    p.add_argument("--resolve-firms-web-max-results", type=int, default=2,
+                   help="max OpenRouter web results per candidate pair for post-ingest firm resolution.")
+    p.add_argument("--resolve-firms-web-concurrency", type=int, default=4,
+                   help="parallel OpenRouter web verification requests for post-ingest firm resolution.")
+    p.add_argument("--resolve-firms-web-max-tokens", type=int, default=800,
+                   help="max output tokens for each post-ingest firm web verification request.")
+    p.add_argument("--resolve-firms-show-clusters", type=int, default=10,
+                   help="number of firm clusters to print from post-ingest resolver.")
     p.set_defaults(create_table=True)
+    p.set_defaults(resolve_firms_apply_ddl=True)
     return p.parse_args(argv)
 
 

@@ -19,12 +19,14 @@ auto-merge. Ambiguous pairs go to review; unknown/skipped values go to
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import sys
 import unicodedata
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -587,11 +589,32 @@ def classify_pairs(
     web_model: str,
     web_engine: str,
     web_max_results: int,
+    web_concurrency: int,
+    web_max_tokens: int,
 ) -> tuple[list[CandidatePair], list[CandidatePair], list[CandidatePair]]:
     client = OpenAI() if verification_policy == "llm" else None
     accepted: list[CandidatePair] = []
     review: list[CandidatePair] = []
     rejected: list[CandidatePair] = []
+
+    if verification_policy == "web":
+        web_verified = _verify_web_pairs(
+            pairs,
+            web_model=web_model,
+            web_engine=web_engine,
+            web_max_results=web_max_results,
+            web_concurrency=web_concurrency,
+            web_max_tokens=web_max_tokens,
+            confidence_threshold=llm_confidence_threshold,
+        )
+        for pair in web_verified:
+            if pair.decision == DECISION_ACCEPTED:
+                accepted.append(pair)
+            elif pair.decision == DECISION_REJECTED:
+                rejected.append(pair)
+            else:
+                review.append(pair)
+        return accepted, review, rejected
 
     for pair in pairs:
         if verification_policy != "web" and pair.score < review_threshold:
@@ -599,41 +622,6 @@ def classify_pairs(
             pair.decision_reason = "below review threshold"
             pair.confidence = pair.score
             rejected.append(pair)
-            continue
-
-        if verification_policy == "web":
-            try:
-                verdict = web_verify.verify_pair(
-                    pair.left.raw_firm,
-                    pair.right.raw_firm,
-                    model=web_model,
-                    engine=web_engine,
-                    max_results=web_max_results,
-                )
-            except RuntimeError as exc:
-                pair.decision = DECISION_NEEDS_REVIEW
-                pair.decision_reason = f"openrouter_web_error: {exc}"
-                pair.confidence = pair.score
-                pair.verification_method = "openrouter_web_error"
-                review.append(pair)
-                continue
-            pair.verified_by_llm = True
-            pair.verification_method = "openrouter_web"
-            pair.confidence = verdict.confidence
-            pair.citations = [citation.model_dump() for citation in verdict.citations]
-            citation_note = f"; citations={len(verdict.citations)}"
-            pair.decision_reason = (
-                f"openrouter_web:{verdict.relationship}: {verdict.reason}{citation_note}"
-            )
-            if verdict.same_entity and verdict.confidence >= llm_confidence_threshold:
-                pair.decision = DECISION_ACCEPTED
-                accepted.append(pair)
-            elif not verdict.same_entity and verdict.confidence >= llm_confidence_threshold:
-                pair.decision = DECISION_REJECTED
-                rejected.append(pair)
-            else:
-                pair.decision = DECISION_NEEDS_REVIEW
-                review.append(pair)
             continue
 
         if client is not None:
@@ -672,6 +660,63 @@ def classify_pairs(
             review.append(pair)
 
     return accepted, review, rejected
+
+
+def _verify_web_pairs(
+    pairs: Sequence[CandidatePair],
+    *,
+    web_model: str,
+    web_engine: str,
+    web_max_results: int,
+    web_concurrency: int,
+    web_max_tokens: int,
+    confidence_threshold: float,
+) -> list[CandidatePair]:
+    if not pairs:
+        return []
+    total = len(pairs)
+    done = 0
+
+    def verify(pair: CandidatePair) -> CandidatePair:
+        try:
+            verdict = web_verify.verify_pair(
+                pair.left.raw_firm,
+                pair.right.raw_firm,
+                model=web_model,
+                engine=web_engine,
+                max_results=web_max_results,
+                max_tokens=web_max_tokens,
+            )
+        except RuntimeError as exc:
+            pair.decision = DECISION_NEEDS_REVIEW
+            pair.decision_reason = f"openrouter_web_error: {exc}"
+            pair.confidence = pair.score
+            pair.verification_method = "openrouter_web_error"
+            return pair
+        pair.verified_by_llm = True
+        pair.verification_method = "openrouter_web"
+        pair.confidence = verdict.confidence
+        pair.citations = [citation.model_dump() for citation in verdict.citations]
+        citation_note = f"; citations={len(verdict.citations)}"
+        pair.decision_reason = f"openrouter_web:{verdict.relationship}: {verdict.reason}{citation_note}"
+        if verdict.same_entity and verdict.confidence >= confidence_threshold:
+            pair.decision = DECISION_ACCEPTED
+        elif not verdict.same_entity and verdict.confidence >= confidence_threshold:
+            pair.decision = DECISION_REJECTED
+        else:
+            pair.decision = DECISION_NEEDS_REVIEW
+        return pair
+
+    print(f"  web verifying {total} candidate pair(s) with concurrency={web_concurrency}", flush=True)
+    verified: list[CandidatePair] = []
+    with ThreadPoolExecutor(max_workers=max(1, web_concurrency)) as executor:
+        futures = [executor.submit(verify, pair) for pair in pairs]
+        for future in as_completed(futures):
+            verified.append(future.result())
+            done += 1
+            if done == 1 or done % 25 == 0 or done == total:
+                print(f"  web verified {done}/{total}", flush=True)
+    return verified
 
 
 def build_clusters(names: Sequence[FirmName], accepted_pairs: Sequence[CandidatePair]) -> list[Cluster]:
@@ -879,6 +924,7 @@ def _touch_firm(
     source: SourceConfig,
 ) -> int:
     canonical = cluster.canonical
+    normalized_identity_key = _firm_identity_key(cluster)
     members = [
         {
             "raw_firm": member.raw_firm,
@@ -930,9 +976,16 @@ def _touch_firm(
                 updated_at = now()
         RETURNING id
         """,
-        (canonical.raw_firm, canonical.normalized, cluster.confidence, Jsonb(evidence)),
+        (canonical.raw_firm, normalized_identity_key, cluster.confidence, Jsonb(evidence)),
     )
     return int(cur.fetchone()[0])
+
+
+def _firm_identity_key(cluster: Cluster) -> str:
+    """Stable unique key for a canonical firm; avoids merging distinct entities with same normalized text."""
+    canonical = cluster.canonical
+    digest = hashlib.sha1(canonical.raw_firm.casefold().encode("utf-8")).hexdigest()[:12]
+    return f"{canonical.normalized}::{digest}"
 
 
 def write_clusters(
@@ -1180,6 +1233,8 @@ def run_calibration(conn: psycopg.Connection, args: argparse.Namespace) -> int:
         web_model=args.web_model,
         web_engine=args.web_engine,
         web_max_results=args.web_max_results,
+        web_concurrency=args.web_concurrency,
+        web_max_tokens=args.web_max_tokens,
     )
     by_key = {pair.key: pair for pair in pairs}
     tp = fp = fn = tn = uncertain = 0
@@ -1242,6 +1297,8 @@ def run(args: argparse.Namespace) -> int:
             web_model=args.web_model,
             web_engine=args.web_engine,
             web_max_results=args.web_max_results,
+            web_concurrency=args.web_concurrency,
+            web_max_tokens=args.web_max_tokens,
         )
         clusters = build_clusters(loaded.names, accepted_pairs) if loaded.selected_idxs else []
 
@@ -1320,7 +1377,7 @@ def parse_args() -> argparse.Namespace:
                    help="source field containing raw firm strings")
     p.add_argument("--limit", type=int, default=None,
                    help="limit selected source values for a test run")
-    p.add_argument("--threshold", type=float, default=0.62,
+    p.add_argument("--threshold", type=float, default=0.86,
                    help="pg_trgm candidate threshold before conservative merge checks")
     p.add_argument("--auto-merge-threshold", type=float, default=0.86,
                    help="minimum trigram/word similarity for deterministic alias merges")
@@ -1342,6 +1399,10 @@ def parse_args() -> argparse.Namespace:
                    help="OpenRouter web plugin engine (default: exa)")
     p.add_argument("--web-max-results", type=int, default=5,
                    help="max OpenRouter web results per candidate pair")
+    p.add_argument("--web-concurrency", type=int, default=4,
+                   help="parallel OpenRouter web verification requests")
+    p.add_argument("--web-max-tokens", type=int, default=800,
+                   help="max output tokens for each OpenRouter web verification request")
     p.add_argument("--calibrate-golden", default=None,
                    help="evaluate thresholds against a firm-pair golden JSON file; no writes")
     p.add_argument("--show-clusters", type=int, default=10,

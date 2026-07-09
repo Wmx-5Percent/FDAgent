@@ -61,6 +61,7 @@ def verify_pair(
     model: str = DEFAULT_WEB_MODEL,
     engine: str = "exa",
     max_results: int = 5,
+    max_tokens: int = 800,
 ) -> WebFirmPairVerification:
     """Verify a firm pair using OpenRouter web search and locally validated JSON."""
     api_key = os.environ.get("OPENROUTER_API_KEY")
@@ -86,6 +87,7 @@ def verify_pair(
                 {"role": "user", "content": prompt},
             ],
             response_format=_response_format(WebFirmPairVerification),
+            max_tokens=max_tokens,
             extra_body={"plugins": [{"id": "web", "engine": engine, "max_results": max_results}]},
         )
     except TypeError:
@@ -97,9 +99,10 @@ def verify_pair(
                 {"role": "user", "content": prompt},
             ],
             response_format=_response_format(WebFirmPairVerification),
+            max_tokens=max_tokens,
         )
     except OpenAIError as exc:
-        raise RuntimeError(f"OpenRouter web verification failed: {type(exc).__name__}") from exc
+        raise RuntimeError(f"OpenRouter web verification failed: {_openrouter_error_detail(exc)}") from exc
 
     text = _message_text(completion)
     try:
@@ -143,6 +146,20 @@ def _message_text(completion: Any) -> str:
     if not content:
         raise RuntimeError("OpenRouter web verification response was empty")
     return str(content)
+
+
+def _openrouter_error_detail(exc: OpenAIError) -> str:
+    status = getattr(exc, "status_code", None)
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        message = body.get("message")
+        code = body.get("code")
+        if message or code:
+            return f"{type(exc).__name__}(status={status}, code={code}, message={message})"
+    message = getattr(exc, "message", None)
+    if message:
+        return f"{type(exc).__name__}(status={status}, message={str(message)[:300]})"
+    return f"{type(exc).__name__}(status={status})"
 
 
 def _annotation_citations(completion: Any) -> list[WebCitation]:
