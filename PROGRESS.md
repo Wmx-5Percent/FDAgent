@@ -5,6 +5,9 @@
 > file map is [PROJECT_INDEX.md](PROJECT_INDEX.md). To avoid drift, this file **links** to
 > those rather than repeating them.
 > **Maintenance:** at the end of each work session, update *Now / Next up / Blockers*. Keep it short.
+> **Parallel rule:** *Next action / Next up* is the shared multi-agent queue. Subagents must
+> not rewrite it as only their own task; preserve all parallel items and put per-branch
+> details in the PR body/comments.
 > Last updated: 2026-07-09
 
 ## Goal (end state)

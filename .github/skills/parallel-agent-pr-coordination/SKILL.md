@@ -23,6 +23,7 @@ This skill has two operating modes:
 - A child agent must not start from stale `origin/main`, must not rebase feature branches during collaboration, and must not merge its own PR unless the user explicitly delegates merge authority.
 - GitHub PRs, issue comments, and local git state are the durable coordination surface. Terminal chat is transient; independent terminal sessions do not share live state.
 - Generated files are handled by their generator, not by hand-editing conflict markers.
+- `PROGRESS.md` is shared coordinator state, not a child-agent status file. A child may update the specific item it completed or append a short integration note, but must not rewrite "Next action" / "Next up" to contain only that child's task. Per-branch next steps belong in the PR body/comments unless the coordinator explicitly asks for a holistic `PROGRESS.md` reorder.
 
 ## Acceptance criteria
 Before parallel development starts:
@@ -35,6 +36,7 @@ During development:
 - Each open PR contains enough status for another agent to recover: scope, current validation results or blockers, known overlap, and dependency notes.
 - Owner comments that start with `[CONTROL]` are treated as higher priority than the original prompt, and the child replies after completing the requested action.
 - After any PR merges into `main`, all still-open PR branches either merge the new `origin/main` or explicitly document why they are blocked.
+- Any `PROGRESS.md` update preserves the complete multi-workstream "Next up" queue, including items owned by other agents and dependency gates.
 
 Before any PR is merged:
 - The PR is not `CONFLICTING`.
@@ -60,6 +62,7 @@ Each child prompt should require:
 - treat `[CONTROL]` owner comments as authoritative
 - merge `origin/main`, never rebase, when the coordinator reports that main advanced
 - comment validation results after every corrective push
+- keep `PROGRESS.md` holistic: do not replace "Next action" / "Next up" with the child's single local task; report child-local next steps in PR comments.
 
 The coordinator should monitor artifacts, not hidden terminal state:
 - `gh pr list --state all --json number,title,state,mergeable,headRefName,url`
@@ -92,6 +95,7 @@ Hard rules:
 - **The coordinator could not observe independent terminals directly.** It could only inspect git/GitHub artifacts. Tooling like an observer window is helpful per session, but it does not make separate terminal sessions share live state.
 - **Dependency gates need post-merge sync too.** A frontend child correctly waited for the backend PR to merge, but later sidecar merges still made its branch conflict. Prevention: every open PR syncs after every main merge, not only after its direct dependency.
 - **Do not double-own a worktree.** If a child is active, coordinator comments or asks it to stop. Direct coordinator edits to the same worktree risk racing the child agent.
+- **Subagents collapsed `PROGRESS.md` to their own next step.** In parallel planning, the human may pre-stage multiple next-up items before launching several agents. Prevention: child prompts and review must treat `PROGRESS.md` "Next up" as the shared queue; a child can mark its item done/blocked but must not delete or reorder unrelated workstreams.
 
 ## Output
 No required file artifact. A successful coordination run leaves:
@@ -99,4 +103,3 @@ No required file artifact. A successful coordination run leaves:
 - PR comments documenting control actions and validation results
 - no hidden stale-base work
 - merged branches cleaned up through `parallel-dev-worktree-cleanup`
-

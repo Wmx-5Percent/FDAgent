@@ -20,6 +20,7 @@ This skill authors prompts. The generated prompts should normally instruct agent
 - Do not hide missing decisions. If branch names, worktree paths, dependencies, or validation commands are unknown, either infer them from repo conventions and mark the inference, or ask the user before finalizing.
 - Do not rely on "main terminal" or "Terminal 1" alone to imply authority. Every generated prompt must explicitly declare `coordinator/main agent` or `feature/child agent`.
 - Do not generate child prompts that let multiple agents own the same files unless the overlap and merge order are explicit.
+- Do not generate child prompts that let a feature agent rewrite `PROGRESS.md` "Next action" / "Next up" as that feature's single local task. In parallel plans, `PROGRESS.md` is a shared multi-workstream queue; child-local status belongs in PR bodies/comments.
 - Avoid long background exposition in the output. The deliverable is prompts the user can paste, not a lecture.
 
 ## Acceptance criteria
@@ -30,6 +31,7 @@ A successful prompt pack contains:
 - Dependency gates are executable: a waiting child knows exactly what PR/branch/title/merge condition satisfies the gate.
 - Each prompt includes what to do when `origin/main` advances: merge, not rebase; regenerate generated files; rerun validation; push; comment results.
 - Generated-file conflict policy is present, especially for `PROJECT_INDEX.md`: run `scripts/gen_index.py`, add the generated file, then run `scripts/gen_index.py --check`.
+- Each child prompt includes a `PROGRESS.md` rule: preserve the complete multi-agent "Next up" queue; only update the child's item or a short integrated note when asked; use PR comments for branch-local next steps.
 - The pack includes short `[CONTROL]` snippets the coordinator can paste later for common events: main advanced, PR conflicting, PR merged/stop, dependency satisfied.
 - The output is copy/paste-friendly: separate fenced text blocks for each terminal, with no nested bullets that make terminal prompts hard to select.
 
@@ -42,6 +44,7 @@ Every generated prompt should include these concepts, adapted to the workstream:
 - **Preflight or dependency gate**: conditions that must hold before creating a branch or writing code.
 - **Visibility**: first meaningful checkpoint commit opens a Draft PR; PR body records base SHA, scope, validation, overlap, and risks.
 - **Communication**: poll PR comments; `[CONTROL]` owner comments override prior prompt; reply with results.
+- **Progress docs**: `PROGRESS.md` updates must preserve all planned parallel workstreams and dependency gates; a child must not collapse "Next action" / "Next up" to its own feature.
 - **Validation**: targeted commands, acceptable blockers, and where to document failures.
 - **Integration**: merge `origin/main` instead of rebasing; never merge own PR unless explicitly authorized.
 - **Stop conditions**: stale base, conflicting instructions, unauthorized file overlap, unavailable credentials, failed validation without a clear fix, or PR merged by someone else.
@@ -87,6 +90,7 @@ The exact wording may vary, but the generated pack must preserve the authority b
 - **Role ambiguity caused coordination friction.** A skill can describe modes, but each terminal prompt must explicitly assign the role.
 - **Dependency gates were only checked once.** A child can become stale after any other PR merges; prompts must require resync after every main advance.
 - **Generated index conflicts recurred.** Put the generator-based conflict rule directly in every child prompt that may add/move/delete files.
+- **Children overwrote shared Next Up with their own task.** Parallel prompt packs must explicitly say that `PROGRESS.md` is coordinator-owned shared state; child-local next steps go in PR comments, not in the global "Next action".
 
 ## Output
 The output is a Markdown prompt pack that the user can copy into terminals. It is acceptable to save it under the session artifact folder if the user asks for a file, but do not create committed planning docs unless explicitly requested.

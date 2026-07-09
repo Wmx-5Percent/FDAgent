@@ -26,6 +26,13 @@ for the frequency/aggregation design.
 
 > **Update ritual:** when you finish a chunk of work, update [`PROGRESS.md`](PROGRESS.md)
 > (Now / Next up / Blockers) so the next session starts oriented. Keep it short.
+>
+> **Parallel-development PROGRESS rule:** `PROGRESS.md` is a **shared multi-workstream
+> queue**, not a per-agent scratchpad. A feature/subagent must **not** collapse
+> "Next action" / "Next up" to only its own task. Preserve all pending parallel items,
+> dependency gates, and merge order. If you only own one feature, update that item's status
+> or add a dated note; use your PR body/comments for detailed per-branch progress. The
+> coordinator/main agent owns holistic priority/order changes after integration.
 
 ## Keep the index reliable (IMPORTANT)
 
@@ -43,6 +50,10 @@ Each doc stays current by a *different* mechanism — know which, and **never du
 - **Auto-generated, cannot drift:** [`PROJECT_INDEX.md`](PROJECT_INDEX.md) — rebuilt by `gen_index.py`, enforced by the pre-commit `--check`.
 - **Ritual-updated, the single source of truth for state:** [`PROGRESS.md`](PROGRESS.md) — what's done / next / blocked. Update it at the end of each session.
 - **Vision + setup, link-only:** [`README.md`](README.md) and [`PLAN.md`](PLAN.md) describe the stable goal and how to run things, and **link to `PROGRESS.md` for live state** — they must not restate "what works / current phase".
+
+When updating `PROGRESS.md` during parallel development, keep "Next up" as the complete
+coordinator-approved backlog for all active/planned workstreams. Do not replace it with a
+single subagent's local next step; per-agent next steps belong in that PR's body/comments.
 
 **Root cause of the earlier stale README:** it *duplicated* project state (dataset, architecture, "Phase 0 done") into a doc with **no freshness mechanism** — unlike the auto-generated index or the ritual-bound PROGRESS, nothing triggered or checked it, so the drug/enforcement pivot left it behind.
 
