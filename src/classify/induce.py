@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,15 +25,16 @@ from typing import Any, Sequence
 
 import psycopg
 from dotenv import load_dotenv
-from openai import OpenAI
 from psycopg import errors
 from pydantic import BaseModel, Field, field_validator
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import llm  # noqa: E402  (OpenAI-compatible provider gateway)
+
 load_dotenv()
 
 DEFAULT_DSN = os.environ.get("DATABASE_URL", "postgresql://localhost:5432/fda")
-DEFAULT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 DEFAULT_OUTPUT = "data/processed/taxonomy_draft_v1.json"
 SOURCE = "drug_enforcement"
 FIELD = "reason_for_recall"
@@ -319,12 +321,17 @@ Rules:
 
 
 @retry(stop=stop_after_attempt(4), wait=wait_exponential(multiplier=1, min=2, max=20))
-def draft_with_llm(client: OpenAI, *, model: str, version: str, payload: dict[str, Any]) -> TaxonomyDraft:
-    parse = getattr(client.chat.completions, "parse", None) or client.beta.chat.completions.parse
-    completion = parse(
-        model=model,
-        temperature=0,
-        messages=[
+def draft_with_llm(
+    client: Any,
+    *,
+    config: llm.ChatConfig,
+    version: str,
+    payload: dict[str, Any],
+) -> TaxonomyDraft:
+    draft = llm.structured_completion(
+        client,
+        config,
+        [
             {"role": "system", "content": SYSTEM},
             {
                 "role": "user",
@@ -335,9 +342,9 @@ def draft_with_llm(client: OpenAI, *, model: str, version: str, payload: dict[st
                 ),
             },
         ],
-        response_format=TaxonomyDraft,
+        TaxonomyDraft,
+        temperature=0,
     )
-    draft = completion.choices[0].message.parsed
     draft.version = version
     return draft
 
@@ -441,7 +448,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Induce a draft taxonomy for recall reasons.")
     parser.add_argument("--dsn", default=DEFAULT_DSN, help="Postgres DSN")
     parser.add_argument("--version", default="v1", help="taxonomy version to emit/apply")
-    parser.add_argument("--model", default=DEFAULT_MODEL, help="OpenAI model for taxonomy drafting")
+    parser.add_argument("--model", default=None, help="chat model override for taxonomy drafting")
     parser.add_argument("--output-file", default=DEFAULT_OUTPUT, help="JSON output path")
     parser.add_argument("--limit", type=int, default=None, help="max distinct reason texts to read")
     parser.add_argument("--max-prefixes", type=int, default=50, help="max mined prefixes for the LLM")
@@ -475,13 +482,21 @@ def main() -> None:
         payload = induction_payload(reasons, prefixes, clusters)
         if args.no_llm:
             draft = deterministic_draft(args.version, prefixes)
+            chat_config = None
         else:
-            draft = draft_with_llm(OpenAI(), model=args.model, version=args.version, payload=payload)
+            chat_config = llm.chat_config(model=args.model)
+            draft = draft_with_llm(
+                llm.create_chat_client(chat_config),
+                config=chat_config,
+                version=args.version,
+                payload=payload,
+            )
         validate_draft(draft)
 
         output = {
             "version": args.version,
-            "model": None if args.no_llm else args.model,
+            "model": None if args.no_llm or chat_config is None else chat_config.model,
+            "provider": None if args.no_llm or chat_config is None else chat_config.provider,
             "source": SOURCE,
             "field": FIELD,
             "distinct_reason_count": len(reasons),
