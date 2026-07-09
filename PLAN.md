@@ -60,6 +60,7 @@ flowchart TB
 | 结构化数据 | ✅ **PostgreSQL**（Postgres.app 17） | SQLite / DuckDB / Snowflake | 同库承载向量；生产可换 Snowflake |
 | 结构化输出 | ✅ **Pydantic v2 + OpenAI structured output** | Instructor 库 | schema 校验、防 LLM 漂移 |
 | 重试 / 限流 | **tenacity** | 自写 backoff | 指数退避、稳态批处理 |
+| Agent-control guard | 🔜 **域/元问题/降级守卫层** | 单 prompt 直接产 QuerySpec | 先判断该不该查 FDA 数据，再选 SQL/retrieval/tool；避免 chitchat 进 DB、embedding 失败被误报为“无结果” |
 | Agent 框架 | 🔜 **OpenAI function calling 原生** | LangGraph（进阶可选） | 先用原生，别一上来上重框架 |
 | 实体解析（Phase 3） | 🔜 **pg_trgm 模糊 + 已知子公司展开 + LLM 核验** | fuzzystrmatch / dedupe | firm 名碎片化（1,634 个）；名变体 + 子公司需归并 |
 | 评估 | ✅ **自写 harness + 版本化黄金集（v1）** | ragas / promptfoo | 数字来自 SQL → 可精确断言；模糊维度才用 LLM-judge |
@@ -84,13 +85,14 @@ flowchart TB
 - 安全（OWASP）：只读连接 + 只允许 SELECT + 列名走白名单 + 值走参数绑定（防注入）。
 - 落地：`src/analytics.py`（聚合引擎）+ `src/nl_query.py`（NL→QuerySpec）。
 
-### Path 2 — 语义 / 混合检索（🚧 进行中；混合检索已完成）
+### Path 2 — 语义 / 混合检索（✅ v1 已完成；需要 agent-control 加固）
 答 Path 1 答不了的**模糊概念**问题（「无菌问题」「致癌杂质」「药效太强」）。
 - 嵌入 `reason_for_recall` + `product_description` 入 `embeddings`（pgvector）。详见
   [频率查询系统设计](频率查询系统设计-过滤检索校验.md) §9。✅
 - 概念走 `semantic_query` → 混合检索（pgvector + Postgres FTS + RRF，可叠加 Tier-A 硬过滤），不再用字面 `ilike`。✅
-- **剩余**：逐条 LLM 校验 + 语义计数（估计值 + 置信区间）。
-- **缺口·语义×聚合**：当前路由器 `semantic_query` 与聚合(intent) 互斥（有语义就短路到 top-K）。补法二选一/叠加：① 离线打标签 → 退化成精确 `GROUP BY`（Phase 4，高频首选）；② 在线漏斗 2.4（结构化预过滤→混合召回→逐条判定→计数+CI，长尾）。
+- 逐条 LLM 校验 + 语义计数（估计值 + 置信区间）已接入，`semantic_query` 可以与 `count_total` / `count_by` 组合。✅
+- **当前设计缺口不是“要不要混合检索”，而是 agent-control**：当 embedding provider 不可用时，系统会退化到 FTS-only；多词/口语化 query（`sterility problems`, `pills that are too strong`）在 FTS-only 下可能 0 命中，这不能被解释为“FDA 数据中没有”。同时，`who you are?` 这类元问题会被 QuerySpec 空间硬塞进 `sample`，返回无关 rows。
+- **治理原则**：QuerySpec 前面必须有一层 `{in_domain, chitchat/meta, out_of_domain, ambiguous}` 守卫；semantic count 的 query rewrite 要保留核心概念并把 synonyms/expansions 分开；检索降级必须显式告诉用户和 `query_log`。
 
 ### 前端 — ChatGPT 式聊天 UI（✅ v1 已完成）
 对话流 + 左侧会话栏 + 可编辑消息 + 随时停止。模块化静态文件（`index.html` / `app.js` /
@@ -103,6 +105,18 @@ flowchart TB
 - **可观测**：每次 `/ask` 落 `query_log`（Postgres，L1）✅；接 **Langfuse**（L2）留到确认需要更强 trace UX 后。
 - **评估**：版本化黄金集 v1 ✅；**数字来自 SQL → 可精确断言**（如「无菌」必须走 `semantic_query` 而非 `ilike`）；
   检索 recall@k 已覆盖，答案忠实度用 LLM-as-judge、标签稳定性用 Cohen's κ 留到后续。
+
+### Agent-control layer — 从“查询器”变成“智能体”（🔜 后端/RAG 加固）
+当前 `/ask` 已能做 SQL 分析、混合检索、语义计数，但还缺“是否应该查库 / 工具坏了怎么说 / 什么时候追问”的控制层。这个 backend slice 独立于 firm-resolution 3a+，应补：
+
+1. **Domain/meta guard**：先判定 `in_domain` / `chitchat/meta` / `out_of_domain` / `ambiguous`。自我介绍、能力询问直接回答；无关问题说明 FDA-recall 范围；歧义问题追问；只有 `in_domain` 才进入 QuerySpec。
+2. **Safe sample policy**：`intent=sample` 且无 `filters`、无 `semantic_query` 时禁止 `LIMIT 5` 随机返回，应改为澄清或能力说明。
+3. **Conservative query rewrite**：计数/汇总类问题保留用户核心概念（如 `sterility`），把 `sterile`、`non-sterile`、`lack of assurance of sterility`、`superpotent` 等作为扩展/别名，不把核心 query 改窄成 `sterility problems`。
+4. **Retrieval degradation policy**：`hybrid`、`fts_only`、`sql keyword` 是不同证据级别。embedding auth/quota/key 失败时，答案必须标记“degraded FTS-only”；FTS-only 0 命中时要说明“语义检索不可用，关键词 fallback 无命中”，不能当成事实上的 0。
+5. **Fallback ladder**：FTS fallback 应从严格 query 逐步放宽到核心词、synonym/alias、OR-style broadening；仍无结果才返回带限制说明的空结果。
+6. **Eval/observability coverage**：golden eval 覆盖 meta/chitchat、out-of-domain、empty sample prevention、conservative rewrite、degraded retrieval metadata；`query_log` 保留 guard decision、route、retrieval mode、fallback reason。
+
+**Done when:** `query_log` 中 meta/out-of-domain 不再产生 SQL rows；`How many sterility recalls...` 不再被重写成更窄的 `sterility problems`；embedding 不可用时，用户能看到降级说明而不是静默 0。
 
 ### Phase 3 — 路由 Agent（tool-calling 资本式整合）
 一个 agent 自动在 **语义检索 / 统计分析 / 实体解析 / web 搜索** 间路由。杀手级用例：「我买了某药，这家公司安不安全？」
