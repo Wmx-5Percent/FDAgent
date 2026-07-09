@@ -5,13 +5,15 @@ The resolver is offline, source-table aware, and dry-run by default:
 
     .venv/bin/python src/firm/resolve.py
     .venv/bin/python src/firm/resolve.py --mode full --limit 100
-    .venv/bin/python src/firm/resolve.py --mode incremental --apply
+    .venv/bin/python src/firm/resolve.py --mode incremental --verification-policy web --apply
     .venv/bin/python src/firm/resolve.py --calibrate-golden evals/firm_resolution/golden_v1.json
 
 Production flow runs after ingestion: ``fetch_openfda.py --since auto`` brings in
 new rows, then this resolver discovers new/changed source firm strings, updates
 only needed sidecar aliases, and records run/pair audit rows. It never rewrites
-source FDA tables. Ambiguous pairs go to review; unknown/skipped values go to
+source FDA tables. Local string rules only recall candidate pairs; by default,
+OpenRouter web search (DeepSeek V4 Pro unless overridden) verifies identity before
+auto-merge. Ambiguous pairs go to review; unknown/skipped values go to
 ``resolution_log`` instead of being asserted as external identities.
 """
 from __future__ import annotations
@@ -20,6 +22,7 @@ import argparse
 import json
 import os
 import re
+import sys
 import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -33,11 +36,19 @@ from psycopg import sql
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
+try:
+    from . import web_verify
+except ImportError:  # script execution: python src/firm/resolve.py
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import web_verify  # type: ignore
+
 load_dotenv()
 DEFAULT_DSN = os.environ.get("DATABASE_URL", "postgresql://localhost:5432/fda")
 MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+WEB_MODEL = web_verify.DEFAULT_WEB_MODEL
 
 MODES = ("full", "incremental")
+VERIFICATION_POLICIES = ("web", "deterministic", "llm")
 DECISION_ACCEPTED = "accepted"
 DECISION_NEEDS_REVIEW = "needs_review"
 DECISION_REJECTED = "rejected"
@@ -116,6 +127,8 @@ class CandidatePair:
     decision_reason: str = ""
     confidence: float = 0.0
     verified_by_llm: bool = False
+    verification_method: str = "none"
+    citations: list[dict[str, str]] = field(default_factory=list)
 
     @property
     def key(self) -> tuple[int, int]:
@@ -565,41 +578,68 @@ def verify_pair(client: OpenAI, pair: CandidatePair, *, model: str) -> FirmPairV
 def classify_pairs(
     pairs: Sequence[CandidatePair],
     *,
+    verification_policy: str,
     auto_merge_threshold: float,
     review_threshold: float,
     token_threshold: float,
-    verify_llm: bool,
     llm_confidence_threshold: float,
     model: str,
+    web_model: str,
+    web_engine: str,
+    web_max_results: int,
 ) -> tuple[list[CandidatePair], list[CandidatePair], list[CandidatePair]]:
-    client = OpenAI() if verify_llm else None
+    client = OpenAI() if verification_policy == "llm" else None
     accepted: list[CandidatePair] = []
     review: list[CandidatePair] = []
     rejected: list[CandidatePair] = []
 
     for pair in pairs:
-        reason = deterministic_reason(
-            pair,
-            auto_merge_threshold=auto_merge_threshold,
-            token_threshold=token_threshold,
-        )
-        if reason is not None:
-            pair.decision = DECISION_ACCEPTED
-            pair.decision_reason = reason
-            pair.confidence = max(pair.score, auto_merge_threshold)
-            accepted.append(pair)
-            continue
-
-        if pair.score < review_threshold:
+        if verification_policy != "web" and pair.score < review_threshold:
             pair.decision = DECISION_REJECTED
             pair.decision_reason = "below review threshold"
             pair.confidence = pair.score
             rejected.append(pair)
             continue
 
+        if verification_policy == "web":
+            try:
+                verdict = web_verify.verify_pair(
+                    pair.left.raw_firm,
+                    pair.right.raw_firm,
+                    model=web_model,
+                    engine=web_engine,
+                    max_results=web_max_results,
+                )
+            except RuntimeError as exc:
+                pair.decision = DECISION_NEEDS_REVIEW
+                pair.decision_reason = f"openrouter_web_error: {exc}"
+                pair.confidence = pair.score
+                pair.verification_method = "openrouter_web_error"
+                review.append(pair)
+                continue
+            pair.verified_by_llm = True
+            pair.verification_method = "openrouter_web"
+            pair.confidence = verdict.confidence
+            pair.citations = [citation.model_dump() for citation in verdict.citations]
+            citation_note = f"; citations={len(verdict.citations)}"
+            pair.decision_reason = (
+                f"openrouter_web:{verdict.relationship}: {verdict.reason}{citation_note}"
+            )
+            if verdict.same_entity and verdict.confidence >= llm_confidence_threshold:
+                pair.decision = DECISION_ACCEPTED
+                accepted.append(pair)
+            elif not verdict.same_entity and verdict.confidence >= llm_confidence_threshold:
+                pair.decision = DECISION_REJECTED
+                rejected.append(pair)
+            else:
+                pair.decision = DECISION_NEEDS_REVIEW
+                review.append(pair)
+            continue
+
         if client is not None:
             verdict = verify_pair(client, pair, model=model)
             pair.verified_by_llm = True
+            pair.verification_method = "structured_llm"
             pair.decision_reason = f"llm: {verdict.reason}"
             pair.confidence = verdict.confidence
             if verdict.same_entity and verdict.confidence >= llm_confidence_threshold:
@@ -613,10 +653,23 @@ def classify_pairs(
                 review.append(pair)
             continue
 
-        pair.decision = DECISION_NEEDS_REVIEW
-        pair.decision_reason = "below auto-merge threshold; above review threshold"
-        pair.confidence = pair.score
-        review.append(pair)
+        reason = deterministic_reason(
+            pair,
+            auto_merge_threshold=auto_merge_threshold,
+            token_threshold=token_threshold,
+        )
+        if reason is not None:
+            pair.decision = DECISION_ACCEPTED
+            pair.decision_reason = reason
+            pair.confidence = max(pair.score, auto_merge_threshold)
+            pair.verification_method = "deterministic"
+            accepted.append(pair)
+        else:
+            pair.decision = DECISION_NEEDS_REVIEW
+            pair.decision_reason = "below auto-merge threshold; above review threshold"
+            pair.confidence = pair.score
+            pair.verification_method = "deterministic_review"
+            review.append(pair)
 
     return accepted, review, rejected
 
@@ -654,6 +707,8 @@ def _edge_evidence(edge: CandidatePair) -> dict[str, object]:
         "decision_reason": edge.decision_reason,
         "confidence": round(edge.confidence, 5),
         "verified_by_llm": edge.verified_by_llm,
+        "verification_method": edge.verification_method,
+        "citations": edge.citations,
     }
 
 
@@ -699,8 +754,13 @@ def create_run(conn: psycopg.Connection, args: argparse.Namespace, *,
                 args.auto_merge_threshold,
                 args.review_threshold,
                 args.token_threshold,
-                args.verify_llm,
-                args.model if args.verify_llm else None,
+                args.verification_policy != "deterministic",
+                (
+                    args.web_model
+                    if args.verification_policy == "web"
+                    else args.model if args.verification_policy == "llm"
+                    else None
+                ),
                 args.llm_confidence_threshold,
                 stats["source_value_count"],
                 stats["selected_value_count"],
@@ -1111,12 +1171,15 @@ def run_calibration(conn: psycopg.Connection, args: argparse.Namespace) -> int:
 
     accepted, review, rejected = classify_pairs(
         pairs,
+        verification_policy="deterministic",
         auto_merge_threshold=args.auto_merge_threshold,
         review_threshold=args.review_threshold,
         token_threshold=args.token_threshold,
-        verify_llm=False,
         llm_confidence_threshold=args.llm_confidence_threshold,
         model=args.model,
+        web_model=args.web_model,
+        web_engine=args.web_engine,
+        web_max_results=args.web_max_results,
     )
     by_key = {pair.key: pair for pair in pairs}
     tp = fp = fn = tn = uncertain = 0
@@ -1150,8 +1213,12 @@ def run_calibration(conn: psycopg.Connection, args: argparse.Namespace) -> int:
 
 
 def run(args: argparse.Namespace) -> int:
-    if args.verify_llm and not os.environ.get("OPENAI_API_KEY"):
+    if args.verify_llm:
+        args.verification_policy = "llm"
+    if args.verification_policy == "llm" and not os.environ.get("OPENAI_API_KEY"):
         raise RuntimeError("--verify-llm requires OPENAI_API_KEY")
+    if args.verification_policy == "web" and not os.environ.get("OPENROUTER_API_KEY"):
+        raise RuntimeError("--verification-policy web requires OPENROUTER_API_KEY")
 
     source = SourceConfig(table=args.source_table, field=args.source_field)
     with psycopg.connect(args.db) as conn:
@@ -1166,12 +1233,15 @@ def run(args: argparse.Namespace) -> int:
         pairs = build_candidate_pairs(loaded.names, rows)
         accepted_pairs, review_pairs, rejected_pairs = classify_pairs(
             pairs,
+            verification_policy=args.verification_policy,
             auto_merge_threshold=args.auto_merge_threshold,
             review_threshold=args.review_threshold,
             token_threshold=args.token_threshold,
-            verify_llm=args.verify_llm,
             llm_confidence_threshold=args.llm_confidence_threshold,
             model=args.model,
+            web_model=args.web_model,
+            web_engine=args.web_engine,
+            web_max_results=args.web_max_results,
         )
         clusters = build_clusters(loaded.names, accepted_pairs) if loaded.selected_idxs else []
 
@@ -1255,15 +1325,23 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--auto-merge-threshold", type=float, default=0.86,
                    help="minimum trigram/word similarity for deterministic alias merges")
     p.add_argument("--review-threshold", type=float, default=0.72,
-                   help="minimum score for non-auto-merged pairs to enter review")
+                   help="minimum score for deterministic/llm non-auto-merged pairs to enter review; ignored by web policy")
     p.add_argument("--token-threshold", type=float, default=0.80,
                    help="minimum token Jaccard overlap for deterministic alias merges")
+    p.add_argument("--verification-policy", choices=VERIFICATION_POLICIES, default="web",
+                   help="web uses OpenRouter web search for auto-merge decisions; deterministic is test-only")
     p.add_argument("--verify-llm", action="store_true",
-                   help="use structured LLM verification for pairs below deterministic thresholds")
+                   help="back-compat alias for --verification-policy llm")
     p.add_argument("--llm-confidence-threshold", type=float, default=0.90,
-                   help="minimum LLM confidence required to accept/reject a pair")
+                   help="minimum AI confidence required to accept/reject a pair")
     p.add_argument("--model", default=MODEL,
-                   help=f"OpenAI model for --verify-llm (default: {MODEL})")
+                   help=f"OpenAI model for --verification-policy llm (default: {MODEL})")
+    p.add_argument("--web-model", default=WEB_MODEL,
+                   help=f"OpenRouter web model for --verification-policy web (default: {WEB_MODEL})")
+    p.add_argument("--web-engine", default="exa",
+                   help="OpenRouter web plugin engine (default: exa)")
+    p.add_argument("--web-max-results", type=int, default=5,
+                   help="max OpenRouter web results per candidate pair")
     p.add_argument("--calibrate-golden", default=None,
                    help="evaluate thresholds against a firm-pair golden JSON file; no writes")
     p.add_argument("--show-clusters", type=int, default=10,

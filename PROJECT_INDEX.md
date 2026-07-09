@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-07-09T14:39Z · 59 files
+> Last generated: 2026-07-09T14:50Z · 60 files
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -84,6 +84,8 @@
   - symbols: `BrandCandidate`, `BrandInference`, `collect_candidates`, `apply_candidates`, `print_candidates`, `run`, `parse_args`
 - [`src/firm/resolve.py`](src/firm/resolve.py) — Resolve FDA recalling_firm strings into conservative sidecar firm aliases.
   - symbols: `SourceConfig`, `FirmName`, `CandidatePair`, `Cluster`, `LoadedNames`, `FirmPairVerification`, `UnionFind`, `normalize_name`, `load_firm_names`, `pg_trgm_pairs`, `pair_signals`, `build_candidate_pairs`
+- [`src/firm/web_verify.py`](src/firm/web_verify.py) — OpenRouter web-search verification for firm-name candidate pairs.
+  - symbols: `WebCitation`, `WebFirmPairVerification`, `verify_pair`
 - [`src/llm.py`](src/llm.py) — OpenAI-compatible chat and embedding provider gateway for serving paths.
   - symbols: `ProviderError`, `ProviderConfigError`, `ProviderMissingKeyError`, `ProviderUnsupportedConfigError`, `ProviderAuthError`, `ProviderQuotaError`, `ProviderRateLimitError`, `ProviderConnectionError`, `ProviderCapabilityError`, `StructuredOutputError`, `ChatConfig`, `EmbeddingConfig`
 - [`src/nl_query.py`](src/nl_query.py) — Natural-language front-end for the deterministic analytics engine.
