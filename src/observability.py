@@ -114,6 +114,12 @@ def response_metadata(response: Mapping[str, Any], *, model: str | None = None,
             value = data.get(key)
             if isinstance(value, int):
                 metadata[key] = value
+    for key in ("taxonomy_node_id", "taxonomy_version", "taxonomy_labeler"):
+        value = data.get(key)
+        if value:
+            metadata[key] = value
+    if data.get("exact"):
+        metadata["exact"] = True
     for key in ("retrieval_mode", "embedding_fallback_reason"):
         value = data.get(key)
         if value:

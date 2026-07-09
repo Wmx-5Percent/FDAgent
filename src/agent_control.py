@@ -6,15 +6,20 @@ from dataclasses import dataclass, field
 from typing import Any
 
 DOMAIN_TERMS = {
-    "assay", "bacteria", "bacterial", "contamination", "drug", "fda",
-    "firm", "glass", "impurity", "label", "ndma", "pill", "product",
-    "products", "recalled", "recall", "recalls", "sterile", "sterility",
-    "sterilization", "strong", "superpotent", "vial",
+    "anda", "assay", "bacteria", "bacterial", "cgmp", "cgmps",
+    "contamination", "degradation", "dissolution", "drug", "expiry",
+    "fda", "firm", "foreign", "glass", "gmp", "impurity", "label",
+    "labeling", "microbial", "nda", "ndma", "particle", "particulate",
+    "pill", "potency", "product", "products", "recalled", "recall",
+    "recalls", "stability", "sterile", "sterility", "sterilization",
+    "strong", "subpotent", "superpotent", "temperature", "unapproved",
+    "vial",
 }
 FUZZY_CONCEPT_TERMS = {
     "assay", "bacteria", "bacterial", "contamination", "glass",
-    "impurity", "microbial", "ndma", "particle", "particles", "potency",
-    "potent", "sterile", "sterility", "sterilization", "strong", "superpotent",
+    "impurity", "microbial", "ndma", "particle", "particles", "particulate",
+    "potency", "potent", "sterile", "sterility", "sterilization", "strong",
+    "subpotent", "superpotent",
 }
 GENERIC_RECALL_TERMS = {
     "class", "drug", "drugs", "enforcement", "fda", "i", "ii", "iii", "recall",

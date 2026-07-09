@@ -76,17 +76,27 @@
       "kind": "ask",
       "question": "How many sterility recalls?",
       "assert": {
-        "route": "semantic",
+        "route": "sql",
         "intents": ["count_total"],
-        "data_kinds": ["semantic_count"],
+        "data_kinds": ["scalar"],
         "no_ilike": true,
-        "semantic_query_contains_any": ["sterility", "sterile"],
-        "semantic_query_not_contains_any": ["problem"],
-        "requires_estimate": true,
-        "min_estimated_count": 1,
-        "min_verified_count": 1,
-        "requires_confidence": true,
-        "requires_evidence": true
+        "taxonomy_node_id": "sterility_assurance",
+        "value_equals": 6262
+      }
+    },
+    {
+      "id": "taxonomy-sterility-by-firm",
+      "kind": "ask",
+      "question": "Which firms had the most sterility recalls?",
+      "assert": {
+        "route": "sql",
+        "intents": ["count_by"],
+        "data_kinds": ["distribution"],
+        "no_ilike": true,
+        "taxonomy_node_id": "sterility_assurance",
+        "top_items": [
+          {"value": "The Compounding Pharmacy of America", "count": 383}
+        ]
       }
     },
     {

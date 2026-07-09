@@ -189,6 +189,14 @@ def serialize_answer(ans: Answer) -> dict[str, Any]:
         }
     elif spec is not None and spec.intent is Intent.count_total:
         payload["data"] = {"kind": "scalar", "value": int(ans.result)}
+        if getattr(spec, "taxonomy_node_id", None):
+            payload["data"].update({
+                "taxonomy_node_id": spec.taxonomy_node_id,
+                "taxonomy_version": spec.taxonomy_version,
+                "taxonomy_labeler": spec.taxonomy_labeler,
+                "taxonomy_min_confidence": spec.taxonomy_min_confidence,
+                "exact": True,
+            })
     elif spec is not None and spec.intent is Intent.count_by:
         payload["data"] = {
             "kind": "distribution",
@@ -198,6 +206,14 @@ def serialize_answer(ans: Answer) -> dict[str, Any]:
                 for g in ans.result
             ],
         }
+        if getattr(spec, "taxonomy_node_id", None):
+            payload["data"].update({
+                "taxonomy_node_id": spec.taxonomy_node_id,
+                "taxonomy_version": spec.taxonomy_version,
+                "taxonomy_labeler": spec.taxonomy_labeler,
+                "taxonomy_min_confidence": spec.taxonomy_min_confidence,
+                "exact": True,
+            })
     elif spec is not None and spec.intent is Intent.trend:
         payload["data"] = {
             "kind": "series",

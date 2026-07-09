@@ -134,6 +134,10 @@ def _assert_ask_case(case: Mapping[str, Any], answer: Mapping[str, Any]) -> Eval
         _assert_no_ilike(spec)
     if assertions.get("spec_empty"):
         _require(not spec, f"expected empty spec for guarded response, got {spec!r}")
+    if "taxonomy_node_id" in assertions:
+        actual_taxonomy_node = spec.get("taxonomy_node_id") or data.get("taxonomy_node_id")
+        _require(actual_taxonomy_node == assertions["taxonomy_node_id"],
+                 f"expected taxonomy_node_id={assertions['taxonomy_node_id']!r}, got {actual_taxonomy_node!r}")
     if data_kind in {"semantic_count", "semantic_distribution"}:
         _assert_semantic_count(assertions, data)
 

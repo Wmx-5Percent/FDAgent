@@ -85,6 +85,24 @@ class Group:
     evidence: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class TaxonomySelector:
+    """A versioned taxonomy node filter over recall_label sidecar rows."""
+    node_id: str
+    version: str = "v1"
+    labeler: str | None = None
+    min_confidence: float = 0.0
+    include_descendants: bool = True
+
+    def __post_init__(self) -> None:
+        if not self.node_id:
+            raise ValueError("taxonomy node_id is required")
+        if not self.version:
+            raise ValueError("taxonomy version is required")
+        if not 0 <= self.min_confidence <= 1:
+            raise ValueError("taxonomy min_confidence must be between 0 and 1")
+
+
 def _conditions(filters: Sequence[Filter]) -> tuple[list[sql.Composable], list[Any]]:
     """WHERE conditions (unprefixed) + bound params for a set of whitelisted filters."""
     conds: list[sql.Composable] = []
@@ -114,6 +132,49 @@ def _build_where(filters: Sequence[Filter]) -> tuple[sql.Composable, list[Any]]:
     if not conds:
         return sql.SQL(""), params
     return sql.SQL(" WHERE ") + sql.SQL(" AND ").join(conds), params
+
+
+def _taxonomy_ctes(selector: TaxonomySelector) -> tuple[sql.Composable, list[Any]]:
+    labeler_clause = sql.SQL("")
+    params: list[Any]
+    if selector.include_descendants:
+        node_cte = sql.SQL(
+            """
+            selected_nodes(node_id) AS (
+                SELECT node_id
+                FROM taxonomy
+                WHERE version = %s AND node_id = %s
+              UNION ALL
+                SELECT child.node_id
+                FROM taxonomy child
+                JOIN selected_nodes parent ON child.parent_id = parent.node_id
+                WHERE child.version = %s
+            )
+            """
+        )
+        params = [selector.version, selector.node_id, selector.version]
+    else:
+        node_cte = sql.SQL("selected_nodes(node_id) AS (SELECT %s::text)")
+        params = [selector.node_id]
+    if selector.labeler:
+        labeler_clause = sql.SQL(" AND rl.labeler = %s")
+    ctes = sql.SQL(
+        """
+        WITH RECURSIVE {node_cte},
+        labeled_records AS (
+            SELECT DISTINCT rl.record_id
+            FROM recall_label rl
+            JOIN selected_nodes sn ON sn.node_id = rl.node_id
+            WHERE rl.version = %s
+              AND rl.confidence >= %s
+              {labeler_clause}
+        )
+        """
+    ).format(node_cte=node_cte, labeler_clause=labeler_clause)
+    params.extend([selector.version, selector.min_confidence])
+    if selector.labeler:
+        params.append(selector.labeler)
+    return ctes, params
 
 
 class RecallAnalytics:
@@ -151,6 +212,23 @@ class RecallAnalytics:
             tbl=sql.Identifier(TABLE), where=where)
         return int(self._scalar(q, params) or 0)
 
+    def count_total_by_taxonomy(
+        self,
+        selector: TaxonomySelector,
+        filters: Sequence[Filter] = (),
+    ) -> int:
+        """Exact count over records labeled with a versioned taxonomy node."""
+        ctes, tparams = _taxonomy_ctes(selector)
+        where, wparams = _build_where(filters)
+        q = sql.SQL(
+            "{ctes} "
+            "SELECT count(*) "
+            "FROM labeled_records lr "
+            "JOIN {tbl} d ON d.id = lr.record_id"
+            "{where}"
+        ).format(ctes=ctes, tbl=sql.Identifier(TABLE), where=where)
+        return int(self._scalar(q, [*tparams, *wparams]) or 0)
+
     def count_by(
         self,
         dimension: str,
@@ -179,6 +257,49 @@ class RecallAnalytics:
                 "FROM {tbl}{where} GROUP BY {dim} ORDER BY n DESC LIMIT %s"
             ).format(dim=dim, tbl=tbl, where=where)
             params = [*wparams, limit]
+        return [
+            Group(value=r[0], count=r[1],
+                  evidence=list(r[2]) if with_evidence and r[2] else [])
+            for r in self._rows(q, params)
+        ]
+
+    def count_by_taxonomy(
+        self,
+        selector: TaxonomySelector,
+        dimension: str,
+        filters: Sequence[Filter] = (),
+        *,
+        limit: int = 50,
+        with_evidence: bool = False,
+        evidence_n: int = 3,
+    ) -> list[Group]:
+        """GROUP BY source-table dimension for records labeled with a taxonomy node."""
+        if dimension not in CATALOG:
+            raise ValueError(f"unknown dimension: {dimension!r}")
+        ctes, tparams = _taxonomy_ctes(selector)
+        where, wparams = _build_where(filters)
+        dim, tbl = sql.Identifier(dimension), sql.Identifier(TABLE)
+        if with_evidence:
+            q = sql.SQL(
+                "{ctes} "
+                "SELECT d.{dim} AS value, count(*) AS n, "
+                "(array_agg(d.recall_number ORDER BY d.recall_initiation_date DESC NULLS LAST))[1:%s] AS evidence "
+                "FROM labeled_records lr "
+                "JOIN {tbl} d ON d.id = lr.record_id"
+                "{where} "
+                "GROUP BY d.{dim} ORDER BY n DESC LIMIT %s"
+            ).format(ctes=ctes, dim=dim, tbl=tbl, where=where)
+            params: list[Any] = [*tparams, evidence_n, *wparams, limit]
+        else:
+            q = sql.SQL(
+                "{ctes} "
+                "SELECT d.{dim} AS value, count(*) AS n "
+                "FROM labeled_records lr "
+                "JOIN {tbl} d ON d.id = lr.record_id"
+                "{where} "
+                "GROUP BY d.{dim} ORDER BY n DESC LIMIT %s"
+            ).format(ctes=ctes, dim=dim, tbl=tbl, where=where)
+            params = [*tparams, *wparams, limit]
         return [
             Group(value=r[0], count=r[1],
                   evidence=list(r[2]) if with_evidence and r[2] else [])

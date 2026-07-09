@@ -22,7 +22,7 @@ from enum import Enum
 from typing import Any, Optional
 
 from dotenv import load_dotenv
-from psycopg import sql
+from psycopg import errors, sql
 from pydantic import BaseModel, Field
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # allow `import analytics` as a script
@@ -30,7 +30,7 @@ import llm  # noqa: E402  (OpenAI-compatible provider gateway)
 import agent_control  # noqa: E402  (/ask guard before the query pipeline)
 import retrieval  # noqa: E402  (semantic search for concept queries)
 import validation  # noqa: E402  (LLM validation for semantic counting)
-from analytics import CATALOG, GRAINS, OPS, Filter, Kind, RecallAnalytics  # noqa: E402
+from analytics import CATALOG, GRAINS, OPS, Filter, Kind, RecallAnalytics, TaxonomySelector  # noqa: E402
 
 load_dotenv()
 DEFAULT_DSN = os.environ.get("DATABASE_URL", "postgresql://localhost:5432/fda")
@@ -39,6 +39,28 @@ MODEL = llm.chat_config().model
 # Categorical columns small enough to enumerate every value into the prompt (value index).
 LOW_CARD = ["classification", "status", "product_type", "voluntary_mandated",
             "initial_firm_notification", "country", "state"]
+DEFAULT_TAXONOMY_VERSION = "v1"
+TAXONOMY_LABELER = os.environ.get("TAXONOMY_LABELER")
+TAXONOMY_MIN_CONFIDENCE = float(os.environ.get("TAXONOMY_MIN_CONFIDENCE", "0"))
+TAXONOMY_CONCEPTS: dict[str, tuple[str, ...]] = {
+    "sterility_assurance": (
+        "sterility", "sterile", "non-sterile", "nonsterile",
+        "lack of assurance of sterility", "lack of sterility assurance",
+    ),
+    "microbial_contamination": ("microbial", "bacterial", "salmonella", "microbal"),
+    "particulate_or_foreign_matter": ("particulate", "particle", "particles", "foreign matter", "glass"),
+    "impurities_or_degradation": ("impurity", "impurities", "degradation", "ndma", "nitrosamine"),
+    "potency_or_content": ("potency", "subpotent", "sub potent", "superpotent", "too strong", "content uniformity"),
+    "dissolution_or_tablet_specs": ("dissolution", "tablet specification", "capsule specification"),
+    "stability_or_expiry": ("stability", "expiry", "expiration"),
+    "cgmp_deviation": ("cgmp", "gmp", "good manufacturing practice"),
+    "cross_contamination": ("cross contamination", "penicillin contamination"),
+    "labeling_error": ("labeling", "label error", "mislabel", "mispack"),
+    "container_or_closure_defect": ("container", "closure"),
+    "delivery_system_defect": ("delivery system",),
+    "unapproved_drug": ("unapproved", "nda", "anda"),
+    "temperature_abuse": ("temperature abuse", "temperature excursion"),
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -66,6 +88,10 @@ class QuerySpec(BaseModel):
     semantic_query: Optional[str] = None  # fuzzy concept -> semantic retrieval over recall text
     semantic_aliases: list[str] = Field(default_factory=list)  # FTS fallback expansions only
     semantic_k: Optional[int] = Field(default=None, ge=1, le=120)  # validation sample size for semantic counts
+    taxonomy_node_id: Optional[str] = None  # exact recall-reason label -> recall_label sidecar
+    taxonomy_version: str = DEFAULT_TAXONOMY_VERSION
+    taxonomy_labeler: Optional[str] = None
+    taxonomy_min_confidence: float = Field(default=TAXONOMY_MIN_CONFIDENCE, ge=0, le=1)
     filters: list[FilterSpec] = Field(default_factory=list)
     group_by: Optional[str] = None      # count_by: a dimension column
     grain: Optional[str] = None         # trend: year/quarter/month/week/day
@@ -97,6 +123,11 @@ Rules:
   microbial / superpotent). Leave semantic_k unset unless the user asks to validate a specific
   sample size. If you know synonyms or phrase variants, put them in semantic_aliases; do not
   narrow the core semantic_query by adding generic words such as "problems" unless the user did.
+- taxonomy_node_id: for count_total or count_by questions about a known recall-reason taxonomy
+  category, prefer exact taxonomy labels over semantic estimates. Use taxonomy_node_id from the
+  TAXONOMY section below and leave semantic_query unset. Example: "How many sterility recalls?"
+  -> taxonomy_node_id=sterility_assurance, intent=count_total. "sterility by firm" ->
+  taxonomy_node_id=sterility_assurance, intent=count_by, group_by=recalling_firm.
 - filters: only for HARD constraints -- categories (classification/state/...) via 'eq'/'in' with a
   column's listed allowed values, and dates (ISO YYYY-MM-DD) via 'between'/'gte'/'lte'. You may combine
   semantic_query (the concept) with filters (the hard constraints), e.g. "Class I sterility recalls".
@@ -129,6 +160,27 @@ def build_schema_context(a: RecallAnalytics) -> str:
             ).format(c=sql.Identifier(col)))
             vals = [str(r[0]) for r in cur.fetchall()][:60]
         lines.append(f"- {col}: {', '.join(vals)}")
+    try:
+        with a.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT node_id, label, definition
+                FROM taxonomy
+                WHERE version = %s AND status = 'active'
+                ORDER BY level, node_id
+                """,
+                [DEFAULT_TAXONOMY_VERSION],
+            )
+            taxonomy_rows = cur.fetchall()
+    except errors.UndefinedTable:
+        a.conn.rollback()
+        taxonomy_rows = []
+    if taxonomy_rows:
+        lines.append("\nRecall-reason taxonomy labels for exact counts:")
+        lines.append("Use taxonomy_node_id for count_total/count_by when a question asks about one of these known recall-reason categories.")
+        for node_id, label, definition in taxonomy_rows:
+            definition = (definition[:120] + "...") if len(definition) > 120 else definition
+            lines.append(f"- {node_id}: {label} — {definition}")
     return "\n".join(lines)
 
 
@@ -149,6 +201,12 @@ def generate_spec(client: Any, config: llm.ChatConfig, question: str,
 
 
 def refine_spec(question: str, spec: QuerySpec) -> QuerySpec:
+    if spec.taxonomy_node_id and spec.intent in {Intent.count_total, Intent.count_by}:
+        return _normalize_taxonomy_spec(spec)
+    inferred_node = _infer_taxonomy_node(question, spec.semantic_query)
+    if inferred_node and spec.intent in {Intent.count_total, Intent.count_by}:
+        spec.taxonomy_node_id = inferred_node
+        return _normalize_taxonomy_spec(spec)
     if spec.filters and agent_control.is_generic_recall_semantic_query(spec.semantic_query):
         spec.semantic_query = None
         spec.semantic_aliases = []
@@ -159,6 +217,34 @@ def refine_spec(question: str, spec: QuerySpec) -> QuerySpec:
         if alias != query and alias not in spec.semantic_aliases:
             spec.semantic_aliases.append(alias)
     return spec
+
+
+def _normalize_taxonomy_spec(spec: QuerySpec) -> QuerySpec:
+    spec.taxonomy_version = spec.taxonomy_version or DEFAULT_TAXONOMY_VERSION
+    spec.taxonomy_labeler = None
+    spec.taxonomy_min_confidence = TAXONOMY_MIN_CONFIDENCE
+    spec.semantic_query = None
+    spec.semantic_aliases = []
+    return spec
+
+
+def _infer_taxonomy_node(question: str, semantic_query: str | None) -> str | None:
+    haystack = f"{question} {semantic_query or ''}".casefold()
+    for node_id, needles in TAXONOMY_CONCEPTS.items():
+        if any(needle in haystack for needle in needles):
+            return node_id
+    return None
+
+
+def _taxonomy_selector(spec: QuerySpec) -> TaxonomySelector:
+    if not spec.taxonomy_node_id:
+        raise ValueError("taxonomy selector needs taxonomy_node_id")
+    return TaxonomySelector(
+        node_id=spec.taxonomy_node_id,
+        version=spec.taxonomy_version or DEFAULT_TAXONOMY_VERSION,
+        labeler=spec.taxonomy_labeler if spec.taxonomy_labeler is not None else TAXONOMY_LABELER,
+        min_confidence=spec.taxonomy_min_confidence,
+    )
 
 
 def _parse_date(v: str) -> date:
@@ -335,6 +421,21 @@ def run_spec(
     embedding_error: BaseException | None = None,
 ) -> Any:
     filters = _to_filters(spec)
+    if spec.taxonomy_node_id:
+        selector = _taxonomy_selector(spec)
+        if spec.intent is Intent.count_total:
+            return a.count_total_by_taxonomy(selector, filters)
+        if spec.intent is Intent.count_by:
+            if not spec.group_by or spec.group_by not in CATALOG:
+                raise ValueError("count_by needs a valid group_by dimension")
+            return a.count_by_taxonomy(
+                selector,
+                spec.group_by,
+                filters,
+                limit=spec.limit or 20,
+                with_evidence=True,
+            )
+        raise ValueError("taxonomy_node_id supports only count_total/count_by")
     if spec.semantic_query and spec.intent is Intent.sample:  # preserve existing semantic retrieval
         return retrieval.search(
             a.conn,
@@ -411,6 +512,19 @@ def summarize(spec: QuerySpec, result: Any) -> str:
         body = "\n".join(
             f"  [{h.recall_number}] sim={h.similarity:.2f}  {h.recalling_firm or '-'}: "
             f"{(h.content or '')[:70]}" for h in result)
+        return f"{head}\n{body}"
+    if spec.taxonomy_node_id and spec.intent is Intent.count_total:
+        return (
+            f"Exact {spec.taxonomy_version} taxonomy count for "
+            f"{spec.taxonomy_node_id}: {result:,} recall(s)."
+        )
+    if spec.taxonomy_node_id and spec.intent is Intent.count_by:
+        head = (
+            f"Exact {spec.taxonomy_version} taxonomy count for {spec.taxonomy_node_id} "
+            f"by {spec.group_by} (top {min(len(result), spec.limit or 20)}):"
+        )
+        body = "\n".join(f"  {g.value}: {g.count:,}   e.g. {', '.join(g.evidence)}"
+                         for g in result[:10])
         return f"{head}\n{body}"
     if spec.intent is Intent.count_total:
         return f"Total matching recalls: {result:,}"
