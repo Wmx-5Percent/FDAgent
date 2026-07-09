@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,16 +26,17 @@ from typing import Any, Sequence
 
 import psycopg
 from dotenv import load_dotenv
-from openai import OpenAI
 from psycopg import errors
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field, field_validator
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import llm  # noqa: E402  (OpenAI-compatible provider gateway)
+
 load_dotenv()
 
 DEFAULT_DSN = os.environ.get("DATABASE_URL", "postgresql://localhost:5432/fda")
-DEFAULT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 SOURCE = "drug_enforcement"
 FIELD = "reason_for_recall"
 
@@ -468,17 +470,16 @@ Rules:
 
 @retry(stop=stop_after_attempt(4), wait=wait_exponential(multiplier=1, min=2, max=20))
 def candidates_with_llm(
-    client: OpenAI,
+    client: Any,
     *,
-    model: str,
+    config: llm.ChatConfig,
     taxonomy_nodes: Sequence[TaxonomyNode],
     clusters: Sequence[ResidualCluster],
 ) -> CandidateDraft:
-    parse = getattr(client.chat.completions, "parse", None) or client.beta.chat.completions.parse
-    completion = parse(
-        model=model,
-        temperature=0,
-        messages=[
+    return llm.structured_completion(
+        client,
+        config,
+        [
             {"role": "system", "content": SYSTEM},
             {
                 "role": "user",
@@ -490,9 +491,9 @@ def candidates_with_llm(
                 ),
             },
         ],
-        response_format=CandidateDraft,
+        CandidateDraft,
+        temperature=0,
     )
-    return completion.choices[0].message.parsed
 
 
 def deterministic_candidates(clusters: Sequence[ResidualCluster]) -> CandidateDraft:
@@ -605,7 +606,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--version", default="v1", help="taxonomy version to inspect")
     parser.add_argument("--taxonomy-status", choices=("active", "draft", "deprecated", "any"),
                         default="active", help="taxonomy node status filter")
-    parser.add_argument("--model", default=DEFAULT_MODEL, help="OpenAI model for candidate naming")
+    parser.add_argument("--model", default=None, help="chat model override for candidate naming")
     parser.add_argument("--labeler", default=None, help="labeler id used in recall_label")
     parser.add_argument("--output-file", default=None, help="JSON report path")
     parser.add_argument("--confidence-threshold", type=float, default=0.70,
@@ -624,7 +625,9 @@ def main() -> None:
     args = parse_args()
     if not 0 <= args.confidence_threshold <= 1:
         raise ValueError("--confidence-threshold must be between 0 and 1")
-    labeler = args.labeler or f"llm:{args.model}"
+    chat_config = llm.chat_config(model=args.model)
+    model = chat_config.model
+    labeler = args.labeler or f"llm:{model}"
     out = args.output_file or output_file(args.version)
 
     with psycopg.connect(args.dsn) as conn:
@@ -649,8 +652,8 @@ def main() -> None:
             draft = deterministic_candidates(clusters)
         else:
             draft = candidates_with_llm(
-                OpenAI(),
-                model=args.model,
+                llm.create_chat_client(chat_config),
+                config=chat_config,
                 taxonomy_nodes=taxonomy_nodes,
                 clusters=clusters,
             )
@@ -666,7 +669,8 @@ def main() -> None:
         report = {
             "version": args.version,
             "taxonomy_status": args.taxonomy_status,
-            "model": None if args.no_llm else args.model,
+            "provider": None if args.no_llm else chat_config.provider,
+            "model": None if args.no_llm else model,
             "labeler": labeler,
             "confidence_threshold": args.confidence_threshold,
             "other_node_id": args.other_node_id,

@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-07-09T08:35Z · 54 files
+> Last generated: 2026-07-09T08:43Z · 58 files
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -59,12 +59,20 @@
 - [`src/api.py`](src/api.py) — FastAPI service exposing the deterministic NL->SQL analytics engine (Path 1, serving half).
   - symbols: `lifespan`, `AskRequest`, `TitleRequest`, `TitleResponse`, `serialize_answer`, `health`, `title_endpoint`, `ask_endpoint`, `index`
 - [`src/classify/__init__.py`](src/classify/__init__.py) — Offline recall taxonomy induction, labeling, and discovery utilities.
+- [`src/classify/audit.py`](src/classify/audit.py) — Audit taxonomy coverage and exact offline recall-label counts.
+  - symbols: `taxonomy_nodes`, `descendant_node_ids`, `coverage_report`, `count_by_report`, `write_or_print`, `parse_args`, `clean_labeler`, `main`
+- [`src/classify/backfill_v1_rules.py`](src/classify/backfill_v1_rules.py) — Backfill recall_label for taxonomy v1 with high-precision deterministic rules.
+  - symbols: `Rule`, `ReasonBatch`, `Assignment`, `normalize_text`, `text_hash`, `fetch_reason_batches`, `active_node_ids`, `classify_text`, `validate_rules`, `apply_batch`, `run`, `write_report`
 - [`src/classify/discover.py`](src/classify/discover.py) — Discover candidate taxonomy categories from residual recall reasons.
   - symbols: `TaxonomyNode`, `ResidualReason`, `ResidualCluster`, `CandidateCategory`, `CandidateDraft`, `normalize_text`, `text_hash`, `safe_name`, `slugify`, `parse_vector`, `output_file`, `load_taxonomy`
 - [`src/classify/induce.py`](src/classify/induce.py) — Induce a draft recall-reason taxonomy from distinct reason_for_recall text.
   - symbols: `ReasonText`, `ClusterSummary`, `DraftNode`, `TaxonomyDraft`, `normalize_text`, `text_hash`, `slugify`, `parse_vector`, `fetch_reason_texts`, `load_reason_vectors`, `attach_vectors`, `extract_prefix`
 - [`src/classify/label.py`](src/classify/label.py) — Label recall records against a frozen taxonomy version.
   - symbols: `TaxonomyNode`, `ReasonBatch`, `LabelAssignment`, `LabelResult`, `normalize_text`, `text_hash`, `safe_name`, `default_cache_file`, `default_output_file`, `load_taxonomy`, `taxonomy_hash`, `fetch_reason_batches`
+- [`src/classify/seed_v1.py`](src/classify/seed_v1.py) — Seed the frozen v1 recall-reason taxonomy into the taxonomy sidecar table.
+  - symbols: `node_rows`, `existing_nodes`, `apply_seed`, `write_report`, `report_payload`, `parse_args`, `main`
+- [`src/classify/taxonomy_v1.py`](src/classify/taxonomy_v1.py) — Frozen v1 recall-reason taxonomy nodes for offline classification.
+  - symbols: `TaxonomyNodeSpec`, `nodes_by_id`, `validate`
 - [`src/embed.py`](src/embed.py) — Embed FDA source text fields into the shared `embeddings` table (Path 2, offline half).
   - symbols: `run`, `parse_args`
 - [`src/fetch_openfda.py`](src/fetch_openfda.py) — Generic openFDA -> PostgreSQL ingester.
