@@ -28,6 +28,7 @@ load_dotenv()
 
 DEFAULT_OPENAI_CHAT_MODEL = "gpt-4o-mini"
 DEFAULT_OPENROUTER_CHAT_MODEL = "openai/gpt-4o-mini"
+DEFAULT_OPENROUTER_TITLE_MODEL = "openai/gpt-4o-mini"
 DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_EMBED_MODEL = "text-embedding-3-small"
 SUPPORTED_EMBED_MODELS = {DEFAULT_EMBED_MODEL: 1536}
@@ -148,16 +149,51 @@ class EmbeddingConfig:
 def chat_config(*, model: str | None = None) -> ChatConfig:
     """Load chat provider config without exposing secrets."""
     provider = os.environ.get("LLM_PROVIDER", "openai").strip().lower() or "openai"
+    return _chat_config_for_provider(
+        provider,
+        model=model,
+        env_model_keys=("LLM_MODEL", "OPENAI_MODEL") if provider == "openai" else ("LLM_MODEL",),
+        openai_default=DEFAULT_OPENAI_CHAT_MODEL,
+        openrouter_default=DEFAULT_OPENROUTER_CHAT_MODEL,
+        operation="chat_config",
+    )
+
+
+def title_config(*, model: str | None = None) -> ChatConfig:
+    """Load a lightweight title-generation config, defaulting away from reasoning models."""
+    provider = os.environ.get("TITLE_LLM_PROVIDER") or os.environ.get("LLM_PROVIDER", "openai")
+    provider = provider.strip().lower() or "openai"
+    return _chat_config_for_provider(
+        provider,
+        model=model,
+        env_model_keys=(
+            ("TITLE_LLM_MODEL", "TITLE_MODEL", "OPENAI_TITLE_MODEL", "OPENAI_MODEL")
+            if provider == "openai"
+            else ("TITLE_LLM_MODEL", "TITLE_MODEL", "OPENROUTER_TITLE_MODEL")
+        ),
+        openai_default=DEFAULT_OPENAI_CHAT_MODEL,
+        openrouter_default=DEFAULT_OPENROUTER_TITLE_MODEL,
+        operation="title_config",
+    )
+
+
+def _chat_config_for_provider(
+    provider: str,
+    *,
+    model: str | None,
+    env_model_keys: tuple[str, ...],
+    openai_default: str,
+    openrouter_default: str,
+    operation: str,
+) -> ChatConfig:
+    chosen_model = model or _first_env(*env_model_keys)
     if provider == "openai":
-        chosen_model = model or os.environ.get("LLM_MODEL") or os.environ.get("OPENAI_MODEL") \
-            or DEFAULT_OPENAI_CHAT_MODEL
         return ChatConfig(
             provider=provider,
-            model=chosen_model,
+            model=chosen_model or openai_default,
             api_key=os.environ.get("OPENAI_API_KEY"),
         )
     if provider == "openrouter":
-        chosen_model = model or os.environ.get("LLM_MODEL") or DEFAULT_OPENROUTER_CHAT_MODEL
         headers: dict[str, str] = {}
         if referer := os.environ.get("OPENROUTER_HTTP_REFERER"):
             headers["HTTP-Referer"] = referer
@@ -165,7 +201,7 @@ def chat_config(*, model: str | None = None) -> ChatConfig:
             headers["X-Title"] = title
         return ChatConfig(
             provider=provider,
-            model=chosen_model,
+            model=chosen_model or openrouter_default,
             api_key=os.environ.get("OPENROUTER_API_KEY"),
             base_url=os.environ.get("OPENROUTER_BASE_URL", DEFAULT_OPENROUTER_BASE_URL),
             default_headers=headers,
@@ -174,8 +210,15 @@ def chat_config(*, model: str | None = None) -> ChatConfig:
         f"unsupported LLM_PROVIDER {provider!r}",
         provider=provider,
         model=model,
-        operation="chat_config",
+        operation=operation,
     )
+
+
+def _first_env(*keys: str) -> str | None:
+    for key in keys:
+        if value := os.environ.get(key):
+            return value
+    return None
 
 
 def embedding_config(*, model: str | None = None) -> EmbeddingConfig:
@@ -238,10 +281,18 @@ def _validate_embedding_config(config: EmbeddingConfig) -> None:
 
 
 def provider_status(chat: ChatConfig | None = None,
-                    embed: EmbeddingConfig | None = None) -> dict[str, Any]:
+                    embed: EmbeddingConfig | None = None,
+                    title: ChatConfig | None = None) -> dict[str, Any]:
     chat = chat or chat_config()
     embed = embed or embedding_config()
-    return {**chat.status(), **embed.status()}
+    title = title or title_config()
+    return {
+        **chat.status(),
+        **embed.status(),
+        "title_llm_provider": title.provider,
+        "title_llm_model": title.model,
+        "title_llm_configured": title.configured,
+    }
 
 
 def structured_completion(

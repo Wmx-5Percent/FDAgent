@@ -13,6 +13,7 @@ Run (from the repo root):
 from __future__ import annotations
 
 import os
+import re
 import sys
 import traceback
 from contextlib import asynccontextmanager
@@ -35,6 +36,12 @@ from observability import QueryLogEntry, QueryLogger, response_metadata  # noqa:
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 TITLE_WORD_LIMIT = 6
 TITLE_MAX_CHARS = 44
+TITLE_MAX_TOKENS = 64
+TITLE_FALLBACK_STOPWORDS = {
+    "a", "about", "are", "been", "did", "do", "does", "for", "give", "has", "have",
+    "how", "in", "is", "many", "me", "of", "on", "show", "tell", "the", "there",
+    "to", "was", "were", "what", "when", "which", "who", "with",
+}
 
 # Warmed at startup, reused across requests (see lifespan).
 _engine: Optional[NLEngine] = None
@@ -211,10 +218,6 @@ def _require_engine() -> NLEngine:
     return _engine
 
 
-def _has_chat_credentials(engine: NLEngine) -> bool:
-    return engine.chat_config.configured and engine.chat_client is not None
-
-
 def _clean_title(raw: str) -> str:
     title = " ".join(raw.replace("\n", " ").split()).strip(" \"'`")
     for prefix in ("Title:", "title:"):
@@ -232,17 +235,37 @@ def _clean_title(raw: str) -> str:
     return title.rstrip(" .,:;-")
 
 
+def _fallback_title(question: str) -> str:
+    words = re.findall(r"[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)?", question)
+    kept: list[str] = []
+    for word in words:
+        if word.casefold() in TITLE_FALLBACK_STOPWORDS:
+            continue
+        kept.append(_title_word(word))
+        if len(kept) >= TITLE_WORD_LIMIT:
+            break
+    if not kept:
+        kept = ["FDA", "Recall", "Question"]
+    return _clean_title(" ".join(kept)) or "FDA Recall Question"
+
+
+def _title_word(word: str) -> str:
+    if word.isupper() or word.isdigit() or re.fullmatch(r"[IVXLCDM]+", word):
+        return word
+    return word[:1].upper() + word[1:]
+
+
 def _generate_title(req: TitleRequest, engine: NLEngine) -> str:
-    if engine.chat_client is None:
-        raise engine.chat_error or llm.ProviderMissingKeyError(
-            "chat client is not configured",
-            provider=engine.chat_config.provider,
-            model=engine.chat_config.model,
+    if engine.title_client is None:
+        raise engine.title_error or llm.ProviderMissingKeyError(
+            "title client is not configured",
+            provider=engine.title_config.provider,
+            model=engine.title_config.model,
             operation="chat_completion",
         )
     content = llm.chat_completion_text(
-        engine.chat_client,
-        engine.chat_config,
+        engine.title_client,
+        engine.title_config,
         [
             {
                 "role": "system",
@@ -255,7 +278,7 @@ def _generate_title(req: TitleRequest, engine: NLEngine) -> str:
             {"role": "user", "content": req.question},
         ],
         temperature=0,
-        max_tokens=24,
+        max_tokens=TITLE_MAX_TOKENS,
     )
     title = _clean_title(content)
     if not title:
@@ -334,24 +357,12 @@ def health() -> dict[str, Any]:
 @app.post("/title", response_model=TitleResponse)
 def title_endpoint(req: TitleRequest) -> TitleResponse:
     engine = _require_engine()
-    if not _has_chat_credentials(engine):
-        raise HTTPException(
-            status_code=503,
-            detail="title generation unavailable: LLM provider credentials are not configured",
-        )
     try:
         return TitleResponse(title=_generate_title(req, engine))
-    except llm.ProviderError as exc:
-        raise HTTPException(
-            status_code=llm.http_status(exc),
-            detail=llm.public_error_detail(exc),
-        ) from exc
+    except llm.ProviderError:
+        return TitleResponse(title=_fallback_title(req.question))
     except (IndexError, AttributeError, ValueError) as exc:
-        traceback.print_exc()
-        raise HTTPException(
-            status_code=502,
-            detail=f"could not generate title ({type(exc).__name__})",
-        ) from exc
+        return TitleResponse(title=_fallback_title(req.question))
 
 
 @app.post("/ask")
