@@ -54,14 +54,25 @@ Each doc stays current by a *different* mechanism — know which, and **never du
 - **Database**: PostgreSQL (Postgres.app) database `fda`. Extensions enabled: `pgvector` 0.8.1 (vector search) + `hypopg` 1.4.3 (hypothetical-index tuning). DSN `postgresql://localhost:5432/fda` (override via `DATABASE_URL`).
 - **Ingest openFDA → Postgres**: `.venv/bin/python src/fetch_openfda.py --endpoint <noun/endpoint> --table <table> [--since auto]`. Generic over any endpoint; idempotent JSONB upsert.
 - **Embed text → vectors (Path 2)**: `.venv/bin/python src/embed.py [--dry-run]` — embeds source text fields into the multi-source `embeddings` table (pgvector + FTS); incremental by content hash. Adding a dataset = one `SOURCES` entry in `src/embed.py`.
+- **Firm resolution sidecar (Phase 3a, merged)**: `sql/008_firm_resolution.sql` + `src/firm/` create offline company/brand resolution foundations. `src/firm/resolve.py` normalizes FDA `recalling_firm` strings with pg_trgm/token/phonetic candidates and writes only with `--apply`; `src/firm/brand.py` returns brand→firm/parent candidates with provenance tiers. These are **not wired into `/ask` yet**.
 - **Serve** (FastAPI `/ask` + static UI): `.venv/bin/python -m uvicorn src.api:app` → http://127.0.0.1:8000/. After editing code, fully restart — a lingering uvicorn serves stale code.
 - **Inspect data**: `psql -d fda -c "\dt"`. Tables store the full record in a `raw jsonb` column — query logical fields via `raw->>'field'` (the top-level columns are `id, source, report_date, raw, fetched_at`).
 - **Read-only DB MCP** (`postgres-fda`, Postgres MCP Pro): a restricted/read-only MCP server for safe schema exploration, `execute_sql` (SELECT), `explain_query` (+ hypothetical indexes), and `analyze_db_health`. Config: `.vscode/mcp.json` (git-ignored; binary at `.venv/bin/postgres-mcp`). Prefer it for reads; do schema changes via versioned scripts, not ad-hoc writes.
+
+## Current firm-resolution handoff for subagents
+
+- **Completed item:** parallel-plan **3a 实体解析离线** is merged as PR #8 (`feat: add firm resolution foundation`). It owns `sql/008_firm_resolution.sql` and `src/firm/{resolve,brand}.py`.
+- **Primary firm-track goal now:** productionize **company-name normalization**, not the final Agent yet. Do **3a+ incremental firm normalization** before starting 3b Agent wiring.
+- **Why:** production data is not static. New recalls arrive through `fetch_openfda.py --since auto`, so `recalling_firm` aliases must be discovered/updated incrementally, not by a one-time full batch.
+- **Next PR shape:** add a run/audit layer (likely `sql/009_firm_resolution_runs.sql` with `firm_resolution_run` + `firm_match_pair`), then upgrade `src/firm/resolve.py` with `--mode full|incremental`, source table/field options, idempotent alias refresh, candidate-pair audit, and golden-set threshold calibration.
+- **Do not do yet:** do not wire `src/agent.py`, `/ask`, `analytics.py`, or `nl_query.py` to firm resolution until the incremental/audited sidecar is populated and repeatable.
+- **Production sequence target:** `fetch_openfda.py --since auto` → apply firm-resolution audit DDL → `src/firm/resolve.py --mode incremental --apply`. Unknown or ambiguous identities stay in `resolution_log`; never fabricate a firm.
 
 ## Conventions
 
 - **Bilingual**: design docs are Chinese (`*.md`); code and code-comments are English.
 - **One-time vs scheduled**: DDL/table creation and first full back-fill are one-off; `fetch_openfda.py --since auto` is the scheduled incremental job.
+- **Sidecar freshness**: source FDA tables are immutable-ish facts; derived sidecars (`embeddings`, taxonomy labels, firm aliases) must be rerunnable after new ingest. For firm resolution, prefer incremental/idempotent updates with run ids and review logs over manual one-off merges.
 - **IP safety**: real company data is git-ignored and **never** committed. Only public-domain
   openFDA or synthetic data is allowed in git.
 - **Generated / rebuildable** (git-ignored): `.venv/`, `data/raw/`, `data/processed/`, vector-store files.

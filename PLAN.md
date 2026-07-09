@@ -112,7 +112,8 @@ flowchart TB
 - **品牌→母公司**：分级信源 NDC labeler 目录(权威,仅~18% 记录有) > Wikidata > web/LLM；标 source+confidence、可确认（防 Kenvue 这类拆分/并购过时）。
 - **firm 归一化=高召回多信号取并集**：pg_trgm 三元组 + 编辑距离 + token-set + 音似(metaphone) + 名嵌入(抓缩写) + NDC labeler 码(确定性合并)；阈值在 golden set 上校准，宁宽勿漏，再逐对 LLM 验证收窄。
 - **聚类=union-find/社区发现**：候选对连图取连通分量，防传递性过合并（加权边+高阈值+LLM 拆簇）。
-- **离线 side-car 表**（不动源表）：`firm` / `firm_alias(raw_firm→firm_id)` / `parent_group` / `brand_alias` / `firm_match_pair`。**身份≠FDA 足迹**：firm 带 `fda_present`，无召回也能存(source=external)；查无此公司→记 `resolution_log`，不造实体。
+- **离线 side-car 表**（不动源表）：已落地的基础层是 `parent_group` / `firm` / `firm_alias(raw_firm→firm_id)` / `brand_alias` / `resolution_log`；下一层审计表应补 `firm_resolution_run` / `firm_match_pair`。**身份≠FDA 足迹**：firm 带 `fda_present`，无召回也能存(source=external)；查无此公司→记 `resolution_log`，不造实体。
+- **生产化约束（先做 3a+，再做 3b Agent）**：openFDA 数据会通过 `fetch_openfda.py --since auto` 持续增量进入，firm resolution 不能只是一轮静态 full batch。每次 ingest 后都要能增量发现新 `recalling_firm`、刷新已有 alias 的 `record_count`/evidence、记录本次 run 的阈值和候选 pair 决策；高置信才自动合并，中置信进 review，未知进 `resolution_log`。只有这个 sidecar 可重复、可审计后，Agent 才应该消费它回答“公司/品牌安全吗？”。
 - **NDC=验证器非主桥**（仅 18% 有 NDC、8.5% UPC、82% 无富化）；名字实体解析才是 100% 覆盖的主干。
 - **web 搜索=仅增强层**，与 FDA 事实隔离、必引用；负结果表述为"FDA 数据未找到"，非"安全"。
 
