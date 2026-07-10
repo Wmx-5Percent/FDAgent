@@ -1,5 +1,7 @@
 # CONTEXT.md Format
 
+> Write CONTEXT **content in 简体中文 (Simplified Chinese)** — term definitions and descriptions. A term headword may stay in the code's language (e.g. `Order`) with its Chinese definition; keep the `_Avoid_` marker and file names in their original form.
+
 ## Structure
 
 ```md

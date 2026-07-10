@@ -5,6 +5,8 @@ description: Build and sharpen a project's domain model. Use when the user wants
 
 # Domain Modeling
 
+> **输出语言 / Output language:** Write all output in **简体中文 (Simplified Chinese)** — glossary/`CONTEXT.md` entries, ADRs, challenges, and questions. Keep file names and paths (`CONTEXT.md`, `docs/adr/0001-slug.md`, `CONTEXT-MAP.md`), code identifiers, and commands in their original form; a term headword may stay in the code's language with a Chinese definition. Language only — the modeling discipline, file structure, and ADR criteria below are unchanged.
+
 Actively build and sharpen the project's domain model as you design. This is the *active* discipline — challenging terms, inventing edge-case scenarios, and writing the glossary and decisions down the moment they crystallise. (Merely *reading* `CONTEXT.md` for vocabulary is not this skill — that's a one-line habit any skill can do. This skill is for when you're changing the model, not just consuming it.)
 
 ## File structure

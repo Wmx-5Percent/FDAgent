@@ -3,6 +3,8 @@ name: grilling
 description: Grill the user relentlessly about a plan or design. Use when the user wants to stress-test a plan before building, or uses any 'grill' trigger phrases.
 ---
 
+> **输出语言 / Output language:** Conduct the entire session in **简体中文 (Simplified Chinese)** — ask every question and write every explanation in Chinese, even though these instructions are in English. Keep code identifiers, file paths, and commands in their original form (gloss a term in Chinese once if useful). This changes only the output language, not the discipline described below.
+
 Interview me relentlessly about every aspect of this plan until we reach a shared understanding. Walk down each branch of the design tree, resolving dependencies between decisions one-by-one. For each question, provide your recommended answer.
 
 Ask the questions one at a time, waiting for feedback on each question before continuing. Asking multiple questions at once is bewildering.

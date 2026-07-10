@@ -1,5 +1,7 @@
 # ADR Format
 
+> Write ADR **content in 简体中文 (Simplified Chinese)**; keep file names/paths (`docs/adr/0001-slug.md`) and the status keywords (`proposed` / `accepted` / `deprecated` / `superseded`) in their original form.
+
 ADRs live in `docs/adr/` and use sequential numbering: `0001-slug.md`, `0002-slug.md`, etc.
 
 Create the `docs/adr/` directory lazily — only when the first ADR is needed.

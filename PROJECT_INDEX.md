@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-07-09T14:39Z · 59 files
+> Last generated: 2026-07-10T07:34Z · 65 files · 2 missing description
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -18,11 +18,17 @@
 - [`README.md`](README.md) — FDAgent — openFDA Drug-Recall Intelligence Agent — Ask natural-language questions about U.S. **FDA drug-recall enforcement reports** and get
 - [`requirements-serve.txt`](requirements-serve.txt) — Lean dependency set for the Docker serving image (Path 1: the /ask API only).
 - [`requirements.txt`](requirements.txt) — Phase 1+ pipeline dependencies.
+- [`skills-lock.json`](skills-lock.json) — {
 - [`频率查询系统设计-过滤检索校验.md`](频率查询系统设计-过滤检索校验.md) — 频率/聚合类查询系统设计（过滤 → 检索 → 校验） — 配套 [PLAN.md](PLAN.md)。本文专门解决一类高频需求：
 
 ## .github/
 - [`.github/skills/INDEX.md`](.github/skills/INDEX.md) — Skills Index — Reusable skills for this repo — workflows, API guides, and best practices an agent can load on demand.
 - [`.github/skills/db-column-docs-from-dictionary/SKILL.md`](.github/skills/db-column-docs-from-dictionary/SKILL.md) — Documenting DB columns from an upstream field dictionary — - **Type**: Workflow
+- [`.github/skills/domain-modeling/ADR-FORMAT.md`](.github/skills/domain-modeling/ADR-FORMAT.md) — ADR Format — Write ADR **content in 简体中文 (Simplified Chinese)**; keep file names/paths (`docs/adr/0001-slug.md`) and the status keywords (`proposed` / `accepted` / `deprecated` / `superseded`) in their original form.
+- [`.github/skills/domain-modeling/CONTEXT-FORMAT.md`](.github/skills/domain-modeling/CONTEXT-FORMAT.md) — CONTEXT.md Format — Write CONTEXT **content in 简体中文 (Simplified Chinese)** — term definitions and descriptions. A term headword may stay in the code's language (e.g. `Order`) with its Chinese definition; keep the `_Avoid_` marker and file names in their original form.
+- [`.github/skills/domain-modeling/SKILL.md`](.github/skills/domain-modeling/SKILL.md) — Domain Modeling — **输出语言 / Output language:** Write all output in **简体中文 (Simplified Chinese)** — glossary/`CONTEXT.md` entries, ADRs, challenges, and questions. Keep file names and paths (`CONTEXT.md`, `docs/adr/0001-slug.md`, `CONTEXT-MAP.md`), code identifiers, and commands in their original form; a term headword may stay in the code's language with a Chinese definition. Language only — the modeling discipline, file structure, and ADR criteria below are unchanged.
+- [`.github/skills/grill-with-docs/SKILL.md`](.github/skills/grill-with-docs/SKILL.md) — _(no description; add a one-line docstring/heading)_
+- [`.github/skills/grilling/SKILL.md`](.github/skills/grilling/SKILL.md) — _(no description; add a one-line docstring/heading)_
 - [`.github/skills/learning-session-notes/SKILL.md`](.github/skills/learning-session-notes/SKILL.md) — Learning Session Notes — - **Type**: Workflow + BestPractice
 - [`.github/skills/openfda-data-download/SKILL.md`](.github/skills/openfda-data-download/SKILL.md) — Downloading / ingesting openFDA data — - **Type**: API Guide + Workflow
 - [`.github/skills/parallel-agent-pr-coordination/SKILL.md`](.github/skills/parallel-agent-pr-coordination/SKILL.md) — Parallel-Agent PR Coordination — - **Type**: Workflow + BestPractice
@@ -55,7 +61,7 @@
 
 ## src/
 - [`src/agent_control.py`](src/agent_control.py) — Guard /ask prompts before they enter the FDA recall query pipeline.
-  - symbols: `AgentControlDecision`, `AgentControlResult`, `classify`, `clarification`, `result_from_decision`, `refine_semantic_query`, `is_generic_recall_semantic_query`, `broad_fts_queries`
+  - symbols: `AgentControlDecision`, `AgentControlResult`, `LLMIntentDecision`, `classify_llm`, `clarification`, `result_from_decision`, `broad_fts_queries`
 - [`src/analytics.py`](src/analytics.py) — Deterministic frequency/aggregation query engine over drug_enforcement.
   - symbols: `Kind`, `Filter`, `Group`, `RecallAnalytics`
 - [`src/api.py`](src/api.py) — FastAPI service exposing the deterministic NL->SQL analytics engine (Path 1, serving half).
