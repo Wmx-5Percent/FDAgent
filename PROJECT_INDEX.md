@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-07-10T12:17Z · 70 files · 2 missing description
+> Last generated: 2026-07-10T16:20Z · 70 files · 2 missing description
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -13,13 +13,13 @@
 - [`AGENTS.md`](AGENTS.md) — AGENTS.md — Agent Operating Guide — **Read this first.** It is the always-on entry point of a *progressive-disclosure*
 - [`CONTEXT.md`](CONTEXT.md) — FDAgent 领域语言（CONTEXT） — 本文件是 FDAgent 的**术语表**——只定义领域词汇的规范叫法，不含实现细节。
 - [`Dockerfile`](Dockerfile) — Container image for the FDAgent serving layer (Path 1: FastAPI /ask + static UI).
+- [`NOTES-firm.md`](NOTES-firm.md) — Firm deterministic auto-merge notes — - Updated `src/firm/resolve.py` so exact normalized-name pairs auto-accept deterministically with no LLM/web verification.
 - [`PLAN.md`](PLAN.md) — FDAgent — openFDA 药品召回智能体 · 开发计划 (v3) — **数据集：openFDA `drug/enforcement`**（美国 FDA 药品召回执法报告，100% 公开、无 PII）。
 - [`PROGRESS.md`](PROGRESS.md) — Progress — fdaAgent — Live project state for fast session pickup. This is the **dynamic** doc; the static
 - [`PROJECT_INDEX.md`](PROJECT_INDEX.md) — Auto-generated repository map (this file).
 - [`README.md`](README.md) — FDAgent — openFDA Drug-Recall Intelligence Agent — Ask natural-language questions about U.S. **FDA drug-recall enforcement reports** and get
 - [`requirements-serve.txt`](requirements-serve.txt) — Lean dependency set for the Docker serving image (Path 1: the /ask API only).
 - [`requirements.txt`](requirements.txt) — Phase 1+ pipeline dependencies.
-- [`skills-lock.json`](skills-lock.json) — {
 - [`频率查询系统设计-过滤检索校验.md`](频率查询系统设计-过滤检索校验.md) — 频率/聚合类查询系统设计（过滤 → 检索 → 校验） — 配套 [PLAN.md](PLAN.md)。本文专门解决一类高频需求：
 
 ## .github/
@@ -96,7 +96,7 @@
 - [`src/firm/brand.py`](src/firm/brand.py) — Resolve brand/product names to firm or parent candidates with provenance tiers.
   - symbols: `BrandCandidate`, `BrandInference`, `collect_candidates`, `apply_candidates`, `print_candidates`, `run`, `parse_args`
 - [`src/firm/resolve.py`](src/firm/resolve.py) — Resolve FDA recalling_firm strings into conservative sidecar firm aliases.
-  - symbols: `SourceConfig`, `FirmName`, `CandidatePair`, `Cluster`, `LoadedNames`, `FirmPairVerification`, `UnionFind`, `normalize_name`, `load_firm_names`, `pg_trgm_pairs`, `pair_signals`, `build_candidate_pairs`
+  - symbols: `SourceConfig`, `FirmName`, `CandidatePair`, `Cluster`, `LoadedNames`, `FirmPairVerification`, `UnionFind`, `deterministic_reject_reason`, `normalize_name`, `load_firm_names`, `pg_trgm_pairs`, `pair_signals`
 - [`src/llm.py`](src/llm.py) — OpenAI-compatible chat and embedding provider gateway for serving paths.
   - symbols: `ProviderError`, `ProviderConfigError`, `ProviderMissingKeyError`, `ProviderUnsupportedConfigError`, `ProviderAuthError`, `ProviderQuotaError`, `ProviderRateLimitError`, `ProviderConnectionError`, `ProviderCapabilityError`, `StructuredOutputError`, `ChatConfig`, `EmbeddingConfig`
 - [`src/nl_query.py`](src/nl_query.py) — Natural-language front-end for the deterministic analytics engine.
