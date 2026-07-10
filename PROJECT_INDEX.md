@@ -4,13 +4,14 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-07-10T07:34Z · 65 files · 2 missing description
+> Last generated: 2026-07-10T12:17Z · 70 files · 2 missing description
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
 - [`.env.example`](.env.example) — Copy to .env and fill in. NEVER commit the real .env (it is git-ignored).
 - [`.gitignore`](.gitignore) — 真实公司数据：绝不提交 / 绝不上传 ----
 - [`AGENTS.md`](AGENTS.md) — AGENTS.md — Agent Operating Guide — **Read this first.** It is the always-on entry point of a *progressive-disclosure*
+- [`CONTEXT.md`](CONTEXT.md) — FDAgent 领域语言（CONTEXT） — 本文件是 FDAgent 的**术语表**——只定义领域词汇的规范叫法，不含实现细节。
 - [`Dockerfile`](Dockerfile) — Container image for the FDAgent serving layer (Path 1: FastAPI /ask + static UI).
 - [`PLAN.md`](PLAN.md) — FDAgent — openFDA 药品召回智能体 · 开发计划 (v3) — **数据集：openFDA `drug/enforcement`**（美国 FDA 药品召回执法报告，100% 公开、无 PII）。
 - [`PROGRESS.md`](PROGRESS.md) — Progress — fdaAgent — Live project state for fast session pickup. This is the **dynamic** doc; the static
@@ -35,6 +36,12 @@
 - [`.github/skills/parallel-agent-prompt-pack/SKILL.md`](.github/skills/parallel-agent-prompt-pack/SKILL.md) — Parallel-Agent Prompt Pack — - **Type**: Workflow + BestPractice
 - [`.github/skills/parallel-dev-worktree-cleanup/SKILL.md`](.github/skills/parallel-dev-worktree-cleanup/SKILL.md) — Parallel-Dev Worktree Cleanup — - **Type**: Workflow + BestPractice
 - [`.github/skills/skill-writing/SKILL.md`](.github/skills/skill-writing/SKILL.md) — Skill 写作指南（Meta-Skill） — - **类型**: BestPractice
+
+## docs/
+- [`docs/adr/0001-firm-answers-aggregate-to-parent-group.md`](docs/adr/0001-firm-answers-aggregate-to-parent-group.md) — 公司类答案聚合到 Parent Group，证据下钻到 recalling_firm — Status: accepted
+- [`docs/adr/0002-recall-profile-not-safety-verdict.md`](docs/adr/0002-recall-profile-not-safety-verdict.md) — C 端"公司安不安全"输出事实召回画像，绝不给安全判决 / 评分 — Status: accepted
+- [`docs/adr/0003-recall-profile-two-block-fact-vs-inferred.md`](docs/adr/0003-recall-profile-two-block-fact-vs-inferred.md) — C 端答案两块式呈现：FDA 事实为锚 + 标注推断的母公司汇总 — Status: accepted
+- [`docs/adr/0004-firm-parent-edges-require-citable-source.md`](docs/adr/0004-firm-parent-edges-require-citable-source.md) — firm→parent 归属边需可引用结构化出处 + 人工确认才生效；LLM/web 仅提名 — Status: accepted
 
 ## evals/
 - [`evals/firm_resolution/golden_v1.json`](evals/firm_resolution/golden_v1.json) — {"description": "FDAgent firm-resolution threshold calibration pairs. Labels are for raw-name aliasing only: same means 
