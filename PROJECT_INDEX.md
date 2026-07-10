@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-07-10T12:17Z · 70 files · 2 missing description
+> Last generated: 2026-07-10T16:06Z · 71 files · 2 missing description
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -42,6 +42,7 @@
 - [`docs/adr/0002-recall-profile-not-safety-verdict.md`](docs/adr/0002-recall-profile-not-safety-verdict.md) — C 端"公司安不安全"输出事实召回画像，绝不给安全判决 / 评分 — Status: accepted
 - [`docs/adr/0003-recall-profile-two-block-fact-vs-inferred.md`](docs/adr/0003-recall-profile-two-block-fact-vs-inferred.md) — C 端答案两块式呈现：FDA 事实为锚 + 标注推断的母公司汇总 — Status: accepted
 - [`docs/adr/0004-firm-parent-edges-require-citable-source.md`](docs/adr/0004-firm-parent-edges-require-citable-source.md) — firm→parent 归属边需可引用结构化出处 + 人工确认才生效；LLM/web 仅提名 — Status: accepted
+- [`docs/adr/0005-autonomy-boundary-reversible-vs-irreversible.md`](docs/adr/0005-autonomy-boundary-reversible-vs-irreversible.md) — 受托/自主 Agent 只可自主执行可逆动作；不可逆动作须人工确认 — Status: accepted
 
 ## evals/
 - [`evals/firm_resolution/golden_v1.json`](evals/firm_resolution/golden_v1.json) — {"description": "FDAgent firm-resolution threshold calibration pairs. Labels are for raw-name aliasing only: same means 
