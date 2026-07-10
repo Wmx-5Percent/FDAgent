@@ -89,14 +89,20 @@ Rules:
 - Choose intent: count_total (one number), count_by (distribution across a dimension -> set group_by),
   trend (counts over time -> set grain and date_column), sample (a few example rows).
 - semantic_query: when the question asks about a fuzzy CONCEPT/topic in free text (e.g.
-  "sterility problems", "cancer-causing impurity", "pills that are too strong", "glass fragments"),
-  put that concept here as a short natural-language phrase. Use intent=sample for show/find/example
-  questions, intent=count_total for "how many" concept questions, and intent=count_by with group_by
-  for concept distribution questions. This runs semantic retrieval over the recall text -- do NOT
-  use an 'ilike' filter for a concept (ilike only matches literal words and misses synonyms like
-  microbial / superpotent). Leave semantic_k unset unless the user asks to validate a specific
-  sample size. If you know synonyms or phrase variants, put them in semantic_aliases; do not
-  narrow the core semantic_query by adding generic words such as "problems" unless the user did.
+  "sterility problems", "cancer-causing impurity", "pills that are too strong", "glass fragments",
+  or the same idea in another language such as "药效太强" or "细菌感染"), put the CORE concept here
+  as a short, canonical ENGLISH phrase, normalized to how it appears in U.S. recall reports and
+  independent of the question's language. For example: "药效太强"/"pills too strong" -> "superpotent";
+  "药效不足"/"low potency" -> "subpotent"; "无菌问题"/"non-sterile" -> "sterility"; "细菌感染" ->
+  "microbial contamination"; "玻璃碎片" -> "glass particles"; "致癌杂质" -> "nitrosamine impurity".
+  Keep semantic_query to the concept ITSELF; do not add generic words such as "problems"/"issues"
+  unless the user did. Put keyword synonyms/variants (used only for a keyword-search fallback) in
+  semantic_aliases, e.g. for superpotent: ["too strong", "over strength", "high assay",
+  "potency above specification"]. Use intent=sample for show/find/example questions,
+  intent=count_total for "how many" concept questions, and intent=count_by with group_by for
+  concept distribution questions. This runs semantic retrieval over the recall text -- do NOT use
+  an 'ilike' filter for a concept. Leave semantic_k unset unless the user asks to validate a
+  specific sample size.
 - filters: only for HARD constraints -- categories (classification/state/...) via 'eq'/'in' with a
   column's listed allowed values, and dates (ISO YYYY-MM-DD) via 'between'/'gte'/'lte'. You may combine
   semantic_query (the concept) with filters (the hard constraints), e.g. "Class I sterility recalls".
@@ -145,19 +151,30 @@ def generate_spec(client: Any, config: llm.ChatConfig, question: str,
         QuerySpec,
         temperature=0,
     )
-    return refine_spec(question, spec)
+    return refine_spec(spec)
 
 
-def refine_spec(question: str, spec: QuerySpec) -> QuerySpec:
-    if spec.filters and agent_control.is_generic_recall_semantic_query(spec.semantic_query):
-        spec.semantic_query = None
+def refine_spec(spec: QuerySpec) -> QuerySpec:
+    """Light, general hygiene on the model's QuerySpec -- no hardcoded concept rules.
+
+    The LLM judges intent and emits the canonical semantic_query plus keyword aliases; here we
+    only normalize whitespace and de-duplicate aliases.
+    """
+    if spec.semantic_query is not None:
+        spec.semantic_query = spec.semantic_query.strip() or None
+    if not spec.semantic_query:
         spec.semantic_aliases = []
         return spec
-    query, aliases = agent_control.refine_semantic_query(question, spec.semantic_query)
-    spec.semantic_query = query
-    for alias in aliases:
-        if alias != query and alias not in spec.semantic_aliases:
-            spec.semantic_aliases.append(alias)
+    concept = spec.semantic_query.casefold()
+    seen: set[str] = set()
+    aliases: list[str] = []
+    for alias in spec.semantic_aliases:
+        alias = alias.strip()
+        key = alias.casefold()
+        if alias and key != concept and key not in seen:
+            seen.add(key)
+            aliases.append(alias)
+    spec.semantic_aliases = aliases
     return spec
 
 
@@ -477,7 +494,14 @@ class NLEngine:
         return status
 
     def ask(self, question: str) -> Answer:
-        control = agent_control.classify(question)
+        if self.chat_client is None:
+            raise self.chat_error or llm.ProviderMissingKeyError(
+                "chat client is not configured",
+                provider=self.chat_config.provider,
+                model=self.chat_config.model,
+                operation="chat",
+            )
+        control = agent_control.classify_llm(self.chat_client, self.chat_config, question)
         if control.terminal:
             result = agent_control.result_from_decision(control)
             return Answer(
@@ -487,13 +511,6 @@ class NLEngine:
                 result,
                 control=control,
                 metadata={"control_route": control.route, "control_reason": control.reason},
-            )
-        if self.chat_client is None:
-            raise self.chat_error or llm.ProviderMissingKeyError(
-                "chat client is not configured",
-                provider=self.chat_config.provider,
-                model=self.chat_config.model,
-                operation="chat",
             )
         spec = generate_spec(self.chat_client, self.chat_config, question, self.schema_ctx)
         with RecallAnalytics(self.dsn) as a:
