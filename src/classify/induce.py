@@ -39,6 +39,155 @@ DEFAULT_OUTPUT = "data/processed/taxonomy_draft_v1.json"
 SOURCE = "drug_enforcement"
 FIELD = "reason_for_recall"
 
+PARENT_DEFINITIONS: dict[str, tuple[str, str]] = {
+    "quality_and_potency": (
+        "Quality and potency",
+        "Recall reasons describing failed product quality attributes, potency, specifications, contamination, sterility, or stability.",
+    ),
+    "manufacturing_controls": (
+        "Manufacturing controls",
+        "Recall reasons describing manufacturing practice, process-control, or cross-contamination control failures.",
+    ),
+    "labeling_and_packaging": (
+        "Labeling and packaging",
+        "Recall reasons describing labeling, package, container, closure, or delivery-system defects.",
+    ),
+    "regulatory_status": (
+        "Regulatory status",
+        "Recall reasons describing products marketed without the required approval, application, or regulatory clearance.",
+    ),
+    "storage_distribution": (
+        "Storage and distribution",
+        "Recall reasons describing temperature abuse, storage, shipment, or distribution conditions that may affect product quality.",
+    ),
+    "other": (
+        "Other",
+        "Reasons that do not clearly fit the current taxonomy.",
+    ),
+}
+
+CHILD_RULES: tuple[tuple[tuple[str, ...], str, str, str, str], ...] = (
+    (
+        ("label",),
+        "labeling_and_packaging",
+        "labeling_error",
+        "Labeling error",
+        "Incorrect, missing, misleading, or otherwise defective labeling, including lot, expiration, strength, or warning text problems.",
+    ),
+    (
+        ("defective container", "container", "closure", "pouch", "seal"),
+        "labeling_and_packaging",
+        "container_or_closure_defect",
+        "Container or closure defect",
+        "Defective containers, closures, packaging integrity, or similar package failures.",
+    ),
+    (
+        ("delivery system",),
+        "labeling_and_packaging",
+        "delivery_system_defect",
+        "Delivery system defect",
+        "Defective drug delivery devices or delivery-system components.",
+    ),
+    (
+        ("cgmp", "gmp deviation", "gmp deviations"),
+        "manufacturing_controls",
+        "cgmp_deviation",
+        "cGMP deviation",
+        "cGMP/GMP deviations or broad manufacturing-quality-system failures.",
+    ),
+    (
+        ("processing control", "processing controls", "process control"),
+        "manufacturing_controls",
+        "processing_controls",
+        "Processing controls",
+        "Missing, inadequate, or failed production or process controls.",
+    ),
+    (
+        ("cross contamination", "penicillin cross"),
+        "manufacturing_controls",
+        "cross_contamination",
+        "Cross contamination",
+        "Cross-contamination between products, ingredients, or drug classes.",
+    ),
+    (
+        ("marketed without", "approved nda", "approved anda", "unapproved", "misbranded"),
+        "regulatory_status",
+        "unapproved_drug",
+        "Unapproved drug",
+        "Products marketed without an approved NDA/ANDA or equivalent required approval.",
+    ),
+    (
+        ("temperature", "storage", "shipment", "distribution"),
+        "storage_distribution",
+        "temperature_or_storage_abuse",
+        "Temperature or storage abuse",
+        "Improper temperature, storage, shipment, or distribution conditions that may affect product quality.",
+    ),
+    (
+        ("lack of assurance of sterility", "lack of sterility", "non-sterility", "sterility"),
+        "quality_and_potency",
+        "sterility_assurance",
+        "Sterility assurance",
+        "Sterile or intended-sterile products recalled for lack of sterility assurance, non-sterility, or sterility-process concerns.",
+    ),
+    (
+        ("microbial contamination", "bacterial", "mold", "yeast"),
+        "quality_and_potency",
+        "microbial_contamination",
+        "Microbial contamination",
+        "Actual or potential microbial contamination in sterile or non-sterile products.",
+    ),
+    (
+        ("particulate", "foreign substance", "foreign tablets", "foreign capsules", "foreign matter"),
+        "quality_and_potency",
+        "particulate_or_foreign_matter",
+        "Particulate or foreign matter",
+        "Particulate matter, foreign substances, or foreign tablets/capsules in the product.",
+    ),
+    (
+        ("impurities", "degradation", "chemical contamination", "benzene", "nitros"),
+        "quality_and_potency",
+        "impurities_or_degradation",
+        "Impurities or degradation",
+        "Failed impurity, degradation, chemical-contamination, or related chemistry specifications.",
+    ),
+    (
+        ("subpotent", "superpotent", "potency", "assay", "content uniformity"),
+        "quality_and_potency",
+        "potency_or_content",
+        "Potency or content",
+        "Subpotent, superpotent, content-uniformity, or assay-strength failures.",
+    ),
+    (
+        ("dissolution",),
+        "quality_and_potency",
+        "dissolution_or_tablet_specs",
+        "Dissolution or tablet specifications",
+        "Failed dissolution, tablet, capsule, crystallization, or other physical dosage-form specifications.",
+    ),
+    (
+        ("tablet/capsule", "tablet", "capsule", "crystallization"),
+        "quality_and_potency",
+        "dissolution_or_tablet_specs",
+        "Dissolution or tablet specifications",
+        "Failed dissolution, tablet, capsule, crystallization, or other physical dosage-form specifications.",
+    ),
+    (
+        ("stability", "expiry", "expiration"),
+        "quality_and_potency",
+        "stability_or_expiry",
+        "Stability or expiry",
+        "Failed stability specifications or insufficient data to support expiration dating.",
+    ),
+    (
+        ("discoloration", "appearance"),
+        "quality_and_potency",
+        "appearance_or_physical_defect",
+        "Appearance or physical defect",
+        "Discoloration or visible physical defects not better captured by foreign matter or dosage-form specifications.",
+    ),
+)
+
 
 @dataclass
 class ReasonText:
@@ -349,40 +498,103 @@ def draft_with_llm(
     return draft
 
 
-def deterministic_draft(version: str, prefixes: Sequence[dict[str, Any]]) -> TaxonomyDraft:
-    nodes: list[DraftNode] = []
-    used: set[str] = set()
-    for item in prefixes[:24]:
-        node_id = slugify(item["prefix"])
-        if node_id in used:
+def deterministic_child(prefix: str) -> tuple[str, str, str, str] | None:
+    normalized = normalize_text(prefix)
+    for needles, parent_id, node_id, label, definition in CHILD_RULES:
+        if any(needle in normalized for needle in needles):
+            return parent_id, node_id, label, definition
+    return None
+
+
+def _extend_examples(current: list[str], examples: Sequence[str], *, limit: int = 8) -> None:
+    seen = {normalize_text(example) for example in current}
+    for example in examples:
+        key = normalize_text(example)
+        if key in seen:
             continue
-        used.add(node_id)
-        label = item["prefix"].title()
+        current.append(example)
+        seen.add(key)
+        if len(current) >= limit:
+            break
+
+
+def deterministic_draft(version: str, prefixes: Sequence[dict[str, Any]]) -> TaxonomyDraft:
+    child_examples: dict[str, list[str]] = defaultdict(list)
+    child_specs: dict[str, tuple[str, str, str, str]] = {}
+    residual_examples: list[str] = []
+
+    for item in prefixes:
+        match = deterministic_child(item["prefix"])
+        if match is None:
+            _extend_examples(residual_examples, item.get("examples", []), limit=8)
+            continue
+        parent_id, node_id, label, definition = match
+        child_specs[node_id] = (parent_id, node_id, label, definition)
+        _extend_examples(child_examples[node_id], item.get("examples", []), limit=8)
+
+    used_parents = {spec[0] for spec in child_specs.values()}
+    ordered_parent_ids = [
+        "quality_and_potency",
+        "manufacturing_controls",
+        "labeling_and_packaging",
+        "regulatory_status",
+        "storage_distribution",
+    ]
+    nodes: list[DraftNode] = []
+    for parent_id in ordered_parent_ids:
+        if parent_id not in used_parents:
+            continue
+        label, definition = PARENT_DEFINITIONS[parent_id]
+        examples: list[str] = []
+        for child_id, spec in child_specs.items():
+            if spec[0] == parent_id:
+                _extend_examples(examples, child_examples[child_id], limit=5)
         nodes.append(
             DraftNode(
-                node_id=node_id,
+                node_id=parent_id,
                 parent_id=None,
                 label=label,
-                definition=f"Recall reasons whose leading text indicates {label}.",
-                examples=item.get("examples", [])[:5],
+                definition=definition,
+                examples=examples[:5],
                 level=0,
             )
         )
-    if "other" not in used:
-        nodes.append(
-            DraftNode(
-                node_id="other",
-                parent_id=None,
-                label="Other",
-                definition="Reasons that do not clearly fit the current taxonomy.",
-                examples=[],
-                level=0,
-            )
+
+    for parent_id in ordered_parent_ids:
+        children = sorted(
+            (spec for spec in child_specs.values() if spec[0] == parent_id),
+            key=lambda spec: spec[1],
         )
+        for _, node_id, label, definition in children:
+            nodes.append(
+                DraftNode(
+                    node_id=node_id,
+                    parent_id=parent_id,
+                    label=label,
+                    definition=definition,
+                    examples=child_examples[node_id][:5],
+                    level=1,
+                )
+            )
+
+    other_label, other_definition = PARENT_DEFINITIONS["other"]
+    nodes.append(
+        DraftNode(
+            node_id="other",
+            parent_id=None,
+            label=other_label,
+            definition=other_definition,
+            examples=residual_examples[:5],
+            level=0,
+        )
+    )
     return TaxonomyDraft(
         version=version,
         nodes=nodes,
-        notes=["Deterministic prefix-only draft because --no-llm was used."],
+        notes=[
+            "Deterministic prefix-rule draft because --no-llm was used.",
+            "Prefix rules create reviewable parent/child nodes from openFDA reason_for_recall evidence; human review must freeze v1 before any --apply.",
+        ],
     )
 
 

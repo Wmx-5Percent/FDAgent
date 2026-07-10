@@ -8,6 +8,7 @@ this writes only cache/report files; database writes happen only with --apply.
 Run:
     .venv/bin/python src/classify/label.py --version v1 --taxonomy-status active
     .venv/bin/python src/classify/label.py --version v1 --limit 100 --cache-only
+    .venv/bin/python src/classify/label.py --taxonomy-file data/processed/taxonomy_draft_v1.json --draft-prefix-match
     .venv/bin/python src/classify/label.py --version v1 --apply
 """
 from __future__ import annotations
@@ -18,7 +19,7 @@ import json
 import os
 import re
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -130,6 +131,49 @@ def load_taxonomy(conn: psycopg.Connection, version: str, status: str) -> list[T
     ]
 
 
+def _node_from_payload(row: dict[str, Any], *, status: str) -> TaxonomyNode:
+    return TaxonomyNode(
+        node_id=str(row["node_id"]),
+        parent_id=None if row.get("parent_id") is None else str(row["parent_id"]),
+        label=str(row["label"]),
+        definition=str(row["definition"]),
+        examples=[str(example) for example in row.get("examples", [])],
+        level=int(row["level"]),
+        status=str(row.get("status") or status),
+    )
+
+
+def load_taxonomy_file(path: str, status: str) -> tuple[str | None, list[TaxonomyNode]]:
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if isinstance(payload.get("draft"), dict):
+        source = payload["draft"]
+        version = source.get("version") or payload.get("version")
+        node_rows = source.get("nodes", [])
+    else:
+        version = payload.get("version")
+        node_rows = payload.get("nodes", [])
+    if not isinstance(node_rows, list) or not node_rows:
+        raise ValueError(f"{path} does not contain taxonomy nodes")
+    nodes = [_node_from_payload(row, status=status) for row in node_rows]
+    validate_taxonomy_nodes(nodes)
+    return None if version is None else str(version), nodes
+
+
+def validate_taxonomy_nodes(nodes: list[TaxonomyNode]) -> None:
+    node_ids = [node.node_id for node in nodes]
+    duplicates = [node_id for node_id, count in Counter(node_ids).items() if count > 1]
+    if duplicates:
+        raise ValueError(f"duplicate taxonomy node_id(s): {', '.join(sorted(duplicates))}")
+    known = set(node_ids)
+    for node in nodes:
+        if node.parent_id and node.parent_id not in known:
+            raise ValueError(f"{node.node_id!r} references unknown parent_id {node.parent_id!r}")
+        if node.level == 0 and node.parent_id is not None:
+            raise ValueError(f"root node {node.node_id!r} must not have parent_id")
+        if node.level > 0 and not node.parent_id:
+            raise ValueError(f"child node {node.node_id!r} must have parent_id")
+
+
 def taxonomy_hash(nodes: list[TaxonomyNode]) -> str:
     payload = [
         {
@@ -174,6 +218,77 @@ def fetch_reason_batches(conn: psycopg.Connection, limit: int | None) -> list[Re
         )
         for row in rows
     ]
+
+
+def extract_prefix(text: str) -> str | None:
+    raw = re.sub(r"\s+", " ", text.strip())
+    if not raw:
+        return None
+    head = re.split(r":|;|\s+-\s+|\s+--\s+|\s+–\s+|\s+—\s+", raw, maxsplit=1)[0]
+    head = head.strip(" .,-")
+    words = head.split()
+    if not 1 <= len(words) <= 8:
+        return None
+    if len(head) > 90:
+        return None
+    return normalize_text(head)
+
+
+def draft_match_terms(nodes: list[TaxonomyNode]) -> list[tuple[str, str]]:
+    nodes_by_id = {node.node_id: node for node in nodes}
+    seen: set[tuple[str, str]] = set()
+    terms: list[tuple[str, str]] = []
+    for node in nodes:
+        if node.node_id == "other":
+            continue
+        raw_terms = [node.label, node.node_id.replace("_", " ")]
+        raw_terms.extend(prefix for example in node.examples if (prefix := extract_prefix(example)))
+        for raw in raw_terms:
+            term = normalize_text(raw)
+            if not term or len(term) > 90:
+                continue
+            key = (term, node.node_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            terms.append(key)
+    terms.sort(key=lambda item: (nodes_by_id[item[1]].level == 0, -len(item[0]), item[1]))
+    return terms
+
+
+def _matches_term(reason: str, prefix: str | None, term: str) -> bool:
+    if prefix == term:
+        return True
+    if reason == term:
+        return True
+    separators = (":", ";", ".", " -", " --", " –", " —")
+    if any(reason.startswith(f"{term}{separator}") for separator in separators):
+        return True
+    if prefix is None:
+        return False
+    if prefix.startswith(term) or term.startswith(prefix):
+        return True
+    return len(term) >= 6 and term in prefix
+
+
+def label_with_draft_prefix_match(
+    *,
+    batch: ReasonBatch,
+    terms: list[tuple[str, str]],
+    other_node_id: str,
+) -> LabelResult:
+    reason = normalize_text(batch.text)
+    prefix = extract_prefix(batch.text)
+    for term, node_id in terms:
+        if _matches_term(reason, prefix, term):
+            evidence = prefix or batch.text[:240]
+            return LabelResult(labels=[
+                LabelAssignment(node_id=node_id, confidence=1.0, evidence=evidence[:500])
+            ])
+    return LabelResult(
+        labels=[LabelAssignment(node_id=other_node_id, confidence=0.0, evidence=batch.text[:500])],
+        other_reason="No draft prefix rule matched this reason.",
+    )
 
 
 def cache_key(
@@ -413,10 +528,16 @@ def parse_args() -> argparse.Namespace:
                         default="active", help="taxonomy node status filter")
     parser.add_argument("--model", default=None, help="chat model override for labeling")
     parser.add_argument("--labeler", default=None, help="labeler id stored in recall_label")
+    parser.add_argument("--taxonomy-file", default=None,
+                        help="taxonomy draft/seed JSON file to use instead of taxonomy table; dry-run only")
     parser.add_argument("--cache-file", default=None, help="JSONL hash-cache path")
     parser.add_argument("--output-file", default=None, help="JSON report path")
     parser.add_argument("--limit", type=int, default=None, help="max distinct reason texts to label")
     parser.add_argument("--other-node-id", default="other", help="taxonomy node used for other/uncertain")
+    parser.add_argument("--sample-reasons", type=int, default=3,
+                        help="max sample reason texts to include per node in the JSON report")
+    parser.add_argument("--draft-prefix-match", action="store_true",
+                        help="estimate a draft taxonomy distribution by prefix matching; no LLM or cache")
     parser.add_argument("--cache-only", action="store_true", help="never call the LLM; fail on cache miss")
     parser.add_argument("--apply", action="store_true", help="backfill recall_label")
     return parser.parse_args()
@@ -424,53 +545,81 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if args.taxonomy_file and args.apply:
+        raise ValueError("--taxonomy-file is dry-run only; refusing to use it with --apply")
+    if args.draft_prefix_match and not args.taxonomy_file:
+        raise ValueError("--draft-prefix-match requires --taxonomy-file")
+    if args.sample_reasons < 0:
+        raise ValueError("--sample-reasons must be non-negative")
+
     chat_config = llm.chat_config(model=args.model)
     model = chat_config.model
-    cache_file = args.cache_file or default_cache_file(args.version, model)
-    output_file = args.output_file or default_output_file(args.version)
-    labeler = args.labeler or f"llm:{model}"
+    version = args.version
 
     with psycopg.connect(args.dsn) as conn:
-        nodes = load_taxonomy(conn, args.version, args.taxonomy_status)
+        if args.taxonomy_file:
+            file_version, nodes = load_taxonomy_file(args.taxonomy_file, status="draft")
+            version = file_version or version
+        else:
+            nodes = load_taxonomy(conn, version, args.taxonomy_status)
         nodes_by_id = {node.node_id: node for node in nodes}
+        if args.other_node_id not in nodes_by_id:
+            raise ValueError(f"other node {args.other_node_id!r} is not present in the taxonomy")
         digest = taxonomy_hash(nodes)
+        cache_file = args.cache_file or default_cache_file(version, model)
+        output_file = args.output_file or default_output_file(version)
+        labeler = args.labeler or (
+            "draft-prefix-match" if args.draft_prefix_match else f"llm:{model}"
+        )
         batches = fetch_reason_batches(conn, args.limit)
         if not batches:
             raise ValueError("no non-empty reason_for_recall texts found")
 
-        cache = load_cache(cache_file)
+        cache = {} if args.draft_prefix_match else load_cache(cache_file)
+        match_terms = draft_match_terms(nodes) if args.draft_prefix_match else []
         client: Any | None = None
         cache_hits = 0
         applied_rows = 0
         counts: Counter[str] = Counter()
+        sample_reasons: dict[str, list[str]] = defaultdict(list)
         results: list[dict[str, Any]] = []
 
         for index, batch in enumerate(batches, 1):
-            result, hit, client = label_reason(
-                batch=batch,
-                nodes=nodes,
-                nodes_by_id=nodes_by_id,
-                version=args.version,
-                taxonomy_digest=digest,
-                model=model,
-                chat_config=chat_config,
-                other_node_id=args.other_node_id,
-                cache=cache,
-                cache_file=cache_file,
-                cache_only=args.cache_only,
-                client=client,
-            )
+            if args.draft_prefix_match:
+                result = label_with_draft_prefix_match(
+                    batch=batch,
+                    terms=match_terms,
+                    other_node_id=args.other_node_id,
+                )
+                hit = False
+            else:
+                result, hit, client = label_reason(
+                    batch=batch,
+                    nodes=nodes,
+                    nodes_by_id=nodes_by_id,
+                    version=version,
+                    taxonomy_digest=digest,
+                    model=model,
+                    chat_config=chat_config,
+                    other_node_id=args.other_node_id,
+                    cache=cache,
+                    cache_file=cache_file,
+                    cache_only=args.cache_only,
+                    client=client,
+                )
             if hit:
                 cache_hits += 1
             for label in result.labels:
                 counts[label.node_id] += batch.record_count
+                if len(sample_reasons[label.node_id]) < args.sample_reasons:
+                    sample_reasons[label.node_id].append(batch.text)
             if args.apply:
                 applied_rows += apply_batch(
                     conn,
                     batch=batch,
                     result=result,
                     nodes_by_id=nodes_by_id,
-                    version=args.version,
+                    version=version,
                     labeler=labeler,
                     model=model,
                 )
@@ -485,18 +634,22 @@ def main() -> None:
                 print(f"processed {index}/{len(batches)} distinct reason text(s)")
 
         report = {
-            "version": args.version,
+            "version": version,
             "taxonomy_status": args.taxonomy_status,
+            "taxonomy_source": "file" if args.taxonomy_file else "database",
+            "taxonomy_file": args.taxonomy_file,
             "taxonomy_hash": digest,
             "provider": chat_config.provider,
             "model": model,
             "labeler": labeler,
+            "labeling_mode": "draft_prefix_match" if args.draft_prefix_match else "llm_closed_set",
             "cache_file": cache_file,
             "dry_run": not args.apply,
             "distinct_reason_count": len(batches),
             "record_count": sum(batch.record_count for batch in batches),
             "cache_hits": cache_hits,
             "label_counts_by_node": dict(counts.most_common()),
+            "sample_reasons_by_node": dict(sorted(sample_reasons.items())),
             "applied_rows": applied_rows,
             "results": results,
         }
@@ -506,7 +659,10 @@ def main() -> None:
         print(f"applied {applied_rows} recall_label row(s); report={output_file}")
     else:
         print(f"dry-run: wrote label report to {output_file}; no DB writes")
-    print(f"cache={cache_file}; cache_hits={cache_hits}/{len(batches)}")
+    if args.draft_prefix_match:
+        print(f"draft-prefix-match: no LLM/cache used; matched {len(match_terms)} term(s)")
+    else:
+        print(f"cache={cache_file}; cache_hits={cache_hits}/{len(batches)}")
 
 
 if __name__ == "__main__":
