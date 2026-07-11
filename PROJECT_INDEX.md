@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-07-11T02:35Z · 74 files · 2 missing description
+> Last generated: 2026-07-11T02:36Z · 75 files · 2 missing description
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -14,6 +14,7 @@
 - [`CONTEXT.md`](CONTEXT.md) — FDAgent 领域语言（CONTEXT） — 本文件是 FDAgent 的**术语表**——只定义领域词汇的规范叫法，不含实现细节。
 - [`Dockerfile`](Dockerfile) — Container image for the FDAgent serving layer (Path 1: FastAPI /ask + static UI).
 - [`NOTES-firm.md`](NOTES-firm.md) — Firm deterministic auto-merge notes — - Updated `src/firm/resolve.py` so exact normalized-name pairs auto-accept deterministically with no LLM/web verification.
+- [`NOTES-taxonomy.md`](NOTES-taxonomy.md) — Taxonomy induction notes — draft v1 dry run — Issue #20 dry-run deliverable. No `--apply` command was run; no `taxonomy` rows were frozen/seeded and no `recall_label` rows were written.
 - [`PLAN.md`](PLAN.md) — FDAgent — openFDA 药品召回智能体 · 开发计划 (v3) — **数据集：openFDA `drug/enforcement`**（美国 FDA 药品召回执法报告，100% 公开、无 PII）。
 - [`PROGRESS.md`](PROGRESS.md) — Progress — fdaAgent — Live project state for fast session pickup. This is the **dynamic** doc; the static
 - [`PROJECT_INDEX.md`](PROJECT_INDEX.md) — Auto-generated repository map (this file).
@@ -88,7 +89,7 @@
 - [`src/classify/induce.py`](src/classify/induce.py) — Induce a draft recall-reason taxonomy from distinct reason_for_recall text.
   - symbols: `ReasonText`, `ClusterSummary`, `DraftNode`, `TaxonomyDraft`, `normalize_text`, `text_hash`, `slugify`, `parse_vector`, `fetch_reason_texts`, `load_reason_vectors`, `attach_vectors`, `extract_prefix`
 - [`src/classify/label.py`](src/classify/label.py) — Label recall records against a frozen taxonomy version.
-  - symbols: `TaxonomyNode`, `ReasonBatch`, `LabelAssignment`, `LabelResult`, `normalize_text`, `text_hash`, `safe_name`, `default_cache_file`, `default_output_file`, `load_taxonomy`, `taxonomy_hash`, `fetch_reason_batches`
+  - symbols: `TaxonomyNode`, `ReasonBatch`, `LabelAssignment`, `LabelResult`, `normalize_text`, `text_hash`, `safe_name`, `default_cache_file`, `default_output_file`, `load_taxonomy`, `load_taxonomy_file`, `validate_taxonomy_nodes`
 - [`src/classify/seed_v1.py`](src/classify/seed_v1.py) — Seed the frozen v1 recall-reason taxonomy into the taxonomy sidecar table.
   - symbols: `node_rows`, `existing_nodes`, `apply_seed`, `write_report`, `report_payload`, `parse_args`, `main`
 - [`src/classify/taxonomy_v1.py`](src/classify/taxonomy_v1.py) — Frozen v1 recall-reason taxonomy nodes for offline classification.
