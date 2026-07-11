@@ -20,6 +20,7 @@ import os
 import re
 import sys
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -388,17 +389,23 @@ def validate_result(
     other_node_id: str,
     reason: str,
 ) -> LabelResult:
-    for label in result.labels:
-        if label.node_id not in nodes_by_id:
-            raise ValueError(f"LLM returned unknown node_id {label.node_id!r}")
-    if result.labels:
-        return result
+    # Closed-set guard: keep only labels whose node_id exists in the taxonomy.
+    # Models can hallucinate an out-of-taxonomy node_id; drop it and record the
+    # drop instead of raising, so one stray label cannot crash the whole run.
+    valid_labels = [label for label in result.labels if label.node_id in nodes_by_id]
+    dropped = sorted({label.node_id for label in result.labels if label.node_id not in nodes_by_id})
+    other_reason = result.other_reason
+    if dropped:
+        note = f"dropped unknown node_id(s): {', '.join(dropped)}"
+        other_reason = f"{other_reason}; {note}" if other_reason else note
+    if valid_labels:
+        return LabelResult(labels=valid_labels, other_reason=other_reason)
     if other_node_id in nodes_by_id:
-        evidence = result.other_reason or reason[:240]
+        evidence = other_reason or reason[:240]
         return LabelResult(labels=[
             LabelAssignment(node_id=other_node_id, confidence=0.0, evidence=evidence[:500])
-        ], other_reason=result.other_reason)
-    return result
+        ], other_reason=other_reason)
+    return LabelResult(labels=[], other_reason=other_reason)
 
 
 def label_reason(
@@ -539,6 +546,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--draft-prefix-match", action="store_true",
                         help="estimate a draft taxonomy distribution by prefix matching; no LLM or cache")
     parser.add_argument("--cache-only", action="store_true", help="never call the LLM; fail on cache miss")
+    parser.add_argument("--concurrency", type=int, default=12,
+                        help="max concurrent LLM requests for cache-miss reasons (>=1)")
     parser.add_argument("--apply", action="store_true", help="backfill recall_label")
     return parser.parse_args()
 
@@ -584,29 +593,11 @@ def main() -> None:
         sample_reasons: dict[str, list[str]] = defaultdict(list)
         results: list[dict[str, Any]] = []
 
-        for index, batch in enumerate(batches, 1):
-            if args.draft_prefix_match:
-                result = label_with_draft_prefix_match(
-                    batch=batch,
-                    terms=match_terms,
-                    other_node_id=args.other_node_id,
-                )
-                hit = False
-            else:
-                result, hit, client = label_reason(
-                    batch=batch,
-                    nodes=nodes,
-                    nodes_by_id=nodes_by_id,
-                    version=version,
-                    taxonomy_digest=digest,
-                    model=model,
-                    chat_config=chat_config,
-                    other_node_id=args.other_node_id,
-                    cache=cache,
-                    cache_file=cache_file,
-                    cache_only=args.cache_only,
-                    client=client,
-                )
+        total = len(batches)
+        processed = 0
+
+        def record(batch: ReasonBatch, result: LabelResult, hit: bool) -> None:
+            nonlocal cache_hits, applied_rows, processed
             if hit:
                 cache_hits += 1
             for label in result.labels:
@@ -630,8 +621,83 @@ def main() -> None:
                 "labels": [label.model_dump() for label in result.labels],
                 "other_reason": result.other_reason,
             })
-            if index % 50 == 0:
-                print(f"processed {index}/{len(batches)} distinct reason text(s)")
+            processed += 1
+            if processed % 50 == 0:
+                print(f"processed {processed}/{total} distinct reason text(s)")
+
+        if args.draft_prefix_match:
+            for batch in batches:
+                result = label_with_draft_prefix_match(
+                    batch=batch,
+                    terms=match_terms,
+                    other_node_id=args.other_node_id,
+                )
+                record(batch, result, hit=False)
+        else:
+            # Serve cache hits inline; send only cache misses to the LLM, concurrently.
+            pending: list[tuple[ReasonBatch, str]] = []
+            for batch in batches:
+                key = cache_key(
+                    version=version,
+                    taxonomy_digest=digest,
+                    model=model,
+                    reason_hash=batch.text_hash,
+                    other_node_id=args.other_node_id,
+                )
+                if key in cache:
+                    cached = LabelResult.model_validate(cache[key]["result"])
+                    result = validate_result(
+                        cached,
+                        nodes_by_id=nodes_by_id,
+                        other_node_id=args.other_node_id,
+                        reason=batch.text,
+                    )
+                    record(batch, result, hit=True)
+                elif args.cache_only:
+                    raise ValueError(
+                        f"cache miss for text_hash={batch.text_hash}; unset --cache-only to call the LLM"
+                    )
+                else:
+                    pending.append((batch, key))
+
+            if pending:
+                client = llm.create_chat_client(chat_config)
+                workers = max(1, args.concurrency)
+
+                def call_llm(target: ReasonBatch) -> LabelResult:
+                    raw = classify_with_llm(client, config=chat_config, nodes=nodes, reason=target.text)
+                    return validate_result(
+                        raw,
+                        nodes_by_id=nodes_by_id,
+                        other_node_id=args.other_node_id,
+                        reason=target.text,
+                    )
+
+                print(f"labeling {len(pending)} cache-miss reason(s) with concurrency={workers}")
+                with ThreadPoolExecutor(max_workers=workers) as executor:
+                    future_map = {
+                        executor.submit(call_llm, batch): (batch, key)
+                        for batch, key in pending
+                    }
+                    for future in as_completed(future_map):
+                        batch, key = future_map[future]
+                        try:
+                            result = future.result()
+                        except Exception as exc:  # noqa: BLE001 - keep going on a single failed reason
+                            print(f"skip reason text_hash={batch.text_hash}: {exc}")
+                            continue
+                        row = {
+                            "key": key,
+                            "version": version,
+                            "taxonomy_hash": digest,
+                            "model": model,
+                            "text_hash": batch.text_hash,
+                            "record_count": batch.record_count,
+                            "result": result.model_dump(),
+                        }
+                        append_cache(cache_file, row)
+                        cache[key] = row
+                        record(batch, result, hit=False)
 
         report = {
             "version": version,
