@@ -42,28 +42,44 @@ DECISION_ACCEPTED = "accepted"
 DECISION_NEEDS_REVIEW = "needs_review"
 DECISION_REJECTED = "rejected"
 
-LEGAL_SUFFIXES = {
-    "ag",
-    "bv",
+US_LEGAL_SUFFIXES = {
     "co",
     "company",
     "corp",
     "corporation",
-    "gmbh",
     "inc",
     "incorporated",
-    "kg",
     "llc",
     "llp",
     "lp",
+}
+PROTECTED_FOREIGN_LEGAL_FORMS = {
+    "ag",
+    "bv",
+    "gmbh",
+    "kg",
     "ltd",
-    "limited",
     "nv",
     "plc",
     "pte",
+    "pty",
+    "pvt",
     "sa",
     "sarl",
 }
+FOREIGN_LEGAL_FORM_REWRITES = {
+    "limited": "ltd",
+}
+LEGAL_INITIALISM_REWRITES = (
+    (re.compile(r"\bl\.?\s*l\.?\s*c\.?\b"), " llc "),
+    (re.compile(r"\bl\.?\s*l\.?\s*p\.?\b"), " llp "),
+    (re.compile(r"\bl\.?\s*p\.?\b"), " lp "),
+    (re.compile(r"\bs\.?\s*a\.?\b"), " sa "),
+    (re.compile(r"\bb\.?\s*v\.?\b"), " bv "),
+    (re.compile(r"\bn\.?\s*v\.?\b"), " nv "),
+    (re.compile(r"\bp\.?\s*t\.?\s*e\.?\b"), " pte "),
+    (re.compile(r"\bp\.?\s*v\.?\s*t\.?\b"), " pvt "),
+)
 STOPWORDS = {"the"}
 TOKEN_REWRITES = {
     "and": "&",
@@ -199,17 +215,61 @@ class UnionFind:
             self.rank[ra] += 1
 
 
-def normalize_name(value: str) -> str:
-    """Normalize a firm/brand-like name without asserting identity."""
+def _normalized_tokens(value: str) -> list[str]:
     text = unicodedata.normalize("NFKD", value)
     text = text.encode("ascii", "ignore").decode("ascii").lower()
     text = text.replace("&", " and ")
     text = re.sub(r"\bu\.?\s*s\.?\s*a\.?\b", " usa ", text)
+    for pattern, replacement in LEGAL_INITIALISM_REWRITES:
+        text = pattern.sub(replacement, text)
     text = re.sub(r"[^a-z0-9]+", " ", text)
+    return text.split()
+
+
+def _canonical_legal_token(token: str) -> str:
+    return FOREIGN_LEGAL_FORM_REWRITES.get(token, token)
+
+
+def _protected_foreign_legal_forms(value: str) -> set[str]:
+    return {
+        token
+        for raw_token in _normalized_tokens(value)
+        if (token := _canonical_legal_token(raw_token)) in PROTECTED_FOREIGN_LEGAL_FORMS
+    }
+
+
+def _us_legal_forms(value: str) -> set[str]:
+    return {token for token in _normalized_tokens(value) if token in US_LEGAL_SUFFIXES}
+
+
+def _has_protected_foreign_legal_form(value: str) -> bool:
+    return bool(_protected_foreign_legal_forms(value))
+
+
+def deterministic_reject_reason(pair: CandidatePair) -> str | None:
+    if pair.left.normalized == pair.right.normalized:
+        return None
+    left_foreign = _protected_foreign_legal_forms(pair.left.raw_firm)
+    right_foreign = _protected_foreign_legal_forms(pair.right.raw_firm)
+    left_us = _us_legal_forms(pair.left.raw_firm)
+    right_us = _us_legal_forms(pair.right.raw_firm)
+    if (left_foreign and right_us) or (right_foreign and left_us):
+        return "protected foreign legal form differs from US legal form"
+    if left_foreign and right_foreign and left_foreign != right_foreign:
+        return "different protected foreign legal forms"
+    return None
+
+
+def normalize_name(value: str) -> str:
+    """Normalize a firm/brand-like name without asserting identity."""
     tokens: list[str] = []
-    for token in text.split():
+    for token in _normalized_tokens(value):
         token = TOKEN_REWRITES.get(token, token)
-        if token in LEGAL_SUFFIXES or token in STOPWORDS:
+        token = _canonical_legal_token(token)
+        if token in PROTECTED_FOREIGN_LEGAL_FORMS:
+            tokens.append(token)
+            continue
+        if token in US_LEGAL_SUFFIXES or token in STOPWORDS:
             continue
         tokens.append(token)
     return " ".join(tokens)
@@ -518,6 +578,13 @@ def build_candidate_pairs(
 
 def deterministic_reason(pair: CandidatePair, *, auto_merge_threshold: float,
                          token_threshold: float) -> str | None:
+    if pair.left.normalized == pair.right.normalized:
+        return "exact normalized name"
+    if (
+        _has_protected_foreign_legal_form(pair.left.raw_firm)
+        or _has_protected_foreign_legal_form(pair.right.raw_firm)
+    ):
+        return None
     exact_token_key = pair.left.token_key == pair.right.token_key
     if exact_token_key and pair.token_jaccard == 1.0:
         return "exact normalized token set"
@@ -588,6 +655,14 @@ def classify_pairs(
             pair.decision_reason = reason
             pair.confidence = max(pair.score, auto_merge_threshold)
             accepted.append(pair)
+            continue
+
+        reason = deterministic_reject_reason(pair)
+        if reason is not None:
+            pair.decision = DECISION_REJECTED
+            pair.decision_reason = reason
+            pair.confidence = pair.score
+            rejected.append(pair)
             continue
 
         if pair.score < review_threshold:
@@ -1143,9 +1218,10 @@ def run_calibration(conn: psycopg.Connection, args: argparse.Namespace) -> int:
         )
     precision = tp / (tp + fp) if tp + fp else 0.0
     recall = tp / (tp + fn) if tp + fn else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
     print("\nCalibration summary (uncertain pairs excluded from metrics):")
     print(f"  TP={tp} FP={fp} FN={fn} TN={tn} uncertain={uncertain}")
-    print(f"  precision={precision:.3f} recall={recall:.3f}")
+    print(f"  precision={precision:.3f} recall={recall:.3f} f1={f1:.3f}")
     return 0
 
 
