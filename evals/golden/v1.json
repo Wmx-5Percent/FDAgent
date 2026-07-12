@@ -104,21 +104,43 @@
       }
     },
     {
-      "id": "fuzzy-sterility-count",
+      "id": "taxonomy-sterility-exact-count",
       "kind": "ask",
       "question": "How many sterility recalls?",
       "assert": {
-        "route": "semantic",
+        "route": "sql",
         "intents": ["count_total"],
-        "data_kinds": ["semantic_count"],
+        "data_kinds": ["scalar"],
         "no_ilike": true,
-        "semantic_query_contains_any": ["sterility", "sterile"],
-        "semantic_query_not_contains_any": ["problem"],
-        "requires_estimate": true,
-        "min_estimated_count": 1,
-        "min_verified_count": 1,
-        "requires_confidence": true,
-        "requires_evidence": true
+        "value_equals": 6308
+      }
+    },
+    {
+      "id": "taxonomy-reason-breakdown",
+      "kind": "ask",
+      "question": "What are the most common recall reason categories?",
+      "assert": {
+        "route": "sql",
+        "intents": ["count_by_taxonomy"],
+        "data_kinds": ["distribution"],
+        "no_ilike": true,
+        "top_items": [
+          {"value": "sterility_assurance", "count": 6308}
+        ]
+      }
+    },
+    {
+      "id": "taxonomy-sterility-by-firm",
+      "kind": "ask",
+      "question": "Which firms had the most sterility recalls?",
+      "assert": {
+        "route": "sql",
+        "intents": ["count_by"],
+        "data_kinds": ["distribution"],
+        "no_ilike": true,
+        "top_items": [
+          {"value": "The Compounding Pharmacy of America", "count": 383}
+        ]
       }
     },
     {

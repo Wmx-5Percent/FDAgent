@@ -198,6 +198,15 @@ def serialize_answer(ans: Answer) -> dict[str, Any]:
                 for g in ans.result
             ],
         }
+    elif spec is not None and spec.intent is Intent.count_by_taxonomy:
+        payload["data"] = {
+            "kind": "distribution",
+            "dimension": "recall_reason_category",
+            "items": [
+                {"value": _json_safe(g.value), "count": g.count, "evidence": list(g.evidence)}
+                for g in ans.result
+            ],
+        }
     elif spec is not None and spec.intent is Intent.trend:
         payload["data"] = {
             "kind": "series",

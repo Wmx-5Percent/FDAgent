@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-07-11T02:36Z · 75 files · 2 missing description
+> Last generated: 2026-07-12T15:56Z · 72 files · 2 missing description
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -21,7 +21,6 @@
 - [`README.md`](README.md) — FDAgent — openFDA Drug-Recall Intelligence Agent — Ask natural-language questions about U.S. **FDA drug-recall enforcement reports** and get
 - [`requirements-serve.txt`](requirements-serve.txt) — Lean dependency set for the Docker serving image (Path 1: the /ask API only).
 - [`requirements.txt`](requirements.txt) — Phase 1+ pipeline dependencies.
-- [`skills-lock.json`](skills-lock.json) — {
 - [`频率查询系统设计-过滤检索校验.md`](频率查询系统设计-过滤检索校验.md) — 频率/聚合类查询系统设计（过滤 → 检索 → 校验） — 配套 [PLAN.md](PLAN.md)。本文专门解决一类高频需求：
 
 ## .github/
@@ -51,15 +50,12 @@
 - [`evals/golden/v1.json`](evals/golden/v1.json) — {"description": "FDAgent v1 golden eval set for /ask routing and retrieval recall@k.",
 
 ## scripts/
-- [`scripts/auto_review.py`](scripts/auto_review.py) — Autonomous, READ-ONLY reviewer for one Wave-1 feature branch.
-  - symbols: `ReviewFinding`, `ReviewVerdict`, `run_git`, `scope_check`, `db_integrity_check`, `llm_judgment`, `render`, `maybe_post_pr`, `main`
 - [`scripts/gen_index.py`](scripts/gen_index.py) — Generate PROJECT_INDEX.md — a reliable, auto-derived map of the repository.
   - symbols: `repo_root`, `list_files`, `read_text`, `describe_python`, `describe_markdown`, `describe_html`, `describe_generic`, `describe`, `group_key`, `render`, `strip_volatile`, `main`
 - [`scripts/hooks/install.sh`](scripts/hooks/install.sh) — Install the version-controlled git hooks into .git/hooks.
 - [`scripts/hooks/pre-commit`](scripts/hooks/pre-commit) — Pre-commit hook: block the commit if PROJECT_INDEX.md is stale.
 - [`scripts/run_eval.py`](scripts/run_eval.py) — Run local golden evals for /ask routing and retrieval recall@k.
   - symbols: `EvalResult`, `EvalFailure`, `parse_args`, `main`
-- [`scripts/watch_and_review.sh`](scripts/watch_and_review.sh) — Wave-1 autonomous review driver.
 
 ## sql/
 - [`sql/001_parse_drug_enforcement.sql`](sql/001_parse_drug_enforcement.sql) — Parse drug_enforcement.raw (JSONB) into typed, indexed columns.
@@ -106,7 +102,7 @@
 - [`src/llm.py`](src/llm.py) — OpenAI-compatible chat and embedding provider gateway for serving paths.
   - symbols: `ProviderError`, `ProviderConfigError`, `ProviderMissingKeyError`, `ProviderUnsupportedConfigError`, `ProviderAuthError`, `ProviderQuotaError`, `ProviderRateLimitError`, `ProviderConnectionError`, `ProviderCapabilityError`, `StructuredOutputError`, `ChatConfig`, `EmbeddingConfig`
 - [`src/nl_query.py`](src/nl_query.py) — Natural-language front-end for the deterministic analytics engine.
-  - symbols: `Intent`, `Op`, `FilterSpec`, `QuerySpec`, `Answer`, `build_schema_context`, `generate_spec`, `refine_spec`, `run_spec`, `summarize`, `NLEngine`, `ask`
+  - symbols: `Intent`, `Op`, `FilterSpec`, `QuerySpec`, `Answer`, `build_schema_context`, `load_taxonomy_nodes`, `build_taxonomy_context`, `generate_spec`, `refine_spec`, `run_spec`, `summarize`
 - [`src/observability.py`](src/observability.py) — Postgres-backed query logging for the /ask API.
   - symbols: `QueryLogEntry`, `QueryLogger`, `response_metadata`
 - [`src/retrieval.py`](src/retrieval.py) — Hybrid retrieval over the `embeddings` table — Path 2 / slice 2.2.

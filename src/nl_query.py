@@ -40,6 +40,8 @@ MODEL = llm.chat_config().model
 LOW_CARD = ["classification", "status", "product_type", "voluntary_mandated",
             "initial_firm_notification", "country", "state"]
 
+TAXONOMY_VERSION = "v1"  # recall-reason taxonomy version whose labels back exact category counts
+
 
 # --------------------------------------------------------------------------- #
 # Constrained query intent the LLM is allowed to produce
@@ -47,6 +49,7 @@ LOW_CARD = ["classification", "status", "product_type", "voluntary_mandated",
 class Intent(str, Enum):
     count_total = "count_total"   # a single number
     count_by = "count_by"         # distribution across a dimension
+    count_by_taxonomy = "count_by_taxonomy"  # distribution across recall-reason taxonomy categories
     trend = "trend"               # counts over time
     sample = "sample"             # a few example rows
 
@@ -68,6 +71,7 @@ class QuerySpec(BaseModel):
     semantic_k: Optional[int] = Field(default=None, ge=1, le=120)  # validation sample size for semantic counts
     filters: list[FilterSpec] = Field(default_factory=list)
     group_by: Optional[str] = None      # count_by: a dimension column
+    taxonomy_node_id: Optional[str] = None  # exact recall-reason category filter (recall_label)
     grain: Optional[str] = None         # trend: year/quarter/month/week/day
     date_column: Optional[str] = None   # trend: a date column
     limit: int = 20
@@ -87,7 +91,14 @@ SYSTEM = """You convert a question about U.S. FDA drug recall enforcement report
 Rules:
 - Use ONLY columns and values from the SCHEMA below. Never invent a column or a value.
 - Choose intent: count_total (one number), count_by (distribution across a dimension -> set group_by),
+  count_by_taxonomy (distribution across recall-reason categories from the TAXONOMY list),
   trend (counts over time -> set grain and date_column), sample (a few example rows).
+- taxonomy_node_id: when the question is about a recall-REASON concept matching one of the TAXONOMY
+  categories listed below, set taxonomy_node_id to that node_id for an EXACT count from labeled data
+  (PREFERRED over semantic_query for recall-reason topics). Use with intent=count_total ("how many
+  sterility recalls" -> taxonomy_node_id=sterility_assurance) or intent=count_by + group_by ("sterility
+  recalls by firm"). For "most common recall reasons / reason distribution", use intent=count_by_taxonomy
+  (no node_id). When you set taxonomy_node_id or use count_by_taxonomy, do NOT set semantic_query.
 - semantic_query: when the question asks about a fuzzy CONCEPT/topic in free text (e.g.
   "sterility problems", "cancer-causing impurity", "pills that are too strong", "glass fragments",
   or the same idea in another language such as "药效太强" or "细菌感染"), put the CORE concept here
@@ -138,15 +149,50 @@ def build_schema_context(a: RecallAnalytics) -> str:
     return "\n".join(lines)
 
 
+def load_taxonomy_nodes(a: RecallAnalytics, version: str = TAXONOMY_VERSION) -> list[tuple[str, str, str, int]]:
+    """Active taxonomy categories that actually carry labels in recall_label (so an exact
+    count is always meaningful). Returns (node_id, label, definition, level)."""
+    with a.conn.cursor() as cur:
+        cur.execute(
+            "SELECT t.node_id, t.label, t.definition, t.level FROM taxonomy t "
+            "WHERE t.version = %s AND t.status = 'active' AND EXISTS ("
+            "  SELECT 1 FROM recall_label rl WHERE rl.version = t.version AND rl.node_id = t.node_id) "
+            "ORDER BY t.level, t.node_id",
+            [version],
+        )
+        return [(r[0], r[1], r[2] or "", r[3]) for r in cur.fetchall()]
+
+
+def build_taxonomy_context(nodes: list[tuple[str, str, str, int]]) -> str:
+    """Prompt block listing recall-reason categories the LLM may target for exact counts."""
+    if not nodes:
+        return ""
+    lines = ["Recall-reason categories (set taxonomy_node_id to a node_id below for EXACT counts):"]
+    for node_id, label, definition, _level in nodes:
+        d = (definition[:100] + "…") if len(definition) > 100 else definition
+        lines.append(f"- {node_id} — {label}: {d}")
+    return "\n".join(lines)
+
+
+def _valid_taxonomy_ids(a: RecallAnalytics, version: str = TAXONOMY_VERSION) -> set[str]:
+    """node_ids actually present in recall_label for a version (the only ids with exact counts)."""
+    with a.conn.cursor() as cur:
+        cur.execute("SELECT DISTINCT node_id FROM recall_label WHERE version = %s", [version])
+        return {r[0] for r in cur.fetchall()}
+
+
 # --------------------------------------------------------------------------- #
 # LLM call + validation + execution
 # --------------------------------------------------------------------------- #
 def generate_spec(client: Any, config: llm.ChatConfig, question: str,
-                  schema_ctx: str) -> QuerySpec:
+                  schema_ctx: str, taxonomy_ctx: str = "") -> QuerySpec:
+    system = f"{SYSTEM}\n\nSCHEMA:\n{schema_ctx}"
+    if taxonomy_ctx:
+        system += f"\n\nTAXONOMY:\n{taxonomy_ctx}"
     spec = llm.structured_completion(
         client,
         config,
-        [{"role": "system", "content": f"{SYSTEM}\n\nSCHEMA:\n{schema_ctx}"},
+        [{"role": "system", "content": system},
          {"role": "user", "content": question}],
         QuerySpec,
         temperature=0,
@@ -160,6 +206,14 @@ def refine_spec(spec: QuerySpec) -> QuerySpec:
     The LLM judges intent and emits the canonical semantic_query plus keyword aliases; here we
     only normalize whitespace and de-duplicate aliases.
     """
+    # Exact taxonomy path (category filter or category distribution) is deterministic and wins
+    # over semantic estimation -- never mix it with a semantic_query.
+    if spec.taxonomy_node_id is not None:
+        spec.taxonomy_node_id = spec.taxonomy_node_id.strip() or None
+    if spec.taxonomy_node_id or spec.intent is Intent.count_by_taxonomy:
+        spec.semantic_query = None
+        spec.semantic_aliases = []
+        return spec
     if spec.semantic_query is not None:
         spec.semantic_query = spec.semantic_query.strip() or None
     if not spec.semantic_query:
@@ -352,6 +406,22 @@ def run_spec(
     embedding_error: BaseException | None = None,
 ) -> Any:
     filters = _to_filters(spec)
+    if spec.intent is Intent.count_by_taxonomy:  # exact distribution across recall-reason categories
+        return a.count_by_taxonomy(filters, limit=spec.limit or 20, with_evidence=True)
+    if spec.taxonomy_node_id:  # exact counts filtered to one recall-reason category
+        valid = _valid_taxonomy_ids(a)
+        if spec.taxonomy_node_id not in valid:
+            raise ValueError(
+                f"unknown taxonomy_node_id {spec.taxonomy_node_id!r}; valid ids: {sorted(valid)}")
+        if spec.intent is Intent.count_total:
+            return a.count_total(filters, taxonomy_node_id=spec.taxonomy_node_id)
+        if spec.intent is Intent.count_by:
+            if not spec.group_by or spec.group_by not in CATALOG:
+                raise ValueError("count_by needs a valid group_by dimension")
+            return a.count_by(
+                spec.group_by, filters, limit=spec.limit or 20,
+                with_evidence=True, taxonomy_node_id=spec.taxonomy_node_id)
+        raise ValueError(f"taxonomy_node_id does not support intent {spec.intent.value!r}")
     if spec.semantic_query and spec.intent is Intent.sample:  # preserve existing semantic retrieval
         return retrieval.search(
             a.conn,
@@ -429,10 +499,18 @@ def summarize(spec: QuerySpec, result: Any) -> str:
             f"  [{h.recall_number}] sim={h.similarity:.2f}  {h.recalling_firm or '-'}: "
             f"{(h.content or '')[:70]}" for h in result)
         return f"{head}\n{body}"
+    if spec.intent is Intent.count_by_taxonomy:
+        head = f"Recalls by recall-reason category (top {min(len(result), spec.limit or 20)}):"
+        body = "\n".join(f"  {g.value}: {g.count:,}   e.g. {', '.join(g.evidence)}"
+                         for g in result[:10])
+        return f"{head}\n{body}"
     if spec.intent is Intent.count_total:
+        if spec.taxonomy_node_id:
+            return f"Total '{spec.taxonomy_node_id}' recalls: {result:,}"
         return f"Total matching recalls: {result:,}"
     if spec.intent is Intent.count_by:
-        head = f"Recalls by {spec.group_by} (top {min(len(result), spec.limit or 20)}):"
+        cat = f" (category '{spec.taxonomy_node_id}')" if spec.taxonomy_node_id else ""
+        head = f"Recalls by {spec.group_by}{cat} (top {min(len(result), spec.limit or 20)}):"
         body = "\n".join(f"  {g.value}: {g.count:,}   e.g. {', '.join(g.evidence)}"
                          for g in result[:10])
         return f"{head}\n{body}"
@@ -479,6 +557,7 @@ class NLEngine:
             self.embedding_error = exc
         with RecallAnalytics(dsn) as a:
             self.schema_ctx = build_schema_context(a)  # cached for the engine's lifetime
+            self.taxonomy_ctx = build_taxonomy_context(load_taxonomy_nodes(a))
 
     def provider_status(self) -> dict[str, Any]:
         status = llm.provider_status(self.chat_config, self.embed_config, self.title_config)
@@ -512,7 +591,7 @@ class NLEngine:
                 control=control,
                 metadata={"control_route": control.route, "control_reason": control.reason},
             )
-        spec = generate_spec(self.chat_client, self.chat_config, question, self.schema_ctx)
+        spec = generate_spec(self.chat_client, self.chat_config, question, self.schema_ctx, self.taxonomy_ctx)
         with RecallAnalytics(self.dsn) as a:
             try:
                 result = run_spec(
@@ -541,6 +620,7 @@ class NLEngine:
                     self.chat_config,
                     f"{question}\n\n(Your previous QuerySpec was invalid: {exc}. Return a corrected one.)",
                     self.schema_ctx,
+                    self.taxonomy_ctx,
                 )
                 result = run_spec(
                     a,
