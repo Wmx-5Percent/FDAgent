@@ -26,6 +26,8 @@ from psycopg import sql
 
 DEFAULT_DSN = os.environ.get("DATABASE_URL", "postgresql://localhost:5432/fda")
 TABLE = "drug_enforcement"
+LABEL_TABLE = "recall_label"          # taxonomy sidecar: one row per (record, version, node_id, labeler)
+DEFAULT_TAXONOMY_VERSION = "v1"
 
 
 class Kind(str, Enum):
@@ -116,6 +118,34 @@ def _build_where(filters: Sequence[Filter]) -> tuple[sql.Composable, list[Any]]:
     return sql.SQL(" WHERE ") + sql.SQL(" AND ").join(conds), params
 
 
+def _taxonomy_condition(node_id: str, version: str) -> tuple[sql.Composable, list[Any]]:
+    """WHERE fragment restricting drug_enforcement to rows carrying a given taxonomy label
+    (version, node_id) in the recall_label sidecar. EXISTS avoids fanning out the base table
+    across the one-to-many label join."""
+    cond = sql.SQL(
+        "EXISTS (SELECT 1 FROM {lt} rl WHERE rl.record_id = {tbl}.id "
+        "AND rl.version = %s AND rl.node_id = %s)"
+    ).format(lt=sql.Identifier(LABEL_TABLE), tbl=sql.Identifier(TABLE))
+    return cond, [version, node_id]
+
+
+def _build_where_ex(
+    filters: Sequence[Filter],
+    *,
+    taxonomy_node_id: str | None = None,
+    taxonomy_version: str = DEFAULT_TAXONOMY_VERSION,
+) -> tuple[sql.Composable, list[Any]]:
+    """``_build_where`` plus an optional taxonomy-label membership constraint."""
+    conds, params = _conditions(filters)
+    if taxonomy_node_id:
+        cond, tparams = _taxonomy_condition(taxonomy_node_id, taxonomy_version)
+        conds.append(cond)
+        params += tparams
+    if not conds:
+        return sql.SQL(""), params
+    return sql.SQL(" WHERE ") + sql.SQL(" AND ").join(conds), params
+
+
 class RecallAnalytics:
     """Read-only aggregation queries over the drug_enforcement table."""
 
@@ -145,8 +175,15 @@ class RecallAnalytics:
             return row[0] if row else None
 
     # -- public API ---------------------------------------------------------
-    def count_total(self, filters: Sequence[Filter] = ()) -> int:
-        where, params = _build_where(filters)
+    def count_total(
+        self,
+        filters: Sequence[Filter] = (),
+        *,
+        taxonomy_node_id: str | None = None,
+        taxonomy_version: str = DEFAULT_TAXONOMY_VERSION,
+    ) -> int:
+        where, params = _build_where_ex(
+            filters, taxonomy_node_id=taxonomy_node_id, taxonomy_version=taxonomy_version)
         q = sql.SQL("SELECT count(*) FROM {tbl}{where}").format(
             tbl=sql.Identifier(TABLE), where=where)
         return int(self._scalar(q, params) or 0)
@@ -159,12 +196,16 @@ class RecallAnalytics:
         limit: int = 50,
         with_evidence: bool = False,
         evidence_n: int = 3,
+        taxonomy_node_id: str | None = None,
+        taxonomy_version: str = DEFAULT_TAXONOMY_VERSION,
     ) -> list[Group]:
         """GROUP BY a whitelisted column; counts descending. Optionally attach a
-        few example recall_numbers per group as evidence."""
+        few example recall_numbers per group as evidence. An optional ``taxonomy_node_id``
+        restricts to records carrying that recall_label taxonomy label (exact category counts)."""
         if dimension not in CATALOG:
             raise ValueError(f"unknown dimension: {dimension!r}")
-        where, wparams = _build_where(filters)
+        where, wparams = _build_where_ex(
+            filters, taxonomy_node_id=taxonomy_node_id, taxonomy_version=taxonomy_version)
         dim, tbl = sql.Identifier(dimension), sql.Identifier(TABLE)
         if with_evidence:
             q = sql.SQL(
@@ -179,6 +220,51 @@ class RecallAnalytics:
                 "FROM {tbl}{where} GROUP BY {dim} ORDER BY n DESC LIMIT %s"
             ).format(dim=dim, tbl=tbl, where=where)
             params = [*wparams, limit]
+        return [
+            Group(value=r[0], count=r[1],
+                  evidence=list(r[2]) if with_evidence and r[2] else [])
+            for r in self._rows(q, params)
+        ]
+
+    def count_by_taxonomy(
+        self,
+        filters: Sequence[Filter] = (),
+        *,
+        version: str = DEFAULT_TAXONOMY_VERSION,
+        level: int | None = None,
+        limit: int = 50,
+        with_evidence: bool = False,
+        evidence_n: int = 3,
+    ) -> list[Group]:
+        """Distribution of recalls across taxonomy categories (the recall_label sidecar).
+
+        Joins drug_enforcement to recall_label and groups by node_id, counting DISTINCT records
+        per category (a record may carry several labels). Base ``filters`` (e.g. classification)
+        still apply to drug_enforcement; ``level`` optionally restricts to a taxonomy depth.
+        Returns Group(value=node_id, count, evidence)."""
+        tbl, lt = sql.Identifier(TABLE), sql.Identifier(LABEL_TABLE)
+        base_conds, base_params = _conditions(filters)
+        conds: list[sql.Composable] = [sql.SQL("rl.version = %s")]
+        params_pre: list[Any] = [version]
+        if level is not None:
+            conds.append(sql.SQL("rl.level = %s"))
+            params_pre.append(level)
+        conds += base_conds
+        where = sql.SQL(" WHERE ") + sql.SQL(" AND ").join(conds)
+        join = sql.SQL("{tbl} JOIN {lt} rl ON rl.record_id = {tbl}.id").format(tbl=tbl, lt=lt)
+        if with_evidence:
+            q = sql.SQL(
+                "SELECT rl.node_id AS value, count(DISTINCT {tbl}.id) AS n, "
+                "(array_agg({tbl}.recall_number ORDER BY {tbl}.recall_initiation_date DESC NULLS LAST))[1:%s] AS evidence "
+                "FROM {join}{where} GROUP BY rl.node_id ORDER BY n DESC LIMIT %s"
+            ).format(tbl=tbl, join=join, where=where)
+            params: list[Any] = [evidence_n, *params_pre, *base_params, limit]
+        else:
+            q = sql.SQL(
+                "SELECT rl.node_id AS value, count(DISTINCT {tbl}.id) AS n "
+                "FROM {join}{where} GROUP BY rl.node_id ORDER BY n DESC LIMIT %s"
+            ).format(tbl=tbl, join=join, where=where)
+            params = [*params_pre, *base_params, limit]
         return [
             Group(value=r[0], count=r[1],
                   evidence=list(r[2]) if with_evidence and r[2] else [])
