@@ -27,6 +27,10 @@ data/processed/
 # 个人学习笔记（本地回顾资料，不入库）
 learning-notes/
 
+# 临时交接/会话笔记：有价值内容迁移到 PROGRESS.md / PLAN.md / docs/
+NOTES-*.md
+SESSION-*.md
+
 # 向量库本地文件
 .chroma/
 chroma/

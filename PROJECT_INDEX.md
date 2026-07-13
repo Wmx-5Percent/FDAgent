@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-07-12T15:56Z · 72 files · 2 missing description
+> Last generated: 2026-07-13T03:11Z · 70 files · 2 missing description
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -13,8 +13,6 @@
 - [`AGENTS.md`](AGENTS.md) — AGENTS.md — Agent Operating Guide — **Read this first.** It is the always-on entry point of a *progressive-disclosure*
 - [`CONTEXT.md`](CONTEXT.md) — FDAgent 领域语言（CONTEXT） — 本文件是 FDAgent 的**术语表**——只定义领域词汇的规范叫法，不含实现细节。
 - [`Dockerfile`](Dockerfile) — Container image for the FDAgent serving layer (Path 1: FastAPI /ask + static UI).
-- [`NOTES-firm.md`](NOTES-firm.md) — Firm deterministic auto-merge notes — - Updated `src/firm/resolve.py` so exact normalized-name pairs auto-accept deterministically with no LLM/web verification.
-- [`NOTES-taxonomy.md`](NOTES-taxonomy.md) — Taxonomy induction notes — draft v1 dry run — Issue #20 dry-run deliverable. No `--apply` command was run; no `taxonomy` rows were frozen/seeded and no `recall_label` rows were written.
 - [`PLAN.md`](PLAN.md) — FDAgent — openFDA 药品召回智能体 · 开发计划 (v3) — **数据集：openFDA `drug/enforcement`**（美国 FDA 药品召回执法报告，100% 公开、无 PII）。
 - [`PROGRESS.md`](PROGRESS.md) — Progress — fdaAgent — Live project state for fast session pickup. This is the **dynamic** doc; the static
 - [`PROJECT_INDEX.md`](PROJECT_INDEX.md) — Auto-generated repository map (this file).

@@ -88,11 +88,16 @@ single subagent's local next step; per-agent next steps belong in that PR's body
   without an auto-closing reference (for example it used only `Refs #N`, or merged through
   an intermediate branch), manually close the completed issue with `--reason completed`
   and a comment naming the PR. Do **not** close issues for Draft/unmerged PRs or unresolved
-  follow-up work.
+  follow-up work. After a worktree-backed task merges, also retire its local worktree with
+  `git worktree remove <path>` and `git worktree prune` after the safe-to-delete checks, so
+  closed branches do not leave stale directories under `~/Desktop/developer`.
 - **One-time vs scheduled**: DDL/table creation and first full back-fill are one-off; `fetch_openfda.py --since auto` is the scheduled incremental job.
 - **Sidecar freshness**: source FDA tables are immutable-ish facts; derived sidecars (`embeddings`, taxonomy labels, firm aliases) must be rerunnable after new ingest. For firm resolution, prefer incremental/idempotent updates with run ids and review logs over manual one-off merges.
 - **IP safety**: real company data is git-ignored and **never** committed. Only public-domain
   openFDA or synthetic data is allowed in git.
+- **Temporary handoff notes**: do not commit root-level `NOTES-*.md` or `SESSION-*.md`
+  scratch files. Migrate durable project state into `PROGRESS.md`, stable design into
+  `PLAN.md` / `docs/adr/` / `CONTEXT.md`, and personal learning into `learning-notes/`.
 - **Generated / rebuildable** (git-ignored): `.venv/`, `data/raw/`, `data/processed/`, vector-store files.
 - **Worktree handoff gotcha:** `.gitignore`'s `.venv/` pattern ignores a real directory, but
   **does not ignore a `.venv` symlink**. If `git status` shows `?? .venv` and `ls -ld .venv`
