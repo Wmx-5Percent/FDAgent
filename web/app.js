@@ -441,6 +441,8 @@
       renderRetrieval(data, card);
     } else if (kind === "semantic_count" || kind === "semantic_distribution") {
       renderSemanticCount(data, card);
+    } else if (kind === "taxonomy_explanation") {
+      renderTaxonomyExplanation(data, card);
     } else if (kind === "message" || kind === "clarification") {
       renderAgentMessage(data, card);
     } else {
@@ -486,6 +488,58 @@
         examples.appendChild(chip);
       }
       card.appendChild(examples);
+    }
+  }
+
+  function renderTaxonomyExplanation(data, card) {
+    const metaParts = [
+      data.label ? `Category: ${data.label}` : null,
+      data.node_id ? `node ${data.node_id}` : null,
+      data.source ? `source: ${data.source}` : null,
+    ].filter(Boolean);
+    if (metaParts.length) {
+      const meta = document.createElement("div");
+      meta.className = "muted";
+      meta.textContent = metaParts.join(" | ");
+      card.appendChild(meta);
+    }
+
+    if (data.definition) {
+      const definition = document.createElement("div");
+      definition.className = "muted";
+      definition.textContent = `Taxonomy definition: ${data.definition}`;
+      card.appendChild(definition);
+    }
+
+    const examples = Array.isArray(data.examples) ? data.examples : [];
+    if (!examples.length) return;
+
+    const label = document.createElement("div");
+    label.className = "muted";
+    label.textContent = "Example recall reasons:";
+    card.appendChild(label);
+
+    for (const item of examples.slice(0, 3)) {
+      const hit = document.createElement("div");
+      hit.className = "hit";
+
+      const top = document.createElement("div");
+      const badge = document.createElement("span");
+      badge.className = "badge";
+      badge.textContent = item.recall_number || "-";
+      top.appendChild(badge);
+
+      const meta = document.createElement("span");
+      meta.className = "hit-meta";
+      meta.textContent = ` ${item.classification || "-"}`;
+      top.appendChild(meta);
+
+      const content = document.createElement("div");
+      content.className = "hit-content";
+      content.textContent = item.reason_for_recall || "";
+
+      hit.append(top, content);
+      card.appendChild(hit);
     }
   }
 
