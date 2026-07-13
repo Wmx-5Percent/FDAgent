@@ -21,6 +21,7 @@ from datetime import date, datetime
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Optional
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
@@ -43,6 +44,8 @@ TITLE_FALLBACK_STOPWORDS = {
     "how", "in", "is", "many", "me", "of", "on", "show", "tell", "the", "there",
     "to", "was", "were", "what", "when", "which", "who", "with",
 }
+OPENFDA_DRUG_ENFORCEMENT_URL = "https://api.fda.gov/drug/enforcement.json"
+RECALL_NUMBER_RE = re.compile(r"^[A-Z]-\d{3,4}-\d{4}$")
 
 # Warmed at startup, reused across requests (see lifespan).
 _engine: Optional[NLEngine] = None
@@ -91,12 +94,56 @@ def _json_safe(v: Any) -> Any:
     return v
 
 
+def _normalized_recall_number(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    recall_number = value.strip().upper()
+    if not RECALL_NUMBER_RE.fullmatch(recall_number):
+        return None
+    return recall_number
+
+
+def recall_verification_url(value: Any) -> str | None:
+    """Official openFDA verification URL for a syntactically valid recall number."""
+    recall_number = _normalized_recall_number(value)
+    if recall_number is None:
+        return None
+    search = quote(f'recall_number:"{recall_number}"', safe="")
+    return f"{OPENFDA_DRUG_ENFORCEMENT_URL}?search={search}&limit=1"
+
+
+def _recall_link(value: Any) -> dict[str, str] | None:
+    url = recall_verification_url(value)
+    if url is None:
+        return None
+    return {
+        "recall_number": str(value).strip(),
+        "url": url,
+        "source": "openFDA drug enforcement",
+    }
+
+
+def _recall_links(values: list[Any]) -> list[dict[str, str]]:
+    return [link for value in values if (link := _recall_link(value)) is not None]
+
+
+def _attach_recall_url(item: dict[str, Any], recall_number: Any, *,
+                       key: str = "url") -> dict[str, Any]:
+    url = recall_verification_url(recall_number)
+    if url:
+        item[key] = url
+    return item
+
+
 def _serialize_group(g: Any) -> dict[str, Any]:
     item = {
         "value": _json_safe(g.value),
         "count": int(g.count),
         "evidence": list(g.evidence),
     }
+    evidence_links = _recall_links(item["evidence"])
+    if evidence_links:
+        item["evidence_links"] = evidence_links
     label = getattr(g, "label", None)
     if label:
         item["label"] = _json_safe(label)
@@ -170,11 +217,11 @@ def serialize_answer(ans: Answer) -> dict[str, Any]:
             "parent_label": node.parent_label,
             "explanation": ans.result.answer,
             "examples": [
-                {
+                _attach_recall_url({
                     "recall_number": item.get("recall_number"),
                     "classification": item.get("classification"),
                     "reason_for_recall": item.get("reason_for_recall"),
-                }
+                }, item.get("recall_number"))
                 for item in ans.result.examples
             ],
             "source": "taxonomy",
@@ -184,8 +231,9 @@ def serialize_answer(ans: Answer) -> dict[str, Any]:
     elif isinstance(ans.result, validation.SemanticCountResult):
         result = ans.result
         accepted = [item for item in result.validations if item.accepted]
-        evidence_items = [
-            {
+        evidence_items = []
+        for item in accepted:
+            evidence_items.append(_attach_recall_url({
                 "recall_number": item.hit.recall_number,
                 "field": item.hit.field,
                 "retrieval_mode": item.hit.retrieval_mode,
@@ -199,9 +247,7 @@ def serialize_answer(ans: Answer) -> dict[str, Any]:
                 "content": item.hit.content,
                 "recalling_firm": item.hit.recalling_firm,
                 "classification": item.hit.classification,
-            }
-            for item in accepted
-        ]
+            }, item.hit.recall_number))
         base_data: dict[str, Any] = {
             "query": result.query,
             "retrieval_mode": result.retrieval_mode,
@@ -220,6 +266,7 @@ def serialize_answer(ans: Answer) -> dict[str, Any]:
             "verified": f"{result.verified_count}/{result.validated_count}",
             "thresholds": result.thresholds,
             "evidence": list(result.evidence),
+            "evidence_links": _recall_links(list(result.evidence)),
             "evidence_items": evidence_items,
         }
         if result.group_by:
@@ -228,7 +275,7 @@ def serialize_answer(ans: Answer) -> dict[str, Any]:
                 "kind": "semantic_distribution",
                 "dimension": result.group_by,
                 "items": [
-                    {"value": _json_safe(g.value), "count": g.count, "evidence": list(g.evidence)}
+                    _serialize_group(g)
                     for g in result.groups
                 ],
             }
@@ -243,23 +290,27 @@ def serialize_answer(ans: Answer) -> dict[str, Any]:
             ans.result[0].embedding_fallback_reason
             if ans.result else ans.metadata.get("embedding_fallback_reason")
         )
+        items = []
+        for h in ans.result:
+            items.append(_attach_recall_url({
+                "recall_number": h.recall_number,
+                "field": h.field,
+                "retrieval_mode": h.retrieval_mode,
+                "score_kind": h.score_kind,
+                "similarity": round(h.similarity, 3),
+                "retrieval_score": round(h.retrieval_score, 3),
+                "rrf_score": round(h.rrf_score, 4),
+                "content": h.content,
+                "recalling_firm": h.recalling_firm,
+                "classification": h.classification,
+            }, h.recall_number))
         payload["data"] = {
             "kind": "retrieval",
             "query": spec.semantic_query,
             "retrieval_mode": retrieval_mode,
             "embedding_fallback_reason": fallback_reason,
             "degraded": bool(ans.metadata.get("degraded")),
-            "items": [
-                {"recall_number": h.recall_number, "field": h.field,
-                 "retrieval_mode": h.retrieval_mode,
-                 "score_kind": h.score_kind,
-                 "similarity": round(h.similarity, 3),
-                 "retrieval_score": round(h.retrieval_score, 3),
-                 "rrf_score": round(h.rrf_score, 4),
-                 "content": h.content,
-                 "recalling_firm": h.recalling_firm, "classification": h.classification}
-                for h in ans.result
-            ],
+            "items": items,
         }
     elif spec is not None and spec.intent is Intent.count_total:
         payload["data"] = {"kind": "scalar", "value": int(ans.result)}
@@ -288,9 +339,14 @@ def serialize_answer(ans: Answer) -> dict[str, Any]:
             "points": [{"period": _json_safe(p), "count": n} for p, n in ans.result],
         }
     elif spec is not None:  # sample
+        rows = []
+        for row in ans.result:
+            serialized = {k: _json_safe(v) for k, v in row.items()}
+            _attach_recall_url(serialized, row.get("recall_number"), key="recall_url")
+            rows.append(serialized)
         payload["data"] = {
             "kind": "rows",
-            "rows": [{k: _json_safe(v) for k, v in row.items()} for row in ans.result],
+            "rows": rows,
         }
     else:
         payload["data"] = {
