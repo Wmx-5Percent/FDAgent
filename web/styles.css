@@ -423,12 +423,27 @@ button:disabled {
 }
 
 .badge {
+  display: inline-block;
   padding: 4px 7px;
   border: 1px solid #1d3a52;
   border-radius: 6px;
   background: #0d2235;
   color: var(--accent);
   font: 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+a.badge {
+  text-decoration: none;
+}
+
+.evidence-link:hover,
+.evidence-link:focus-visible {
+  border-color: var(--accent);
+  background: #123251;
+  color: var(--fg);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  outline: none;
 }
 
 .bar-chart {

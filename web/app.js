@@ -3,6 +3,8 @@
   const STORE_KEY = "fdagent.chat.v1";
   const MAX_TITLE = 44;
   const SVG_NS = "http://www.w3.org/2000/svg";
+  const OPENFDA_DRUG_ENFORCEMENT_URL = "https://api.fda.gov/drug/enforcement.json";
+  const RECALL_NUMBER_PATTERN = /^[A-Z]-\d{3,4}-\d{4}$/;
   const TITLE_NEW = "new";
   const TITLE_PLACEHOLDER = "placeholder";
   const TITLE_AUTO = "auto";
@@ -461,6 +463,67 @@
     return card;
   }
 
+  function normalizedRecallNumber(value) {
+    const text = String(value ?? "").trim();
+    if (!text) return null;
+    const normalized = text.toUpperCase();
+    return RECALL_NUMBER_PATTERN.test(normalized) ? normalized : null;
+  }
+
+  function officialRecallUrl(recallNumber, candidateUrl) {
+    const normalized = normalizedRecallNumber(recallNumber);
+    if (!normalized) return null;
+    if (typeof candidateUrl === "string" && candidateUrl.trim()) {
+      try {
+        const url = new URL(candidateUrl);
+        if (
+          url.protocol === "https:" &&
+          url.hostname === "api.fda.gov" &&
+          url.pathname === "/drug/enforcement.json"
+        ) {
+          return url.toString();
+        }
+      } catch {
+        // Fall back to a locally constructed official openFDA URL.
+      }
+    }
+    return `${OPENFDA_DRUG_ENFORCEMENT_URL}?search=${encodeURIComponent(`recall_number:"${normalized}"`)}&limit=1`;
+  }
+
+  function recallValue(value) {
+    if (value && typeof value === "object") {
+      return value.recall_number ?? value.value ?? "";
+    }
+    return value;
+  }
+
+  function recallUrlValue(value) {
+    if (value && typeof value === "object") {
+      return value.url ?? value.recall_url ?? null;
+    }
+    return null;
+  }
+
+  function createRecallBadge(value, url) {
+    const display = String(recallValue(value) ?? "").trim() || "-";
+    const href = officialRecallUrl(display, url || recallUrlValue(value));
+    if (!href) {
+      const badge = document.createElement("span");
+      badge.className = "badge";
+      badge.textContent = display;
+      return badge;
+    }
+
+    const link = document.createElement("a");
+    link.className = "badge evidence-link";
+    link.href = href;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = display;
+    link.setAttribute("aria-label", `Verify FDA recall ${display} on openFDA`);
+    return link;
+  }
+
   function renderMultiSection(data, card) {
     const sections = Array.isArray(data.sections) ? data.sections : [];
     if (!sections.length) {
@@ -511,6 +574,17 @@
     value.className = "scalar";
     value.textContent = Number(data.value ?? 0).toLocaleString();
     card.appendChild(value);
+
+    const evidence = Array.isArray(data.evidence_links) && data.evidence_links.length
+      ? data.evidence_links
+      : Array.isArray(data.evidence) ? data.evidence : [];
+    if (evidence.length) {
+      const label = document.createElement("div");
+      label.className = "muted";
+      label.textContent = "Evidence recall numbers:";
+      card.appendChild(label);
+      card.appendChild(renderBadges(evidence.slice(0, 18)));
+    }
   }
 
   function renderAgentMessage(data, card) {
@@ -571,10 +645,7 @@
       hit.className = "hit";
 
       const top = document.createElement("div");
-      const badge = document.createElement("span");
-      badge.className = "badge";
-      badge.textContent = item.recall_number || "-";
-      top.appendChild(badge);
+      top.appendChild(createRecallBadge(item.recall_number, item.url));
 
       const meta = document.createElement("span");
       meta.className = "hit-meta";
@@ -616,7 +687,10 @@
       label.className = "muted";
       label.textContent = "Evidence recall numbers:";
       card.appendChild(label);
-      card.appendChild(renderBadges(data.evidence.slice(0, 18)));
+      const evidence = Array.isArray(data.evidence_links) && data.evidence_links.length
+        ? data.evidence_links
+        : data.evidence;
+      card.appendChild(renderBadges(evidence.slice(0, 18)));
     }
 
     const evidenceItems = Array.isArray(data.evidence_items) ? data.evidence_items.slice(0, 5) : [];
@@ -625,10 +699,7 @@
       hit.className = "hit";
 
       const top = document.createElement("div");
-      const badge = document.createElement("span");
-      badge.className = "badge";
-      badge.textContent = item.recall_number || "-";
-      top.appendChild(badge);
+      top.appendChild(createRecallBadge(item.recall_number, item.url));
 
       const hitMeta = document.createElement("span");
       hitMeta.className = "hit-meta";
@@ -694,7 +765,12 @@
     }
     card.appendChild(chart);
 
-    const evidence = items.flatMap((item) => Array.isArray(item.evidence) ? item.evidence : []);
+    const evidence = items.flatMap((item) => {
+      if (Array.isArray(item.evidence_links) && item.evidence_links.length) {
+        return item.evidence_links;
+      }
+      return Array.isArray(item.evidence) ? item.evidence : [];
+    });
     if (evidence.length) {
       const label = document.createElement("div");
       label.className = "muted";
@@ -787,7 +863,7 @@
       return;
     }
 
-    const columns = Object.keys(rows[0]);
+    const columns = Object.keys(rows[0]).filter((column) => column !== "recall_url");
     const wrap = document.createElement("div");
     wrap.className = "table-wrap";
     const table = document.createElement("table");
@@ -806,7 +882,11 @@
       const tr = document.createElement("tr");
       for (const column of columns) {
         const td = document.createElement("td");
-        td.textContent = stringifyCell(row[column]);
+        if (column === "recall_number") {
+          td.appendChild(createRecallBadge(row[column], row.recall_url));
+        } else {
+          td.textContent = stringifyCell(row[column]);
+        }
         tr.appendChild(td);
       }
       tbody.appendChild(tr);
@@ -829,10 +909,7 @@
       hit.className = "hit";
 
       const top = document.createElement("div");
-      const badge = document.createElement("span");
-      badge.className = "badge";
-      badge.textContent = item.recall_number || "-";
-      top.appendChild(badge);
+      top.appendChild(createRecallBadge(item.recall_number, item.url));
 
       const meta = document.createElement("span");
       meta.className = "hit-meta";
@@ -852,10 +929,7 @@
     const row = document.createElement("div");
     row.className = "badge-row";
     for (const value of values) {
-      const badge = document.createElement("span");
-      badge.className = "badge";
-      badge.textContent = value;
-      row.appendChild(badge);
+      row.appendChild(createRecallBadge(value));
     }
     return row;
   }
