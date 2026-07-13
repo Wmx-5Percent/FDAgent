@@ -31,6 +31,9 @@ learning-notes/
 NOTES-*.md
 SESSION-*.md
 
+# 本地 UI 参考抓取，不入库
+web/openaiWebPageSample.css
+
 # 向量库本地文件
 .chroma/
 chroma/
