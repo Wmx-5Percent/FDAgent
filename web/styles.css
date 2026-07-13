@@ -438,9 +438,9 @@ button:disabled {
 
 .bar-row {
   display: grid;
-  grid-template-columns: minmax(110px, 210px) minmax(100px, 1fr) auto;
+  grid-template-columns: minmax(180px, 0.9fr) minmax(120px, 1fr) max-content;
   gap: 10px;
-  align-items: center;
+  align-items: start;
 }
 
 .bar-label,
@@ -450,8 +450,15 @@ button:disabled {
 }
 
 .bar-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
+  min-width: 0;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+  white-space: normal;
+}
+
+.bar-value {
+  justify-self: end;
   white-space: nowrap;
 }
 
@@ -617,6 +624,10 @@ tr:last-child td {
   .bar-row {
     grid-template-columns: 1fr;
     gap: 5px;
+  }
+
+  .bar-value {
+    justify-self: start;
   }
 
   .bubble {
