@@ -82,6 +82,13 @@ single subagent's local next step; per-agent next steps belong in that PR's body
 ## Conventions
 
 - **Bilingual**: design docs are Chinese (`*.md`); code and code-comments are English.
+- **Issue closure after PR completion**: every feature/bug PR must have a tracking issue.
+  Before merge, put a GitHub closing keyword in the PR body (`Closes #N`, `Fixes #N`, or
+  `Resolves #N`) so merging into `main` auto-closes the issue. If a PR was already merged
+  without an auto-closing reference (for example it used only `Refs #N`, or merged through
+  an intermediate branch), manually close the completed issue with `--reason completed`
+  and a comment naming the PR. Do **not** close issues for Draft/unmerged PRs or unresolved
+  follow-up work.
 - **One-time vs scheduled**: DDL/table creation and first full back-fill are one-off; `fetch_openfda.py --since auto` is the scheduled incremental job.
 - **Sidecar freshness**: source FDA tables are immutable-ish facts; derived sidecars (`embeddings`, taxonomy labels, firm aliases) must be rerunnable after new ingest. For firm resolution, prefer incremental/idempotent updates with run ids and review logs over manual one-off merges.
 - **IP safety**: real company data is git-ignored and **never** committed. Only public-domain
