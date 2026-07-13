@@ -96,6 +96,34 @@ def response_metadata(response: Mapping[str, Any], *, model: str | None = None,
     if not isinstance(data, Mapping):
         return metadata
 
+    if data_kind == "multi_section":
+        sections = data.get("sections")
+        if isinstance(sections, list):
+            section_metadata: list[dict[str, Any]] = []
+            total = 0
+            for section in sections:
+                if not isinstance(section, Mapping):
+                    continue
+                items = section.get("items")
+                rows = section.get("rows")
+                result_count = 0
+                if isinstance(items, list):
+                    result_count = len(items)
+                elif isinstance(rows, list):
+                    result_count = len(rows)
+                total += result_count
+                section_metadata.append({
+                    "id": section.get("id"),
+                    "kind": section.get("kind"),
+                    "dimension": section.get("dimension"),
+                    "source": section.get("source"),
+                    "result_count": result_count,
+                })
+            metadata["section_count"] = len(section_metadata)
+            metadata["result_count"] = total
+            metadata["sections"] = section_metadata
+        return metadata
+
     count_fields = {
         "retrieval": "items",
         "distribution": "items",

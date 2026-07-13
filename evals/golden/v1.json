@@ -125,7 +125,40 @@
         "data_kinds": ["distribution"],
         "no_ilike": true,
         "top_items": [
-          {"value": "sterility_assurance", "count": 6308}
+          {"value": "Sterility assurance", "node_id": "sterility_assurance", "count": 6308}
+        ]
+      }
+    },
+    {
+      "id": "firm-aidapak-top-reasons-and-products",
+      "kind": "ask",
+      "question": "Aidapak Services, LLC 帮我看一下这家公司前十最多召回的原因是什么，以及他们旗下的哪些产品召回最多？\n\n请帮我把他们旗下前十最多召回的产品，以及前十最多召回的原因，分别列为两个表。",
+      "assert": {
+        "route": "sql",
+        "intents": ["multi_count_by"],
+        "data_kinds": ["multi_section"],
+        "no_ilike": true,
+        "section_count": 2,
+        "sections": [
+          {
+            "id": "top_recall_reason_categories",
+            "kind": "distribution",
+            "dimension": "recall_reason_category",
+            "source": "taxonomy",
+            "top_items": [
+              {"value": "Labeling error", "node_id": "labeling_error", "count": 538}
+            ]
+          },
+          {
+            "id": "top_recalled_products",
+            "kind": "distribution",
+            "dimension": "product_description",
+            "source": "drug_enforcement.product_description",
+            "min_items": 10,
+            "top_items": [
+              {"value_contains": "CILOSTAZOL Tablet, 100 mg", "count": 2}
+            ]
+          }
         ]
       }
     },

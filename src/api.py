@@ -31,7 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # allow `import 
 import llm  # noqa: E402
 import agent_control  # noqa: E402
 import validation  # noqa: E402
-from nl_query import Answer, Intent, NLEngine, TaxonomyExplanation  # noqa: E402
+from nl_query import Answer, Intent, MultiSectionResult, NLEngine, TaxonomyExplanation  # noqa: E402
 from observability import QueryLogEntry, QueryLogger, response_metadata  # noqa: E402
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
@@ -91,6 +91,45 @@ def _json_safe(v: Any) -> Any:
     return v
 
 
+def _serialize_group(g: Any) -> dict[str, Any]:
+    item = {
+        "value": _json_safe(g.value),
+        "count": int(g.count),
+        "evidence": list(g.evidence),
+    }
+    label = getattr(g, "label", None)
+    if label:
+        item["label"] = _json_safe(label)
+    metadata = getattr(g, "metadata", None)
+    if isinstance(metadata, dict):
+        for key, value in metadata.items():
+            if value is not None:
+                item[key] = _json_safe(value)
+    return item
+
+
+def _serialize_multi_section(result: MultiSectionResult) -> dict[str, Any]:
+    sections = []
+    for section in result.sections:
+        section_data: dict[str, Any] = {
+            "id": section.id,
+            "title": section.title,
+            "kind": section.data_kind,
+            "dimension": section.dimension,
+            "source": section.source,
+            "items": [_serialize_group(g) for g in section.result],
+            "spec": section.spec.model_dump(mode="json", exclude_none=True),
+        }
+        metadata = {k: v for k, v in section.metadata.items() if v is not None}
+        if metadata:
+            section_data["metadata"] = metadata
+        sections.append(section_data)
+    return {
+        "kind": "multi_section",
+        "sections": sections,
+    }
+
+
 def serialize_answer(ans: Answer) -> dict[str, Any]:
     """Shape an :class:`Answer` into a stable, chart-friendly response.
 
@@ -99,10 +138,22 @@ def serialize_answer(ans: Answer) -> dict[str, Any]:
     Evidence ``recall_number``s ride along so every figure is traceable back to source records.
     """
     spec = ans.spec
+    response_intent = ans.metadata.get("intent") or (
+        spec.intent.value if spec is not None else ans.metadata.get("control_route", "message")
+    )
+    spec_payload: dict[str, Any] = (
+        spec.model_dump(mode="json", exclude_none=True) if spec is not None else {}
+    )
+    if ans.metadata.get("sub_specs"):
+        spec_payload = {
+            "intent": response_intent,
+            "base_spec": spec_payload,
+            "sub_specs": ans.metadata["sub_specs"],
+        }
     payload: dict[str, Any] = {
         "question": ans.question,
-        "intent": spec.intent.value if spec is not None else ans.metadata.get("control_route", "message"),
-        "spec": spec.model_dump(exclude_none=True) if spec is not None else {},
+        "intent": response_intent,
+        "spec": spec_payload,
         "summary": ans.summary,
     }
     if isinstance(ans.result, agent_control.AgentControlResult):
@@ -128,6 +179,8 @@ def serialize_answer(ans: Answer) -> dict[str, Any]:
             ],
             "source": "taxonomy",
         }
+    elif isinstance(ans.result, MultiSectionResult):
+        payload["data"] = _serialize_multi_section(ans.result)
     elif isinstance(ans.result, validation.SemanticCountResult):
         result = ans.result
         accepted = [item for item in result.validations if item.accepted]
@@ -215,7 +268,7 @@ def serialize_answer(ans: Answer) -> dict[str, Any]:
             "kind": "distribution",
             "dimension": spec.group_by,
             "items": [
-                {"value": _json_safe(g.value), "count": g.count, "evidence": list(g.evidence)}
+                _serialize_group(g)
                 for g in ans.result
             ],
         }
@@ -224,7 +277,7 @@ def serialize_answer(ans: Answer) -> dict[str, Any]:
             "kind": "distribution",
             "dimension": "recall_reason_category",
             "items": [
-                {"value": _json_safe(g.value), "count": g.count, "evidence": list(g.evidence)}
+                _serialize_group(g)
                 for g in ans.result
             ],
         }
@@ -343,14 +396,31 @@ def _log_success(req: AskRequest, ans: Answer, payload: dict[str, Any],
     metadata = response_metadata(payload, model=model, provider=provider)
     data_kind = metadata.get("data_kind")
     control = ans.control.as_dict() if ans.control is not None else None
+    answer_intent = ans.metadata.get("intent") or (
+        ans.spec.intent.value if ans.spec is not None else None
+    )
     if control is not None and control["route"] != "in_domain":
         route = control["route"]
     elif ans.spec is not None and ans.spec.intent is Intent.explain_taxonomy_node:
         route = "explanation"
+    elif isinstance(ans.result, MultiSectionResult):
+        route = "sql"
     elif ans.spec is not None and ans.spec.semantic_query:
         route = "semantic"
     else:
         route = "sql"
+    decision: dict[str, Any] = {
+        "route": route,
+        "intent": answer_intent or route,
+        "data_kind": data_kind,
+        "filter_count": len(ans.spec.filters) if ans.spec is not None else 0,
+        "taxonomy_node_id": ans.spec.taxonomy_node_id if ans.spec is not None else None,
+        "control": control,
+    }
+    if ans.metadata.get("sections"):
+        decision["sections"] = ans.metadata["sections"]
+    if ans.metadata.get("sub_specs"):
+        decision["sub_specs"] = ans.metadata["sub_specs"]
     _require_query_logger().write(QueryLogEntry(
         route="/ask",
         question=req.question,
@@ -358,18 +428,11 @@ def _log_success(req: AskRequest, ans: Answer, payload: dict[str, Any],
         status_code=200,
         ok=True,
         latency_ms=_elapsed_ms(start),
-        query_intent=ans.spec.intent.value if ans.spec is not None else route,
+        query_intent=answer_intent or route,
         data_kind=str(data_kind) if data_kind else None,
         semantic_query=ans.spec.semantic_query if ans.spec is not None else None,
         query_spec=spec,
-        decision={
-            "route": route,
-            "intent": ans.spec.intent.value if ans.spec is not None else route,
-            "data_kind": data_kind,
-            "filter_count": len(ans.spec.filters) if ans.spec is not None else 0,
-            "taxonomy_node_id": ans.spec.taxonomy_node_id if ans.spec is not None else None,
-            "control": control,
-        },
+        decision=decision,
         response_metadata=metadata,
     ))
 
