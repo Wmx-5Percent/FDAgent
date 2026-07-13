@@ -15,6 +15,7 @@ Run a demo (needs configured LLM credentials in .env and the populated DB):
 from __future__ import annotations
 
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -50,6 +51,7 @@ class Intent(str, Enum):
     count_total = "count_total"   # a single number
     count_by = "count_by"         # distribution across a dimension
     count_by_taxonomy = "count_by_taxonomy"  # distribution across recall-reason taxonomy categories
+    explain_taxonomy_node = "explain_taxonomy_node"  # plain-language definition of a taxonomy category
     trend = "trend"               # counts over time
     sample = "sample"             # a few example rows
 
@@ -87,18 +89,49 @@ class Answer:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class TaxonomyNodeInfo:
+    version: str
+    node_id: str
+    parent_id: str | None
+    label: str
+    definition: str
+    examples: list[str]
+    level: int
+    status: str
+    parent_label: str | None = None
+    parent_definition: str | None = None
+
+
+@dataclass(frozen=True)
+class TaxonomyExplanation:
+    node: TaxonomyNodeInfo
+    answer: str
+    examples: list[dict[str, Any]] = field(default_factory=list)
+
+
 SYSTEM = """You convert a question about U.S. FDA drug recall enforcement reports into a QuerySpec.
 Rules:
 - Use ONLY columns and values from the SCHEMA below. Never invent a column or a value.
 - Choose intent: count_total (one number), count_by (distribution across a dimension -> set group_by),
   count_by_taxonomy (distribution across recall-reason categories from the TAXONOMY list),
+  explain_taxonomy_node (plain-language definition/explanation of one TAXONOMY category),
   trend (counts over time -> set grain and date_column), sample (a few example rows).
+- Use explain_taxonomy_node when the user asks what a recall-reason category or FDA recall term MEANS,
+  asks for a definition, or uses phrasing such as "what is", "what does X mean", "define X",
+  "这是什么意思", "这到底是什么", "在药物领域是什么意思". Set taxonomy_node_id to the matching
+  TAXONOMY node. Do NOT set group_by, filters, semantic_query, grain, or date_column for explanation
+  questions. Explanation questions should not become count_by just because the category has exact labels.
+- Explicit counting/chart wording overrides explanation: "how many", "count", "top N", "most common",
+  "distribution", "breakdown", "trend", "by firm/classification", "多少", "几个", "排名", "分布"
+  should use count_total/count_by/count_by_taxonomy/trend as appropriate, not explain_taxonomy_node.
 - taxonomy_node_id: when the question is about a recall-REASON concept matching one of the TAXONOMY
   categories listed below, set taxonomy_node_id to that node_id for an EXACT count from labeled data
   (PREFERRED over semantic_query for recall-reason topics). Use with intent=count_total ("how many
   sterility recalls" -> taxonomy_node_id=sterility_assurance) or intent=count_by + group_by ("sterility
-  recalls by firm"). For "most common recall reasons / reason distribution", use intent=count_by_taxonomy
-  (no node_id). When you set taxonomy_node_id or use count_by_taxonomy, do NOT set semantic_query.
+  recalls by firm"), or with intent=explain_taxonomy_node when the user asks what the category means.
+  For "most common recall reasons / reason distribution", use intent=count_by_taxonomy (no node_id).
+  When you set taxonomy_node_id or use count_by_taxonomy, do NOT set semantic_query.
 - semantic_query: when the question asks about a fuzzy CONCEPT/topic in free text (e.g.
   "sterility problems", "cancer-causing impurity", "pills that are too strong", "glass fragments",
   or the same idea in another language such as "药效太强" or "细菌感染"), put the CORE concept here
@@ -167,11 +200,88 @@ def build_taxonomy_context(nodes: list[tuple[str, str, str, int]]) -> str:
     """Prompt block listing recall-reason categories the LLM may target for exact counts."""
     if not nodes:
         return ""
-    lines = ["Recall-reason categories (set taxonomy_node_id to a node_id below for EXACT counts):"]
+    lines = [
+        "Recall-reason categories (set taxonomy_node_id to a node_id below for EXACT counts "
+        "or explain_taxonomy_node definitions):"
+    ]
     for node_id, label, definition, _level in nodes:
         d = (definition[:100] + "…") if len(definition) > 100 else definition
         lines.append(f"- {node_id} — {label}: {d}")
     return "\n".join(lines)
+
+
+_EXPLAIN_EN_RE = re.compile(
+    r"\b(what\s+(?:is|are|does)|what['’]?s|meaning\s+of|mean(?:s|ing)?|"
+    r"explain|definition\s+of|define)\b",
+    re.IGNORECASE,
+)
+_COUNT_OR_CHART_EN_RE = re.compile(
+    r"\b(how many|count|counts|number of|top\s*\d*|most common|distribution|"
+    r"breakdown|trend|over time|rank(?:ing)?|which firms?|which companies?|"
+    r"by\s+(?:firm|company|state|classification|class|year|month|category|reason))\b",
+    re.IGNORECASE,
+)
+_EXPLAIN_ZH_HINTS = ("是什么", "什么意思", "是什么意思", "这到底是什么", "解释", "定义", "概念", "意味着")
+_COUNT_OR_CHART_ZH_HINTS = (
+    "多少", "几个", "几次", "总数", "计数", "统计", "分布", "最多", "最常见",
+    "排名", "排行", "趋势", "按公司", "按厂商", "按州", "按分类", "哪几家", "哪些公司",
+)
+_TAXONOMY_EXPLANATION_ALIASES = {
+    "cgmp_deviation": (
+        "cgmp deviation",
+        "cgmp deviations",
+        "gmp deviation",
+        "gmp deviations",
+        "cgmp/gmp",
+        "c gmp",
+        "current good manufacturing practice",
+        "good manufacturing practice",
+    ),
+}
+
+
+def _ascii_phrase(text: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", text.casefold()))
+
+
+def _looks_like_explanation_question(question: str) -> bool:
+    return bool(_EXPLAIN_EN_RE.search(question)) or any(hint in question for hint in _EXPLAIN_ZH_HINTS)
+
+
+def _asks_for_count_or_chart(question: str) -> bool:
+    return bool(_COUNT_OR_CHART_EN_RE.search(question)) or any(
+        hint in question for hint in _COUNT_OR_CHART_ZH_HINTS
+    )
+
+
+def _taxonomy_aliases(node_id: str, label: str) -> list[str]:
+    aliases = [node_id.replace("_", " "), label]
+    aliases.extend(_TAXONOMY_EXPLANATION_ALIASES.get(node_id, ()))
+    for item in list(aliases):
+        norm = _ascii_phrase(item)
+        if norm and not norm.endswith("s"):
+            aliases.append(f"{item}s")
+    return aliases
+
+
+def _maybe_taxonomy_explanation_spec(
+    question: str,
+    nodes: list[tuple[str, str, str, int]],
+) -> QuerySpec | None:
+    if not _looks_like_explanation_question(question) or _asks_for_count_or_chart(question):
+        return None
+    q = _ascii_phrase(question)
+    best: tuple[int, str] | None = None
+    for node_id, label, _definition, _level in nodes:
+        for alias in _taxonomy_aliases(node_id, label):
+            normalized = _ascii_phrase(alias)
+            if len(normalized) >= 4 and normalized in q:
+                score = len(normalized)
+                if best is None or score > best[0]:
+                    best = (score, node_id)
+    if best is None:
+        return None
+    return QuerySpec(intent=Intent.explain_taxonomy_node, taxonomy_node_id=best[1])
 
 
 def _valid_taxonomy_ids(a: RecallAnalytics, version: str = TAXONOMY_VERSION) -> set[str]:
@@ -179,6 +289,148 @@ def _valid_taxonomy_ids(a: RecallAnalytics, version: str = TAXONOMY_VERSION) -> 
     with a.conn.cursor() as cur:
         cur.execute("SELECT DISTINCT node_id FROM recall_label WHERE version = %s", [version])
         return {r[0] for r in cur.fetchall()}
+
+
+def _load_taxonomy_node(
+    a: RecallAnalytics,
+    node_id: str,
+    version: str = TAXONOMY_VERSION,
+) -> TaxonomyNodeInfo:
+    with a.conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                t.version, t.node_id, t.parent_id, t.label, t.definition, t.examples,
+                t.level, t.status, p.label AS parent_label, p.definition AS parent_definition
+            FROM taxonomy t
+            LEFT JOIN taxonomy p
+                ON p.version = t.version AND p.node_id = t.parent_id
+            WHERE t.version = %s AND t.node_id = %s
+            """,
+            [version, node_id],
+        )
+        row = cur.fetchone()
+    if row is None:
+        raise ValueError(f"unknown taxonomy_node_id {node_id!r}")
+    return TaxonomyNodeInfo(
+        version=row[0],
+        node_id=row[1],
+        parent_id=row[2],
+        label=row[3],
+        definition=row[4],
+        examples=list(row[5] or []),
+        level=int(row[6]),
+        status=row[7],
+        parent_label=row[8],
+        parent_definition=row[9],
+    )
+
+
+def _taxonomy_recall_examples(
+    a: RecallAnalytics,
+    node_id: str,
+    *,
+    version: str = TAXONOMY_VERSION,
+    limit: int = 3,
+) -> list[dict[str, Any]]:
+    with a.conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT de.recall_number, de.classification, de.reason_for_recall
+            FROM drug_enforcement de
+            WHERE EXISTS (
+                SELECT 1 FROM recall_label rl
+                WHERE rl.record_id = de.id
+                  AND rl.version = %s
+                  AND rl.node_id = %s
+            )
+            ORDER BY de.recall_initiation_date DESC NULLS LAST, de.recall_number
+            LIMIT %s
+            """,
+            [version, node_id, limit],
+        )
+        rows = cur.fetchall()
+    return [
+        {
+            "recall_number": row[0],
+            "classification": row[1],
+            "reason_for_recall": row[2],
+        }
+        for row in rows
+    ]
+
+
+_EXPLAIN_TAXONOMY_SYSTEM = """You answer FDA drug-recall taxonomy explanation questions.
+Rules:
+- Answer in the same language as the user.
+- Ground the category meaning in the provided TAXONOMY NODE. Use example recall reasons only as examples.
+- You may expand standard regulatory abbreviations when relevant: cGMP means current Good Manufacturing
+  Practice; GMP means Good Manufacturing Practice.
+- Explain what the category usually signals in drug manufacturing/quality context.
+- Do not produce counts, rankings, distributions, chart language, or safety verdicts.
+- Keep the answer concise and user-friendly."""
+
+
+def _clip(text: str | None, max_chars: int = 260) -> str:
+    if not text:
+        return ""
+    text = " ".join(text.split())
+    return f"{text[:max_chars - 1].rstrip()}…" if len(text) > max_chars else text
+
+
+def _explain_taxonomy_node(
+    a: RecallAnalytics,
+    spec: QuerySpec,
+    question: str,
+    chat_client: Any,
+    chat_config: llm.ChatConfig,
+) -> TaxonomyExplanation:
+    if not spec.taxonomy_node_id:
+        raise ValueError("explain_taxonomy_node needs taxonomy_node_id")
+    valid = _valid_taxonomy_ids(a)
+    if spec.taxonomy_node_id not in valid:
+        raise ValueError(
+            f"unknown taxonomy_node_id {spec.taxonomy_node_id!r}; valid ids: {sorted(valid)}")
+    node = _load_taxonomy_node(a, spec.taxonomy_node_id)
+    examples = _taxonomy_recall_examples(a, node.node_id, limit=min(max(spec.limit or 3, 1), 5))
+    example_lines = "\n".join(
+        f"- {item['recall_number']} ({item['classification'] or 'unclassified'}): "
+        f"{_clip(item['reason_for_recall'])}"
+        for item in examples
+    ) or "- (No local example recall reasons found.)"
+    taxonomy_examples = ", ".join(node.examples) if node.examples else "(none listed)"
+    parent = (
+        f"{node.parent_id} — {node.parent_label}: {node.parent_definition}"
+        if node.parent_id and node.parent_label else "(none)"
+    )
+    prompt = f"""User question:
+{question}
+
+TAXONOMY NODE:
+- version: {node.version}
+- node_id: {node.node_id}
+- label: {node.label}
+- definition: {node.definition}
+- parent: {parent}
+- taxonomy examples: {taxonomy_examples}
+
+LOCAL EXAMPLE RECALL REASONS:
+{example_lines}
+
+Write the answer now."""
+    answer = llm.chat_completion_text(
+        chat_client,
+        chat_config,
+        [
+            {"role": "system", "content": _EXPLAIN_TAXONOMY_SYSTEM},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0,
+        max_tokens=700,
+    ).strip()
+    if not answer:
+        raise ValueError("empty taxonomy explanation")
+    return TaxonomyExplanation(node=node, answer=answer, examples=examples)
 
 
 # --------------------------------------------------------------------------- #
@@ -210,6 +462,14 @@ def refine_spec(spec: QuerySpec) -> QuerySpec:
     # over semantic estimation -- never mix it with a semantic_query.
     if spec.taxonomy_node_id is not None:
         spec.taxonomy_node_id = spec.taxonomy_node_id.strip() or None
+    if spec.intent is Intent.explain_taxonomy_node:
+        spec.semantic_query = None
+        spec.semantic_aliases = []
+        spec.filters = []
+        spec.group_by = None
+        spec.grain = None
+        spec.date_column = None
+        return spec
     if spec.taxonomy_node_id or spec.intent is Intent.count_by_taxonomy:
         spec.semantic_query = None
         spec.semantic_aliases = []
@@ -404,7 +664,10 @@ def run_spec(
     embed_client: Any | None,
     embed_config: llm.EmbeddingConfig,
     embedding_error: BaseException | None = None,
+    question: str = "",
 ) -> Any:
+    if spec.intent is Intent.explain_taxonomy_node:
+        return _explain_taxonomy_node(a, spec, question, chat_client, chat_config)
     filters = _to_filters(spec)
     if spec.intent is Intent.count_by_taxonomy:  # exact distribution across recall-reason categories
         return a.count_by_taxonomy(filters, limit=spec.limit or 20, with_evidence=True)
@@ -465,6 +728,8 @@ def run_spec(
 
 
 def summarize(spec: QuerySpec, result: Any) -> str:
+    if isinstance(result, TaxonomyExplanation):
+        return result.answer
     if isinstance(result, validation.SemanticCountResult):
         mode_note = (
             " using FTS-only fallback"
@@ -557,7 +822,8 @@ class NLEngine:
             self.embedding_error = exc
         with RecallAnalytics(dsn) as a:
             self.schema_ctx = build_schema_context(a)  # cached for the engine's lifetime
-            self.taxonomy_ctx = build_taxonomy_context(load_taxonomy_nodes(a))
+            self.taxonomy_nodes = load_taxonomy_nodes(a)
+            self.taxonomy_ctx = build_taxonomy_context(self.taxonomy_nodes)
 
     def provider_status(self) -> dict[str, Any]:
         status = llm.provider_status(self.chat_config, self.embed_config, self.title_config)
@@ -580,7 +846,13 @@ class NLEngine:
                 model=self.chat_config.model,
                 operation="chat",
             )
+        explanation_spec = _maybe_taxonomy_explanation_spec(question, self.taxonomy_nodes)
         control = agent_control.classify_llm(self.chat_client, self.chat_config, question)
+        if control.terminal and explanation_spec is not None:
+            control = agent_control.AgentControlDecision(
+                route="in_domain",
+                reason="taxonomy_explanation",
+            )
         if control.terminal:
             result = agent_control.result_from_decision(control)
             return Answer(
@@ -591,7 +863,8 @@ class NLEngine:
                 control=control,
                 metadata={"control_route": control.route, "control_reason": control.reason},
             )
-        spec = generate_spec(self.chat_client, self.chat_config, question, self.schema_ctx, self.taxonomy_ctx)
+        spec = explanation_spec or generate_spec(
+            self.chat_client, self.chat_config, question, self.schema_ctx, self.taxonomy_ctx)
         with RecallAnalytics(self.dsn) as a:
             try:
                 result = run_spec(
@@ -602,6 +875,7 @@ class NLEngine:
                     self.embed_client,
                     self.embed_config,
                     self.embedding_error,
+                    question,
                 )
             except ValueError as exc:  # one repair attempt: feed the error back
                 if "sample needs filters or semantic_query" in str(exc):
@@ -630,6 +904,7 @@ class NLEngine:
                     self.embed_client,
                     self.embed_config,
                     self.embedding_error,
+                    question,
                 )
         metadata: dict[str, Any] = {}
         if (

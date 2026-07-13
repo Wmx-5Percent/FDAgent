@@ -78,7 +78,10 @@ Routes:
   recall reasons, and concepts such as sterility or non-sterile conditions, contamination,
   bacterial/microbial issues, particulates or glass particles, impurities (e.g. NDMA /
   nitrosamine), mislabeling, subpotent (too weak) and superpotent (too strong / potency above
-  specification). When the message plausibly refers to drug recalls, PREFER "in_domain".
+  specification). This also INCLUDES plain-language explanation questions about FDA recall
+  taxonomy categories or recall terms, such as "what does cGMP deviation mean in drug recalls?"
+  or "CGMP Deviations Reason for recall 这到底是什么". When the message plausibly refers to drug
+  recalls, PREFER "in_domain".
   Examples that ARE in_domain: "How many Class I recalls?", "sterility recalls by firm",
   "有多少药品因为药效太强被召回", "有多少个关于细菌感染的 recall", "召回最多的公司是哪几家".
 - "chitchat_meta": greetings, or questions about the assistant itself -- its identity,
