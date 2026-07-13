@@ -431,6 +431,8 @@
     const kind = data.kind;
     if (kind === "scalar") {
       renderScalar(data, card);
+    } else if (kind === "multi_section") {
+      renderMultiSection(data, card);
     } else if (kind === "distribution" || kind === "bar") {
       renderDistribution(data, card);
     } else if (kind === "series" || kind === "line") {
@@ -457,6 +459,51 @@
     spec.textContent = `intent=${result.intent || "-"} | spec=${JSON.stringify(result.spec || {})}`;
     card.appendChild(spec);
     return card;
+  }
+
+  function renderMultiSection(data, card) {
+    const sections = Array.isArray(data.sections) ? data.sections : [];
+    if (!sections.length) {
+      const empty = document.createElement("div");
+      empty.className = "muted";
+      empty.textContent = "No sections returned.";
+      card.appendChild(empty);
+      return;
+    }
+
+    for (const section of sections) {
+      const sectionCard = document.createElement("div");
+      sectionCard.className = "result-card";
+
+      const title = document.createElement("div");
+      title.className = "summary";
+      title.textContent = section.title || section.id || "Result section";
+      sectionCard.appendChild(title);
+
+      const metaParts = [
+        section.dimension ? `dimension: ${section.dimension}` : null,
+        section.source ? `source: ${section.source}` : null,
+      ].filter(Boolean);
+      if (metaParts.length) {
+        const meta = document.createElement("div");
+        meta.className = "muted";
+        meta.textContent = metaParts.join(" | ");
+        sectionCard.appendChild(meta);
+      }
+
+      if (section.kind === "distribution" || section.kind === "bar") {
+        renderDistribution(section, sectionCard);
+      } else if (section.kind === "rows" || section.kind === "table") {
+        renderRows(section, sectionCard);
+      } else {
+        const unsupported = document.createElement("div");
+        unsupported.className = "status-text error";
+        unsupported.textContent = `Unsupported section kind: ${section.kind || "unknown"}`;
+        sectionCard.appendChild(unsupported);
+      }
+
+      card.appendChild(sectionCard);
+    }
   }
 
   function renderScalar(data, card) {

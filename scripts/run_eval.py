@@ -112,6 +112,79 @@ def _assert_semantic_count(assertions: Mapping[str, Any], data: Mapping[str, Any
                  "expected non-empty data.evidence list")
 
 
+def _assert_item_matches(actual: Mapping[str, Any], expected: Mapping[str, Any],
+                         context: str) -> None:
+    for key, expected_value in expected.items():
+        if key.endswith("_contains"):
+            actual_key = key[:-len("_contains")]
+            actual_value = actual.get(actual_key)
+            _require(
+                str(expected_value).casefold() in str(actual_value).casefold(),
+                f"{context}.{actual_key} expected to contain {expected_value!r}, got {actual_value!r}",
+            )
+        else:
+            actual_value = actual.get(key)
+            _require(actual_value == expected_value,
+                     f"{context}.{key} expected {expected_value!r}, got {actual_value!r}")
+
+
+def _assert_top_items(expected_top_items: list[Any], items: Any, context: str) -> None:
+    _require(isinstance(items, list), f"{context}.top_items requires items to be a list")
+    _require(len(items) >= len(expected_top_items),
+             f"{context} expected at least {len(expected_top_items)} items, got {len(items)}")
+    for idx, expected in enumerate(expected_top_items):
+        _require(isinstance(expected, Mapping), f"{context}.top_items entries must be objects")
+        actual = items[idx]
+        _require(isinstance(actual, Mapping),
+                 f"{context}.items[{idx}] must be an object, got {type(actual).__name__}")
+        _assert_item_matches(actual, expected, f"{context}.items[{idx}]")
+
+
+def _assert_sections(assertions: Mapping[str, Any], data: Mapping[str, Any]) -> None:
+    if "section_count" not in assertions and not assertions.get("sections"):
+        return
+    sections = data.get("sections")
+    _require(isinstance(sections, list), "section assertions require data.sections to be a list")
+    if "section_count" in assertions:
+        expected_count = int(assertions["section_count"])
+        _require(len(sections) == expected_count,
+                 f"expected {expected_count} sections, got {len(sections)}")
+    for idx, expected in enumerate(assertions.get("sections") or []):
+        _require(isinstance(expected, Mapping), "sections entries must be objects")
+        expected_id = expected.get("id")
+        if expected_id:
+            matches = [s for s in sections if isinstance(s, Mapping) and s.get("id") == expected_id]
+            _require(bool(matches), f"expected section id {expected_id!r}, got {sections!r}")
+            section = matches[0]
+        else:
+            _require(idx < len(sections), f"expected section at index {idx}, got {len(sections)}")
+            section = sections[idx]
+            _require(isinstance(section, Mapping),
+                     f"data.sections[{idx}] must be an object, got {type(section).__name__}")
+        for key in ("id", "kind", "dimension", "source"):
+            if key in expected:
+                actual_value = section.get(key)
+                _require(actual_value == expected[key],
+                         f"section {expected_id or idx}.{key} expected {expected[key]!r}, got {actual_value!r}")
+        if "title_contains" in expected:
+            title = str(section.get("title") or "")
+            needle = str(expected["title_contains"])
+            _require(needle.casefold() in title.casefold(),
+                     f"section {expected_id or idx}.title expected to contain {needle!r}, got {title!r}")
+        if "min_items" in expected:
+            items = section.get("items")
+            _require(isinstance(items, list), f"section {expected_id or idx}.items must be a list")
+            _require(len(items) >= int(expected["min_items"]),
+                     f"section {expected_id or idx} expected at least {expected['min_items']} items, got {len(items)}")
+        expected_top_items = expected.get("top_items") or []
+        if expected_top_items:
+            _assert_top_items(
+                expected_top_items,
+                section.get("items"),
+                f"section {expected_id or idx}",
+            )
+
+
 def _assert_ask_case(case: Mapping[str, Any], answer: Mapping[str, Any]) -> EvalResult:
     assertions = case.get("assert") or {}
     _require(isinstance(assertions, Mapping), "ask case assert must be an object")
@@ -120,8 +193,10 @@ def _assert_ask_case(case: Mapping[str, Any], answer: Mapping[str, Any]) -> Eval
     _require(isinstance(spec, Mapping), "answer.spec must be an object")
     _require(isinstance(data, Mapping), "answer.data must be an object")
 
-    intent = _plain(spec.get("intent") or answer.get("intent"))
     data_kind = _plain(data.get("kind"))
+    intent = _plain(answer.get("intent") if data_kind == "multi_section" else (
+        spec.get("intent") or answer.get("intent")
+    ))
     expected_intents = assertions.get("intents") or []
     expected_kinds = assertions.get("data_kinds") or []
     if expected_intents:
@@ -140,6 +215,7 @@ def _assert_ask_case(case: Mapping[str, Any], answer: Mapping[str, Any]) -> Eval
         _require(not spec, f"expected empty spec for guarded response, got {spec!r}")
     if data_kind in {"semantic_count", "semantic_distribution"}:
         _assert_semantic_count(assertions, data)
+    _assert_sections(assertions, data)
     if "taxonomy_node_id_equals" in assertions:
         expected_node = assertions["taxonomy_node_id_equals"]
         actual_node = spec.get("taxonomy_node_id") or data.get("node_id")
@@ -161,19 +237,7 @@ def _assert_ask_case(case: Mapping[str, Any], answer: Mapping[str, Any]) -> Eval
 
     expected_top_items = assertions.get("top_items") or []
     if expected_top_items:
-        items = data.get("items")
-        _require(isinstance(items, list), "top_items requires data.items to be a list")
-        _require(len(items) >= len(expected_top_items),
-                 f"expected at least {len(expected_top_items)} items, got {len(items)}")
-        for idx, expected in enumerate(expected_top_items):
-            _require(isinstance(expected, Mapping), "top_items entries must be objects")
-            actual = items[idx]
-            _require(isinstance(actual, Mapping),
-                     f"data.items[{idx}] must be an object, got {type(actual).__name__}")
-            for key, expected_value in expected.items():
-                actual_value = actual.get(key)
-                _require(actual_value == expected_value,
-                         f"data.items[{idx}].{key} expected {expected_value!r}, got {actual_value!r}")
+        _assert_top_items(expected_top_items, data.get("items"), "data")
 
     route = assertions.get("route")
     semantic_query = spec.get("semantic_query")
@@ -184,7 +248,7 @@ def _assert_ask_case(case: Mapping[str, Any], answer: Mapping[str, Any]) -> Eval
                  f"semantic_query={semantic_query!r} unexpectedly contained one of {banned_needles}")
     if route == "sql":
         _require(not semantic_query, f"numeric/SQL case unexpectedly used semantic_query={semantic_query!r}")
-        _require(data_kind in {"scalar", "distribution", "series", "rows"},
+        _require(data_kind in {"scalar", "distribution", "series", "rows", "multi_section"},
                  f"SQL-backed case returned non-SQL data.kind={data_kind!r}")
     elif route == "explanation":
         _require(not semantic_query,

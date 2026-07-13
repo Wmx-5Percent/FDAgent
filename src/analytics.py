@@ -85,6 +85,8 @@ class Group:
     value: Any
     count: int
     evidence: list[str] = field(default_factory=list)
+    label: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def _conditions(filters: Sequence[Filter]) -> tuple[list[sql.Composable], list[Any]]:
@@ -211,13 +213,13 @@ class RecallAnalytics:
             q = sql.SQL(
                 "SELECT {dim} AS value, count(*) AS n, "
                 "(array_agg(recall_number ORDER BY recall_initiation_date DESC NULLS LAST))[1:%s] AS evidence "
-                "FROM {tbl}{where} GROUP BY {dim} ORDER BY n DESC LIMIT %s"
+                "FROM {tbl}{where} GROUP BY {dim} ORDER BY n DESC, {dim} ASC NULLS LAST LIMIT %s"
             ).format(dim=dim, tbl=tbl, where=where)
             params: list[Any] = [evidence_n, *wparams, limit]
         else:
             q = sql.SQL(
                 "SELECT {dim} AS value, count(*) AS n "
-                "FROM {tbl}{where} GROUP BY {dim} ORDER BY n DESC LIMIT %s"
+                "FROM {tbl}{where} GROUP BY {dim} ORDER BY n DESC, {dim} ASC NULLS LAST LIMIT %s"
             ).format(dim=dim, tbl=tbl, where=where)
             params = [*wparams, limit]
         return [
@@ -238,36 +240,49 @@ class RecallAnalytics:
     ) -> list[Group]:
         """Distribution of recalls across taxonomy categories (the recall_label sidecar).
 
-        Joins drug_enforcement to recall_label and groups by node_id, counting DISTINCT records
-        per category (a record may carry several labels). Base ``filters`` (e.g. classification)
-        still apply to drug_enforcement; ``level`` optionally restricts to a taxonomy depth.
-        Returns Group(value=node_id, count, evidence)."""
-        tbl, lt = sql.Identifier(TABLE), sql.Identifier(LABEL_TABLE)
+        Joins drug_enforcement to recall_label/taxonomy and groups by node_id, counting
+        DISTINCT records per category (a record may carry several labels). Base ``filters``
+        (e.g. classification) still apply to drug_enforcement; ``level`` optionally restricts
+        to a taxonomy depth. Returns user-facing labels in ``Group.value`` plus node ids in
+        ``Group.metadata`` for auditability."""
+        tbl, lt, taxonomy = sql.Identifier(TABLE), sql.Identifier(LABEL_TABLE), sql.Identifier("taxonomy")
         base_conds, base_params = _conditions(filters)
         conds: list[sql.Composable] = [sql.SQL("rl.version = %s")]
         params_pre: list[Any] = [version]
         if level is not None:
-            conds.append(sql.SQL("rl.level = %s"))
+            conds.append(sql.SQL("t.level = %s"))
             params_pre.append(level)
         conds += base_conds
         where = sql.SQL(" WHERE ") + sql.SQL(" AND ").join(conds)
-        join = sql.SQL("{tbl} JOIN {lt} rl ON rl.record_id = {tbl}.id").format(tbl=tbl, lt=lt)
+        join = sql.SQL(
+            "{tbl} JOIN {lt} rl ON rl.record_id = {tbl}.id "
+            "JOIN {taxonomy} t ON t.version = rl.version AND t.node_id = rl.node_id"
+        ).format(tbl=tbl, lt=lt, taxonomy=taxonomy)
         if with_evidence:
             q = sql.SQL(
-                "SELECT rl.node_id AS value, count(DISTINCT {tbl}.id) AS n, "
+                "SELECT t.label AS value, rl.node_id, count(DISTINCT {tbl}.id) AS n, "
                 "(array_agg({tbl}.recall_number ORDER BY {tbl}.recall_initiation_date DESC NULLS LAST))[1:%s] AS evidence "
-                "FROM {join}{where} GROUP BY rl.node_id ORDER BY n DESC LIMIT %s"
+                "FROM {join}{where} GROUP BY rl.node_id, t.label ORDER BY n DESC, t.label ASC LIMIT %s"
             ).format(tbl=tbl, join=join, where=where)
             params: list[Any] = [evidence_n, *params_pre, *base_params, limit]
         else:
             q = sql.SQL(
-                "SELECT rl.node_id AS value, count(DISTINCT {tbl}.id) AS n "
-                "FROM {join}{where} GROUP BY rl.node_id ORDER BY n DESC LIMIT %s"
+                "SELECT t.label AS value, rl.node_id, count(DISTINCT {tbl}.id) AS n "
+                "FROM {join}{where} GROUP BY rl.node_id, t.label ORDER BY n DESC, t.label ASC LIMIT %s"
             ).format(tbl=tbl, join=join, where=where)
             params = [*params_pre, *base_params, limit]
         return [
-            Group(value=r[0], count=r[1],
-                  evidence=list(r[2]) if with_evidence and r[2] else [])
+            Group(
+                value=r[0],
+                count=r[2],
+                evidence=list(r[3]) if with_evidence and r[3] else [],
+                label=r[0],
+                metadata={
+                    "node_id": r[1],
+                    "taxonomy_version": version,
+                    "source": "taxonomy",
+                },
+            )
             for r in self._rows(q, params)
         ]
 

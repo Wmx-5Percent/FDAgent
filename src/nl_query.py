@@ -110,6 +110,24 @@ class TaxonomyExplanation:
     examples: list[dict[str, Any]] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class ResultSection:
+    id: str
+    title: str
+    data_kind: str
+    dimension: str
+    source: str
+    spec: QuerySpec
+    result: Any
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class MultiSectionResult:
+    intent: str
+    sections: list[ResultSection]
+
+
 SYSTEM = """You convert a question about U.S. FDA drug recall enforcement reports into a QuerySpec.
 Rules:
 - Use ONLY columns and values from the SCHEMA below. Never invent a column or a value.
@@ -527,6 +545,49 @@ def _to_filters(spec: QuerySpec) -> list[Filter]:
     return out
 
 
+_REASON_TOPN_HINTS = (
+    "reason", "reasons", "recall reason", "recall reasons", "原因", "召回原因",
+)
+_PRODUCT_TOPN_HINTS = (
+    "product", "products", "product_description", "产品", "药品", "旗下",
+)
+_TOPN_HINTS = (
+    "top", "most", "common", "rank", "ranking", "table", "tables",
+    "最多", "最高", "前十", "前 10", "top 10", "排名", "排行", "表", "分别",
+)
+
+
+def _has_firm_filter(spec: QuerySpec) -> bool:
+    return any(
+        f.column == "recalling_firm"
+        and f.op in {Op.eq, Op.in_}
+        and bool(f.values)
+        for f in spec.filters
+    )
+
+
+def _mentions_any(question: str, hints: tuple[str, ...]) -> bool:
+    q = question.casefold()
+    return any(hint.casefold() in q for hint in hints)
+
+
+def _asks_for_firm_reason_product_topn(question: str, spec: QuerySpec) -> bool:
+    if spec.semantic_query or not _has_firm_filter(spec):
+        return False
+    if not _mentions_any(question, _REASON_TOPN_HINTS):
+        return False
+    if not _mentions_any(question, _PRODUCT_TOPN_HINTS):
+        return False
+    return _mentions_any(question, _TOPN_HINTS) or spec.intent in {
+        Intent.count_by,
+        Intent.count_by_taxonomy,
+    }
+
+
+def _copy_filter_specs(spec: QuerySpec) -> list[FilterSpec]:
+    return [f.model_copy(deep=True) for f in spec.filters]
+
+
 def _semantic_groups(
     a: RecallAnalytics,
     group_by: str,
@@ -656,6 +717,91 @@ def _run_semantic_count(
     )
 
 
+def _run_firm_reason_product_topn(a: RecallAnalytics, spec: QuerySpec) -> MultiSectionResult:
+    filters = _to_filters(spec)
+    limit = max(1, spec.limit or 10)
+    filter_specs = _copy_filter_specs(spec)
+
+    reason_spec = QuerySpec(
+        intent=Intent.count_by_taxonomy,
+        filters=filter_specs,
+        limit=limit,
+    )
+    reason_groups = a.count_by_taxonomy(filters, limit=limit, with_evidence=True)
+    reason_source = "taxonomy"
+    reason_dimension = "recall_reason_category"
+    if not reason_groups:
+        reason_spec = QuerySpec(
+            intent=Intent.count_by,
+            filters=filter_specs,
+            group_by="reason_for_recall",
+            limit=limit,
+        )
+        reason_groups = a.count_by("reason_for_recall", filters, limit=limit, with_evidence=True)
+        reason_source = "raw_reason_for_recall_fallback"
+        reason_dimension = "reason_for_recall"
+
+    product_spec = QuerySpec(
+        intent=Intent.count_by,
+        filters=filter_specs,
+        group_by="product_description",
+        limit=limit,
+    )
+    product_groups = a.count_by("product_description", filters, limit=limit, with_evidence=True)
+
+    return MultiSectionResult(
+        intent="multi_count_by",
+        sections=[
+            ResultSection(
+                id="top_recall_reason_categories",
+                title=f"Top recall reason categories (top {min(len(reason_groups), limit)})",
+                data_kind="distribution",
+                dimension=reason_dimension,
+                source=reason_source,
+                spec=reason_spec,
+                result=reason_groups,
+                metadata={
+                    "taxonomy_version": TAXONOMY_VERSION if reason_source == "taxonomy" else None,
+                    "fallback": reason_source != "taxonomy",
+                },
+            ),
+            ResultSection(
+                id="top_recalled_products",
+                title=f"Top recalled products (top {min(len(product_groups), limit)})",
+                data_kind="distribution",
+                dimension="product_description",
+                source="drug_enforcement.product_description",
+                spec=product_spec,
+                result=product_groups,
+            ),
+        ],
+    )
+
+
+def _run_question_spec(
+    a: RecallAnalytics,
+    spec: QuerySpec,
+    chat_client: Any,
+    chat_config: llm.ChatConfig,
+    embed_client: Any | None,
+    embed_config: llm.EmbeddingConfig,
+    embedding_error: BaseException | None,
+    question: str,
+) -> Any:
+    if _asks_for_firm_reason_product_topn(question, spec):
+        return _run_firm_reason_product_topn(a, spec)
+    return run_spec(
+        a,
+        spec,
+        chat_client,
+        chat_config,
+        embed_client,
+        embed_config,
+        embedding_error,
+        question,
+    )
+
+
 def run_spec(
     a: RecallAnalytics,
     spec: QuerySpec,
@@ -728,6 +874,14 @@ def run_spec(
 
 
 def summarize(spec: QuerySpec, result: Any) -> str:
+    if isinstance(result, MultiSectionResult):
+        lines = ["Produced separate tables for the requested firm-scoped Top-N answer."]
+        for section in result.sections:
+            lines.append(f"{section.title}:")
+            for g in section.result[:10]:
+                evidence = f"   e.g. {', '.join(g.evidence)}" if g.evidence else ""
+                lines.append(f"  {g.value}: {g.count:,}{evidence}")
+        return "\n".join(lines)
     if isinstance(result, TaxonomyExplanation):
         return result.answer
     if isinstance(result, validation.SemanticCountResult):
@@ -867,7 +1021,7 @@ class NLEngine:
             self.chat_client, self.chat_config, question, self.schema_ctx, self.taxonomy_ctx)
         with RecallAnalytics(self.dsn) as a:
             try:
-                result = run_spec(
+                result = _run_question_spec(
                     a,
                     spec,
                     self.chat_client,
@@ -896,7 +1050,7 @@ class NLEngine:
                     self.schema_ctx,
                     self.taxonomy_ctx,
                 )
-                result = run_spec(
+                result = _run_question_spec(
                     a,
                     spec,
                     self.chat_client,
@@ -907,6 +1061,22 @@ class NLEngine:
                     question,
                 )
         metadata: dict[str, Any] = {}
+        if isinstance(result, MultiSectionResult):
+            metadata["intent"] = result.intent
+            metadata["sections"] = [
+                {
+                    "id": section.id,
+                    "data_kind": section.data_kind,
+                    "dimension": section.dimension,
+                    "source": section.source,
+                    "result_count": len(section.result) if isinstance(section.result, list) else None,
+                }
+                for section in result.sections
+            ]
+            metadata["sub_specs"] = [
+                section.spec.model_dump(mode="json", exclude_none=True)
+                for section in result.sections
+            ]
         if (
             spec.semantic_query
             and spec.intent is Intent.sample
