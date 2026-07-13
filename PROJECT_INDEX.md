@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-07-13T03:11Z · 70 files · 2 missing description
+> Last generated: 2026-07-13T04:35Z · 70 files · 2 missing description
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -100,7 +100,7 @@
 - [`src/llm.py`](src/llm.py) — OpenAI-compatible chat and embedding provider gateway for serving paths.
   - symbols: `ProviderError`, `ProviderConfigError`, `ProviderMissingKeyError`, `ProviderUnsupportedConfigError`, `ProviderAuthError`, `ProviderQuotaError`, `ProviderRateLimitError`, `ProviderConnectionError`, `ProviderCapabilityError`, `StructuredOutputError`, `ChatConfig`, `EmbeddingConfig`
 - [`src/nl_query.py`](src/nl_query.py) — Natural-language front-end for the deterministic analytics engine.
-  - symbols: `Intent`, `Op`, `FilterSpec`, `QuerySpec`, `Answer`, `build_schema_context`, `load_taxonomy_nodes`, `build_taxonomy_context`, `generate_spec`, `refine_spec`, `run_spec`, `summarize`
+  - symbols: `Intent`, `Op`, `FilterSpec`, `QuerySpec`, `Answer`, `TaxonomyNodeInfo`, `TaxonomyExplanation`, `build_schema_context`, `load_taxonomy_nodes`, `build_taxonomy_context`, `generate_spec`, `refine_spec`
 - [`src/observability.py`](src/observability.py) — Postgres-backed query logging for the /ask API.
   - symbols: `QueryLogEntry`, `QueryLogger`, `response_metadata`
 - [`src/retrieval.py`](src/retrieval.py) — Hybrid retrieval over the `embeddings` table — Path 2 / slice 2.2.

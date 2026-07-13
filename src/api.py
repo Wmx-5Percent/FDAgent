@@ -31,7 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # allow `import 
 import llm  # noqa: E402
 import agent_control  # noqa: E402
 import validation  # noqa: E402
-from nl_query import Answer, Intent, NLEngine  # noqa: E402
+from nl_query import Answer, Intent, NLEngine, TaxonomyExplanation  # noqa: E402
 from observability import QueryLogEntry, QueryLogger, response_metadata  # noqa: E402
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
@@ -95,8 +95,8 @@ def serialize_answer(ans: Answer) -> dict[str, Any]:
     """Shape an :class:`Answer` into a stable, chart-friendly response.
 
     ``data.kind`` tells the UI how to render: ``scalar`` (one number), ``distribution``
-    (bar chart), ``series`` (line chart), or ``rows`` (table). Evidence ``recall_number``s
-    ride along so every figure is traceable back to source records.
+    (bar chart), ``series`` (line chart), ``rows`` (table), or a message/explanation kind.
+    Evidence ``recall_number``s ride along so every figure is traceable back to source records.
     """
     spec = ans.spec
     payload: dict[str, Any] = {
@@ -107,6 +107,27 @@ def serialize_answer(ans: Answer) -> dict[str, Any]:
     }
     if isinstance(ans.result, agent_control.AgentControlResult):
         payload["data"] = ans.result.as_data()
+    elif isinstance(ans.result, TaxonomyExplanation):
+        node = ans.result.node
+        payload["data"] = {
+            "kind": "taxonomy_explanation",
+            "route": "explanation",
+            "node_id": node.node_id,
+            "label": node.label,
+            "definition": node.definition,
+            "parent_id": node.parent_id,
+            "parent_label": node.parent_label,
+            "explanation": ans.result.answer,
+            "examples": [
+                {
+                    "recall_number": item.get("recall_number"),
+                    "classification": item.get("classification"),
+                    "reason_for_recall": item.get("reason_for_recall"),
+                }
+                for item in ans.result.examples
+            ],
+            "source": "taxonomy",
+        }
     elif isinstance(ans.result, validation.SemanticCountResult):
         result = ans.result
         accepted = [item for item in result.validations if item.accepted]
@@ -322,11 +343,14 @@ def _log_success(req: AskRequest, ans: Answer, payload: dict[str, Any],
     metadata = response_metadata(payload, model=model, provider=provider)
     data_kind = metadata.get("data_kind")
     control = ans.control.as_dict() if ans.control is not None else None
-    route = (
-        control["route"]
-        if control is not None and control["route"] != "in_domain"
-        else ("semantic" if ans.spec is not None and ans.spec.semantic_query else "sql")
-    )
+    if control is not None and control["route"] != "in_domain":
+        route = control["route"]
+    elif ans.spec is not None and ans.spec.intent is Intent.explain_taxonomy_node:
+        route = "explanation"
+    elif ans.spec is not None and ans.spec.semantic_query:
+        route = "semantic"
+    else:
+        route = "sql"
     _require_query_logger().write(QueryLogEntry(
         route="/ask",
         question=req.question,
@@ -343,6 +367,7 @@ def _log_success(req: AskRequest, ans: Answer, payload: dict[str, Any],
             "intent": ans.spec.intent.value if ans.spec is not None else route,
             "data_kind": data_kind,
             "filter_count": len(ans.spec.filters) if ans.spec is not None else 0,
+            "taxonomy_node_id": ans.spec.taxonomy_node_id if ans.spec is not None else None,
             "control": control,
         },
         response_metadata=metadata,
