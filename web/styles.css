@@ -14,6 +14,10 @@
   --danger: #ff8a8a;
   --warning: #ffd166;
   --shadow: 0 16px 40px rgb(0 0 0 / 0.28);
+  --thread-content-max-width: 1180px;
+  --thread-content-gutter: 32px;
+  --assistant-message-max-width: 1120px;
+  --user-message-max-width: 760px;
 }
 
 * {
@@ -230,7 +234,7 @@ button:disabled {
 .notice,
 .thread,
 .composer {
-  width: min(920px, calc(100vw - 340px));
+  width: min(var(--thread-content-max-width), calc(100% - var(--thread-content-gutter)));
   margin-right: auto;
   margin-left: auto;
 }
@@ -299,7 +303,7 @@ button:disabled {
 }
 
 .bubble {
-  max-width: min(760px, 86%);
+  max-width: min(var(--user-message-max-width), 86%);
   padding: 14px 16px;
   border: 1px solid var(--line);
   border-radius: 18px;
@@ -312,6 +316,8 @@ button:disabled {
 }
 
 .message-row.assistant .bubble {
+  width: 100%;
+  max-width: min(var(--assistant-message-max-width), 100%);
   background: var(--panel);
 }
 
@@ -615,5 +621,10 @@ tr:last-child td {
 
   .bubble {
     max-width: 94%;
+  }
+
+  .message-row.assistant .bubble {
+    width: 100%;
+    max-width: 100%;
   }
 }
