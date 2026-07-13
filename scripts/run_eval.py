@@ -130,12 +130,26 @@ def _assert_ask_case(case: Mapping[str, Any], answer: Mapping[str, Any]) -> Eval
     if expected_kinds:
         _require(data_kind in expected_kinds,
                  f"expected data.kind in {expected_kinds}, got {data_kind!r}")
+    banned_kinds = assertions.get("data_not_kinds") or []
+    if banned_kinds:
+        _require(data_kind not in banned_kinds,
+                 f"expected data.kind not in {banned_kinds}, got {data_kind!r}")
     if assertions.get("no_ilike"):
         _assert_no_ilike(spec)
     if assertions.get("spec_empty"):
         _require(not spec, f"expected empty spec for guarded response, got {spec!r}")
     if data_kind in {"semantic_count", "semantic_distribution"}:
         _assert_semantic_count(assertions, data)
+    if "taxonomy_node_id_equals" in assertions:
+        expected_node = assertions["taxonomy_node_id_equals"]
+        actual_node = spec.get("taxonomy_node_id") or data.get("node_id")
+        _require(actual_node == expected_node,
+                 f"expected taxonomy_node_id {expected_node!r}, got {actual_node!r}")
+    summary_needles = [str(v).lower() for v in assertions.get("summary_contains_any", [])]
+    if summary_needles:
+        summary = str(answer.get("summary") or "").lower()
+        _require(any(n in summary for n in summary_needles),
+                 f"summary did not contain any of {summary_needles}: {summary!r}")
 
     if "value_equals" in assertions:
         _require(data_kind == "scalar",
@@ -172,6 +186,11 @@ def _assert_ask_case(case: Mapping[str, Any], answer: Mapping[str, Any]) -> Eval
         _require(not semantic_query, f"numeric/SQL case unexpectedly used semantic_query={semantic_query!r}")
         _require(data_kind in {"scalar", "distribution", "series", "rows"},
                  f"SQL-backed case returned non-SQL data.kind={data_kind!r}")
+    elif route == "explanation":
+        _require(not semantic_query,
+                 f"explanation case unexpectedly emitted semantic_query={semantic_query!r}")
+        _require(data_kind == "taxonomy_explanation",
+                 f"explanation case returned unexpected data.kind={data_kind!r}")
     elif route == "semantic":
         _require(bool(semantic_query), "fuzzy concept case did not emit semantic_query")
         needles = [str(v).lower() for v in assertions.get("semantic_query_contains_any", [])]

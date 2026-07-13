@@ -130,6 +130,32 @@
       }
     },
     {
+      "id": "taxonomy-cgmp-explanation-zh",
+      "kind": "ask",
+      "question": "CGMP Deviations Reason for recall 中的一个召回原因有这么一个类别，这到底是什么？在药物领域里面，这是什么意思啊？",
+      "assert": {
+        "route": "explanation",
+        "intents": ["explain_taxonomy_node"],
+        "data_kinds": ["taxonomy_explanation"],
+        "data_not_kinds": ["distribution"],
+        "taxonomy_node_id_equals": "cgmp_deviation",
+        "summary_contains_any": ["cgmp", "gmp", "良好生产规范", "生产质量管理规范", "current good manufacturing practice"],
+        "no_ilike": true
+      }
+    },
+    {
+      "id": "taxonomy-cgmp-count-still-sql",
+      "kind": "ask",
+      "question": "How many cGMP deviation recalls are there?",
+      "assert": {
+        "route": "sql",
+        "intents": ["count_total"],
+        "data_kinds": ["scalar"],
+        "taxonomy_node_id_equals": "cgmp_deviation",
+        "no_ilike": true
+      }
+    },
+    {
       "id": "taxonomy-sterility-by-firm",
       "kind": "ask",
       "question": "Which firms had the most sterility recalls?",
