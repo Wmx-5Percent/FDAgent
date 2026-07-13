@@ -387,12 +387,141 @@ button:disabled {
   color: var(--muted);
 }
 
+.progress-trail {
+  display: grid;
+  gap: 10px;
+}
+
+.progress-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg);
+  font-weight: 700;
+}
+
+.progress-indicator,
+.progress-dot {
+  display: inline-block;
+  flex: 0 0 auto;
+  border-radius: 999px;
+}
+
+.progress-indicator {
+  width: 10px;
+  height: 10px;
+  background: var(--accent);
+}
+
+.progress-trail.working .progress-indicator {
+  animation: progress-pulse 1.2s ease-in-out infinite;
+}
+
+.progress-trail.failed .progress-indicator {
+  background: var(--danger);
+}
+
+.progress-trail.aborted .progress-indicator {
+  background: var(--warning);
+}
+
+.progress-steps {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.progress-step {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  gap: 9px;
+  align-items: start;
+  color: var(--muted-2);
+}
+
+.progress-dot {
+  width: 9px;
+  height: 9px;
+  margin-top: 6px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+}
+
+.progress-step.completed .progress-dot {
+  border-color: var(--accent-2);
+  background: var(--accent-2);
+}
+
+.progress-step.current {
+  color: var(--fg);
+}
+
+.progress-step.current .progress-dot {
+  border-color: var(--accent);
+  background: var(--accent);
+  box-shadow: 0 0 0 4px rgb(78 161 255 / 0.12);
+}
+
+.progress-step.failed {
+  color: var(--danger);
+}
+
+.progress-step.failed .progress-dot {
+  border-color: var(--danger);
+  background: var(--danger);
+}
+
+.progress-step.aborted {
+  color: var(--warning);
+}
+
+.progress-step.aborted .progress-dot {
+  border-color: var(--warning);
+  background: var(--warning);
+}
+
+.progress-label,
+.progress-detail {
+  display: block;
+}
+
+.progress-label {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.progress-detail {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .status-text.error {
   color: var(--danger);
 }
 
 .status-text.aborted {
   color: var(--warning);
+}
+
+@keyframes progress-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(0.86);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1.12);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progress-trail.working .progress-indicator {
+    animation: none;
+  }
 }
 
 .result-card {
