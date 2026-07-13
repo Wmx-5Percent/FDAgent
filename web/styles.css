@@ -22,11 +22,12 @@
 
 html,
 body {
-  min-height: 100%;
+  height: 100%;
 }
 
 body {
   margin: 0;
+  overflow: hidden;
   background: var(--bg);
   color: var(--fg);
   font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -58,14 +59,19 @@ button:disabled {
 .app-shell {
   display: grid;
   grid-template-columns: 290px minmax(0, 1fr);
-  min-height: 100vh;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .sidebar {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  min-height: 100vh;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
   padding: 18px;
   background: var(--panel-3);
   border-right: 1px solid var(--line);
@@ -115,7 +121,9 @@ button:disabled {
   flex: 1;
   flex-direction: column;
   gap: 8px;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding-right: 2px;
 }
 
@@ -197,9 +205,11 @@ button:disabled {
 
 .chat-pane {
   display: grid;
-  grid-template-rows: auto auto auto 1fr auto;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  height: 100%;
   min-width: 0;
-  min-height: 100vh;
+  min-height: 0;
+  overflow: hidden;
   background:
     radial-gradient(circle at top left, rgb(78 161 255 / 0.08), transparent 34rem),
     var(--bg);
@@ -253,7 +263,9 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 18px;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 18px 0 28px;
 }
 
@@ -570,16 +582,18 @@ tr:last-child td {
 @media (max-width: 780px) {
   .app-shell {
     grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
   .sidebar {
-    min-height: auto;
+    height: auto;
+    min-height: 0;
     border-right: 0;
     border-bottom: 1px solid var(--line);
   }
 
   .conversation-list {
-    max-height: 190px;
+    max-height: min(190px, 24dvh);
   }
 
   .examples,
