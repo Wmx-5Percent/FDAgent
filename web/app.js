@@ -16,6 +16,29 @@
     "Show me a few sterility-related recalls.",
     "Find recalls involving pills that were too strong.",
   ];
+  const ASK_PROGRESS_STEPS = [
+    {
+      label: "Checking FDA recall scope",
+      detail: "Confirming the request stays within public drug-recall reports.",
+    },
+    {
+      label: "Preparing query",
+      detail: "Turning the question into safe recall-data lookup instructions.",
+    },
+    {
+      label: "Running data lookup",
+      detail: "Searching recall analytics, retrieval, or taxonomy data as needed.",
+    },
+    {
+      label: "Validating evidence",
+      detail: "Checking that counts and examples are backed by returned records.",
+    },
+    {
+      label: "Writing answer",
+      detail: "Formatting the final response for this chat.",
+    },
+  ];
+  const ASK_PROGRESS_DELAYS_MS = [900, 2200, 4200, 6500];
 
   const els = {
     conversationList: document.getElementById("conversationList"),
@@ -130,7 +153,23 @@
       status: value.status || (value.role === "assistant" ? "done" : undefined),
       result: value.result || null,
       error: value.error || null,
+      progress: normalizeAskProgress(value.progress),
       createdAt: value.createdAt || new Date().toISOString(),
+    };
+  }
+
+  function normalizeAskProgress(value) {
+    if (!value || typeof value !== "object") return null;
+    const currentIndex = Number.isInteger(value.currentIndex)
+      ? Math.min(Math.max(value.currentIndex, 0), ASK_PROGRESS_STEPS.length - 1)
+      : 0;
+    const state = ["working", "done", "failed", "aborted"].includes(value.state)
+      ? value.state
+      : "working";
+    return {
+      currentIndex,
+      state,
+      updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : null,
     };
   }
 
@@ -392,21 +431,22 @@
 
   function renderAssistantContent(message) {
     if (message.status === "loading") {
-      const status = document.createElement("div");
-      status.className = "status-text";
-      status.textContent = "Thinking...";
-      return status;
+      return renderProgressTrail(message);
     }
     if (message.status === "aborted") {
-      const status = document.createElement("div");
-      status.className = "status-text aborted";
-      status.textContent = "Generation stopped.";
+      const status = renderProgressTrail(message, "aborted");
+      const text = document.createElement("div");
+      text.className = "status-text aborted";
+      text.textContent = "Generation stopped.";
+      status.appendChild(text);
       return status;
     }
     if (message.status === "error") {
-      const status = document.createElement("div");
-      status.className = "status-text error";
-      status.textContent = message.error || "The request failed.";
+      const status = renderProgressTrail(message, "failed");
+      const text = document.createElement("div");
+      text.className = "status-text error";
+      text.textContent = message.error || "The request failed.";
+      status.appendChild(text);
       return status;
     }
     if (!message.result) {
@@ -416,6 +456,108 @@
       return status;
     }
     return renderAskResult(message.result);
+  }
+
+  function renderProgressTrail(message, forcedState = null) {
+    const progress = normalizeAskProgress(message.progress) || createProgressState(0, "working");
+    const state = forcedState || progress.state || "working";
+    const currentIndex = Math.min(Math.max(progress.currentIndex, 0), ASK_PROGRESS_STEPS.length - 1);
+    const wrapper = document.createElement("div");
+    wrapper.className = `progress-trail ${state}`;
+    wrapper.setAttribute("role", state === "working" ? "status" : "note");
+    wrapper.setAttribute("aria-live", "polite");
+
+    const heading = document.createElement("div");
+    heading.className = "progress-heading";
+    const indicator = document.createElement("span");
+    indicator.className = "progress-indicator";
+    indicator.setAttribute("aria-hidden", "true");
+    const title = document.createElement("span");
+    title.textContent = progressTitle(state);
+    heading.append(indicator, title);
+    wrapper.appendChild(heading);
+
+    const list = document.createElement("ol");
+    list.className = "progress-steps";
+    for (const [index, step] of ASK_PROGRESS_STEPS.entries()) {
+      const item = document.createElement("li");
+      item.className = `progress-step ${progressStepState(index, currentIndex, state)}`;
+
+      const dot = document.createElement("span");
+      dot.className = "progress-dot";
+      dot.setAttribute("aria-hidden", "true");
+
+      const text = document.createElement("span");
+      const label = document.createElement("span");
+      label.className = "progress-label";
+      label.textContent = step.label;
+      const detail = document.createElement("span");
+      detail.className = "progress-detail";
+      detail.textContent = step.detail;
+      text.append(label, detail);
+
+      item.append(dot, text);
+      list.appendChild(item);
+    }
+    wrapper.appendChild(list);
+    return wrapper;
+  }
+
+  function progressTitle(state) {
+    if (state === "failed") return "Request failed";
+    if (state === "aborted") return "Request stopped";
+    return "Working on your recall question";
+  }
+
+  function progressStepState(index, currentIndex, state) {
+    if (state === "failed" && index === currentIndex) return "failed";
+    if (state === "aborted" && index === currentIndex) return "aborted";
+    if (index < currentIndex || state === "done") return "completed";
+    if (index === currentIndex) return "current";
+    return "pending";
+  }
+
+  function createProgressState(currentIndex, state = "working") {
+    return {
+      currentIndex: Math.min(Math.max(currentIndex, 0), ASK_PROGRESS_STEPS.length - 1),
+      state,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  function currentProgressIndex(conversationId, assistantId) {
+    const conversation = state.conversations.find((conv) => conv.id === conversationId);
+    const message = conversation?.messages.find((item) => item.id === assistantId);
+    const progress = normalizeAskProgress(message?.progress);
+    return progress?.currentIndex ?? 0;
+  }
+
+  function updateAskProgress(conversationId, assistantId, currentIndex) {
+    updateAssistant(conversationId, assistantId, {
+      progress: createProgressState(currentIndex, "working"),
+    });
+    render();
+  }
+
+  function startAskProgress(conversationId, assistantId) {
+    if (!activeRequest || activeRequest.assistantId !== assistantId) return;
+    activeRequest.progressTimers = ASK_PROGRESS_DELAYS_MS.map((delay, index) => setTimeout(() => {
+      if (activeRequest?.assistantId !== assistantId) return;
+      updateAskProgress(conversationId, assistantId, index + 1);
+    }, delay));
+  }
+
+  function clearAskProgressTimers(request) {
+    for (const timer of request?.progressTimers || []) {
+      clearTimeout(timer);
+    }
+  }
+
+  function finalProgressState(conversationId, assistantId, state) {
+    const currentIndex = state === "done"
+      ? ASK_PROGRESS_STEPS.length - 1
+      : currentProgressIndex(conversationId, assistantId);
+    return createProgressState(currentIndex, state);
   }
 
   function renderAskResult(result) {
@@ -923,6 +1065,7 @@
       status: "loading",
       result: null,
       error: null,
+      progress: createProgressState(0, "working"),
       createdAt: new Date().toISOString(),
     };
     conversation.messages.push(assistantMessage);
@@ -935,6 +1078,7 @@
   async function requestAnswer(conversationId, assistantId, question) {
     const controller = new AbortController();
     activeRequest = { controller, conversationId, assistantId };
+    startAskProgress(conversationId, assistantId);
     renderComposerState();
 
     try {
@@ -952,14 +1096,18 @@
         status: "done",
         result: payload,
         error: null,
+        progress: finalProgressState(conversationId, assistantId, "done"),
       });
     } catch (error) {
+      const aborted = error.name === "AbortError";
       updateAssistant(conversationId, assistantId, {
-        status: error.name === "AbortError" ? "aborted" : "error",
+        status: aborted ? "aborted" : "error",
         result: null,
-        error: error.name === "AbortError" ? null : error.message,
+        error: aborted ? null : error.message,
+        progress: finalProgressState(conversationId, assistantId, aborted ? "aborted" : "failed"),
       });
     } finally {
+      clearAskProgressTimers(activeRequest);
       if (activeRequest?.assistantId === assistantId) {
         activeRequest = null;
       }
@@ -1039,7 +1187,9 @@
   }
 
   function stopGeneration() {
-    if (activeRequest) activeRequest.controller.abort();
+    if (!activeRequest) return;
+    clearAskProgressTimers(activeRequest);
+    activeRequest.controller.abort();
   }
 
   function renderComposerState() {
