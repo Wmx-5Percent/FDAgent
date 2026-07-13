@@ -660,17 +660,23 @@
 
     const chart = document.createElement("div");
     chart.className = "bar-chart";
+    chart.setAttribute("role", "list");
+    chart.setAttribute("aria-label", "Distribution results");
     const max = Math.max(...items.map((item) => Number(item.count) || 0), 1);
 
     for (const item of items) {
       const count = Number(item.count) || 0;
+      const countText = count.toLocaleString();
+      const labelText = String(item.value ?? "-");
       const row = document.createElement("div");
       row.className = "bar-row";
+      row.setAttribute("role", "listitem");
+      row.setAttribute("aria-label", `${labelText}: ${countText} recall${count === 1 ? "" : "s"}`);
 
       const label = document.createElement("div");
       label.className = "bar-label";
-      label.title = String(item.value ?? "-");
-      label.textContent = String(item.value ?? "-");
+      label.title = labelText;
+      label.textContent = labelText;
 
       const track = document.createElement("div");
       track.className = "bar-track";
@@ -681,7 +687,7 @@
 
       const value = document.createElement("div");
       value.className = "bar-value";
-      value.textContent = count.toLocaleString();
+      value.textContent = countText;
 
       row.append(label, track, value);
       chart.appendChild(row);
