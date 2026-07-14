@@ -864,7 +864,13 @@ def recall_detail(recall_number: str) -> HTMLResponse:
             recall_number,
             f"{recall_number!r} is not a valid FDA drug recall number.",
         )
-    record = _load_recall_record(normalized)
+    try:
+        record = _load_recall_record(normalized)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 — log server-side, return a safe message
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="could not load recall detail") from exc
     if record is None:
         return _recall_not_found_page(
             normalized,
