@@ -1,0 +1,3 @@
+# Docs-only dependencies for regenerating README workflow diagrams.
+# Install with: .venv/bin/python -m pip install -r docs/diagrams/requirements.txt
+diagrams>=0.24,<0.25

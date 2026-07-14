@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-07-14T15:19Z · 70 files · 2 missing description
+> Last generated: 2026-07-14T15:30Z · 75 files · 2 missing description
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -42,6 +42,12 @@
 - [`docs/adr/0003-recall-profile-two-block-fact-vs-inferred.md`](docs/adr/0003-recall-profile-two-block-fact-vs-inferred.md) — C 端答案两块式呈现：FDA 事实为锚 + 标注推断的母公司汇总 — Status: accepted
 - [`docs/adr/0004-firm-parent-edges-require-citable-source.md`](docs/adr/0004-firm-parent-edges-require-citable-source.md) — firm→parent 归属边需可引用结构化出处 + 人工确认才生效；LLM/web 仅提名 — Status: accepted
 - [`docs/adr/0005-autonomy-boundary-reversible-vs-irreversible.md`](docs/adr/0005-autonomy-boundary-reversible-vs-irreversible.md) — 受托/自主 Agent 只可自主执行可逆动作；不可逆动作须人工确认 — Status: accepted
+- [`docs/diagrams/agent_component_map.png`](docs/diagrams/agent_component_map.png) — _(no description; add a one-line docstring/heading)_
+- [`docs/diagrams/agent_request_routing.png`](docs/diagrams/agent_request_routing.png) — _(no description; add a one-line docstring/heading)_
+- [`docs/diagrams/agent_trust_boundary.png`](docs/diagrams/agent_trust_boundary.png) — _(no description; add a one-line docstring/heading)_
+- [`docs/diagrams/agent_workflow.py`](docs/diagrams/agent_workflow.py) — Generate README diagrams that explain the FDAgent /ask workflow.
+  - symbols: `project_node`, `render_request_routing`, `render_component_map`, `render_trust_boundary`, `main`
+- [`docs/diagrams/requirements.txt`](docs/diagrams/requirements.txt) — Docs-only dependencies for regenerating README workflow diagrams.
 
 ## evals/
 - [`evals/firm_resolution/golden_v1.json`](evals/firm_resolution/golden_v1.json) — {"description": "FDAgent firm-resolution threshold calibration pairs. Labels are for raw-name aliasing only: same means 

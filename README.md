@@ -24,101 +24,48 @@ guessed by the model), each result carrying the recall numbers that back it.
 - **Agent control** — [src/agent_control.py](src/agent_control.py): an LLM intent gate keeps meta/chitchat, out-of-domain, and too-vague prompts out of the database; only in-domain recall questions produce a `QuerySpec`.
 - **Hybrid retrieval + semantic counting (Path 2)** — [src/embed.py](src/embed.py) + [src/retrieval.py](src/retrieval.py) + [src/validation.py](src/validation.py): recall text is embedded into a multi-source `pgvector` `embeddings` table; fuzzy concepts (e.g. "pills that are too strong" → *superpotent*) use pgvector + Postgres FTS with RRF, and count-style concept questions add LLM yes/no validation plus confidence bands.
 
-## Agent workflow and routing
+## How the agent answers a question
 
-The diagrams below name the current serving-path modules. Live priorities and provider caveats
-stay in [PROGRESS.md](PROGRESS.md).
+"Agent" here means a routed, tool-using workflow rather than a single opaque prompt. The
+LLM decides intent and emits constrained specs, but **SQL owns numeric facts** and every
+count/table/trend comes back with recall-number evidence. Live implementation status and
+known provider caveats stay in [PROGRESS.md](PROGRESS.md).
 
-### `/ask` request lifecycle
+![FDAgent request-routing diagram](docs/diagrams/agent_request_routing.png)
 
-```mermaid
-flowchart LR
-  UI["Browser UI<br/>web/index.html + web/app.js<br/>localStorage chats, edit/stop/progress"]
-  Ask["POST /ask<br/>src/api.py"]
-  Engine["NLEngine.ask()<br/>src/nl_query.py<br/>warmed clients + schema/taxonomy context"]
-  Guard["agent_control.classify_llm()<br/>in_domain | chitchat_meta | out_of_domain | ambiguous"]
-  Spec["generate_spec() → QuerySpec<br/>intent, filters, taxonomy_node_id,<br/>semantic_query, semantic_aliases"]
-  Run["run_spec() / _run_question_spec()"]
-  SQL["RecallAnalytics<br/>read-only parameterized SQL<br/>drug_enforcement"]
-  Tax["taxonomy sidecar<br/>taxonomy + recall_label<br/>exact category counts/explanations"]
-  Retrieve["retrieval.search()<br/>pgvector + FTS + RRF<br/>embeddings"]
-  Validate["validation.validate_hits()<br/>LLM yes/no snippets"]
-  Serialize["serialize_answer()<br/>data.kind cards"]
-  Log["QueryLogger.write()<br/>query_log metadata"]
+| Request type | Current behavior |
+| --- | --- |
+| Capability/meta question | [src/agent_control.py](src/agent_control.py) returns a direct `chitchat_meta` message; no recall rows are queried. |
+| Out-of-domain question | The guard returns a scope explanation: FDAgent only answers FDA drug-recall enforcement questions. |
+| Ambiguous recall prompt | The guard asks for a more specific concept, firm, classification, product, or timeframe. |
+| Deterministic count/distribution/trend | [src/nl_query.py](src/nl_query.py) validates a `QuerySpec`, then [src/analytics.py](src/analytics.py) runs read-only parameterized SQL over `drug_enforcement`. |
+| Taxonomy explanation or exact recall-reason count | The taxonomy sidecar (`taxonomy` + `recall_label`) returns plain-language category explanations or exact labeled counts. |
+| Fuzzy semantic retrieval/counting | [src/retrieval.py](src/retrieval.py) searches `embeddings` with pgvector + Postgres FTS + RRF; count-style concept questions add [src/validation.py](src/validation.py) snippet validation and confidence metadata. |
+| Firm-scoped reason + product Top-N | Current `/ask` can produce a `MultiSectionResult` with separate recall-reason-category and product tables for a firm filter; this is not the future parent-group/brand Recall Profile. |
+| Future company/product Recall Profile | Parent-group aggregation and brand entry are still sidecar/future work; FDAgent must not present a safe/unsafe verdict. See [PROGRESS.md](PROGRESS.md). |
 
-  UI -->|fetch JSON| Ask --> Engine --> Guard
-  Guard -->|terminal route| Serialize
-  Guard -->|in_domain| Spec --> Run
-  Run --> SQL --> Serialize
-  Run --> Tax --> Serialize
-  Run --> Retrieve --> Serialize
-  Retrieve --> Validate --> Serialize
-  Serialize -->|answer + evidence| UI
-  Serialize -.-> Log
-```
+### Serving-path component map
 
-### Routing/control flow
+![FDAgent serving-path component map](docs/diagrams/agent_component_map.png)
 
-```mermaid
-flowchart TD
-  Q["User question"] --> ExplainProbe{"Definition question<br/>matching taxonomy node?"}
-  ExplainProbe -->|yes| Guard
-  ExplainProbe -->|no| Guard{"LLM domain/meta guard<br/>agent_control.classify_llm()"}
+### Evidence and trust boundary
 
-  Guard -->|chitchat_meta| Meta["AgentControlResult message<br/>identity/capabilities; no DB rows"]
-  Guard -->|out_of_domain| OOD["Scope message<br/>FDA drug-recall data only; no DB rows"]
-  Guard -->|ambiguous| Clarify["Clarification + suggestions<br/>no DB rows"]
-  Guard -->|in_domain| QuerySpec["LLM → validated QuerySpec"]
+![FDAgent evidence and trust-boundary diagram](docs/diagrams/agent_trust_boundary.png)
 
-  QuerySpec -->|explain_taxonomy_node| TaxExplain["TaxonomyExplanation<br/>definition + example recall reasons"]
-  QuerySpec -->|count_by_taxonomy<br/>or taxonomy_node_id| TaxSQL["Exact taxonomy SQL<br/>recall_label / taxonomy"]
-  QuerySpec -->|count_total / count_by / trend| Analytics["RecallAnalytics SQL<br/>count, group-by, trend"]
-  QuerySpec -->|sample + hard filters| Rows["RecallAnalytics.sample()"]
-  QuerySpec -->|sample with no filters<br/>and no semantic_query| SafeSample["Safe sample policy<br/>clarification instead of arbitrary LIMIT 5"]
-  QuerySpec -->|semantic_query + sample| Retrieval["Ranked retrieval hits"]
-  QuerySpec -->|semantic_query + count_total/count_by| SemCount["Retrieval pool → semantic validation<br/>estimated count/distribution"]
-  QuerySpec -->|firm-scoped reason+product Top-N| Multi["MultiSectionResult<br/>taxonomy reason table + product table"]
+FDA facts enter through openFDA `drug/enforcement`; parsed rows live in PostgreSQL as
+`drug_enforcement`. The LLM may route the request, choose a whitelisted `QuerySpec`, summarize
+results, or validate semantic snippets, but it does not invent raw counts. Evidence links in the
+API/UI point back to openFDA by `recall_number`, and [src/observability.py](src/observability.py)
+writes `query_log` rows with the request, control decision, `QuerySpec`, response metadata,
+errors, and retrieval degradation markers such as `retrieval_mode=fts_only`.
 
-  Meta --> API["Serialized /ask response"]
-  OOD --> API
-  Clarify --> API
-  TaxExplain --> API
-  TaxSQL --> API
-  Analytics --> API
-  Rows --> API
-  SafeSample --> API
-  Retrieval --> API
-  SemCount --> API
-  Multi --> API
-  API -.-> QueryLog["query_log<br/>QuerySpec/decision/response metadata/errors"]
-```
+Diagram source is committed in [docs/diagrams/agent_workflow.py](docs/diagrams/agent_workflow.py).
+Regenerate the README assets locally with docs-only dependencies:
 
-### Hybrid retrieval and current degradation behavior
-
-```mermaid
-flowchart TD
-  SQ["QuerySpec.semantic_query<br/>+ optional semantic_aliases + hard filters"]
-  Embed{"Embedding client available<br/>and compatible?"}
-  Vector["Vector candidates<br/>embeddings.embedding <=> query vector"]
-  FTS["Keyword candidates<br/>Postgres FTS over content_tsv<br/>query + aliases + broad OR terms"]
-  RRF["RRF fusion<br/>retrieval_mode=hybrid"]
-  FTSOnly["FTS-only fallback<br/>retrieval_mode=fts_only<br/>embedding_fallback_reason recorded"]
-  Sample["sample intent<br/>data.kind=retrieval"]
-  Count["count_total/count_by intent<br/>LLM validates candidate snippets"]
-  Estimate["SemanticCountResult<br/>estimated_count, confidence_interval,<br/>evidence recall_numbers"]
-  DegradedZero["If degraded sample has zero hits:<br/>answer says vector retrieval is unavailable,<br/>so empty FTS result is not a full semantic conclusion"]
-  Obs["/ask response + query_log<br/>capture retrieval_mode, fallback reason,<br/>and degraded flag when set"]
-
-  SQ --> Embed
-  Embed -->|yes| Vector --> RRF
-  Embed -->|yes| FTS --> RRF
-  Embed -->|fallback-allowed provider error| FTSOnly
-  RRF --> Sample
-  RRF --> Count
-  FTSOnly --> Sample
-  FTSOnly --> Count
-  Sample --> DegradedZero --> Obs
-  Count --> Estimate --> Obs
+```bash
+brew install graphviz  # if Graphviz/dot is missing on macOS
+.venv/bin/python -m pip install -r docs/diagrams/requirements.txt
+.venv/bin/python docs/diagrams/agent_workflow.py
 ```
 
 ---
