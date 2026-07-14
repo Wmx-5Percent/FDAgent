@@ -49,6 +49,7 @@ TITLE_FALLBACK_STOPWORDS = {
 }
 OPENFDA_DRUG_ENFORCEMENT_URL = "https://api.fda.gov/drug/enforcement.json"
 OPENFDA_TERMS_URL = "https://open.fda.gov/terms/"
+OPENFDA_DISCLAIMER_URL = "https://open.fda.gov/terms/#disclaimer-of-warranties"
 OPENFDA_LICENSE_URL = "https://open.fda.gov/license/"
 RECALL_NUMBER_RE = re.compile(r"^[A-Z]-\d{3,4}-\d{4}$")
 RECALL_DETAIL_COLUMNS = [
@@ -715,6 +716,8 @@ def _source_links_html(recall_number: str) -> str:
         "Raw openFDA API result</a>"
         f'<a href="{escape(OPENFDA_TERMS_URL, quote=True)}" target="_blank" rel="noopener noreferrer">'
         "openFDA terms</a>"
+        f'<a href="{escape(OPENFDA_DISCLAIMER_URL, quote=True)}" target="_blank" rel="noopener noreferrer">'
+        "openFDA disclaimer</a>"
         f'<a href="{escape(OPENFDA_LICENSE_URL, quote=True)}" target="_blank" rel="noopener noreferrer">'
         "openFDA license</a>"
         "</div>"
@@ -861,13 +864,7 @@ def recall_detail(recall_number: str) -> HTMLResponse:
             recall_number,
             f"{recall_number!r} is not a valid FDA drug recall number.",
         )
-    try:
-        record = _load_recall_record(normalized)
-    except HTTPException:
-        raise
-    except Exception as exc:  # noqa: BLE001 — log server-side, return a safe message
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail="could not load recall detail") from exc
+    record = _load_recall_record(normalized)
     if record is None:
         return _recall_not_found_page(
             normalized,
