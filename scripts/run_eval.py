@@ -21,7 +21,12 @@ import psycopg  # noqa: E402
 import llm  # noqa: E402
 import retrieval  # noqa: E402
 from api import serialize_answer  # noqa: E402
-from nl_query import MODEL, NLEngine  # noqa: E402
+from nl_query import (  # noqa: E402
+    MODEL,
+    NLEngine,
+    _maybe_raw_firm_exposure_spec,
+    _maybe_simple_class_count_spec,
+)
 
 DEFAULT_DSN = os.environ.get("DATABASE_URL", "postgresql://localhost:5432/fda")
 DEFAULT_GOLDEN = REPO_ROOT / "evals" / "golden" / "v1.json"
@@ -347,6 +352,35 @@ def _assert_ask_case(case: Mapping[str, Any], answer: Mapping[str, Any]) -> Eval
                       f"intent={intent} data.kind={data_kind} route={route or '-'}")
 
 
+def _assert_deterministic_helper_case(case: Mapping[str, Any]) -> EvalResult:
+    assertions = case.get("assert") or {}
+    _require(isinstance(assertions, Mapping),
+             "deterministic_helper case assert must be an object")
+    question = str(case["question"])
+    simple_spec = _maybe_simple_class_count_spec(question)
+    raw_spec = _maybe_raw_firm_exposure_spec(question)
+    if assertions.get("simple_class_count_spec_empty"):
+        _require(
+            simple_spec is None,
+            "expected simple Class-count fast path to defer, got "
+            f"{simple_spec.model_dump(mode='json', exclude_none=True) if simple_spec else None}",
+        )
+    if assertions.get("raw_firm_exposure_spec_empty"):
+        _require(
+            raw_spec is None,
+            "expected raw firm exposure fast path to defer, got "
+            f"{raw_spec.model_dump(mode='json', exclude_none=True) if raw_spec else None}",
+        )
+    return EvalResult(
+        str(case["id"]),
+        True,
+        "simple_class_count="
+        f"{'deferred' if simple_spec is None else 'matched'} "
+        "raw_firm_exposure="
+        f"{'deferred' if raw_spec is None else 'matched'}",
+    )
+
+
 def _run_retrieval_case(case: Mapping[str, Any], *, dsn: str) -> EvalResult:
     expected = {str(v) for v in case.get("expected_recall_numbers", [])}
     _require(bool(expected), "retrieval case needs expected_recall_numbers")
@@ -441,6 +475,8 @@ def main() -> int:
                 judge_result = _maybe_judge(case, answer, enabled=args.llm_judge)
                 if judge_result:
                     results.append(judge_result)
+            elif kind == "deterministic_helper":
+                results.append(_assert_deterministic_helper_case(case))
             elif kind == "retrieval_recall":
                 results.append(_run_retrieval_case(case, dsn=args.dsn))
             else:

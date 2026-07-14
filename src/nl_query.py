@@ -421,6 +421,7 @@ _UNSUPPORTED_TEMPORAL_FILTER_RE = re.compile(
 _UNHANDLED_SUBJECT_FILTER_RE = re.compile(
     r"\b(?:for|about|involving|related\s+to|made\s+by|manufactured\s+by)\s+"
     r"(?!the\s+most\b)(?!most\b)(?!fda\b)(?!drug\b)(?!recalls?\b)(?!class\b)(?!\d{4}\b)|"
+    r"\b(?:containing|contains|including|includes)\s+\w+|"
     r"\brecalls?\s+of\s+(?!class\b)(?!fda\b)(?!drug\b)(?!\d{4}\b)|"
     r"\bwith\s+(?:product|brand|drug|medication)\b|"
     r"\b(?:product|brand)\s+(?:named|called|containing)\b",
@@ -461,6 +462,57 @@ _SIMPLE_CLASS_COUNT_TOPIC_EXCLUSIONS = _RAW_EXPOSURE_TOPIC_EXCLUSIONS + (
     "产品",
     "品牌",
 )
+_HELPER_BOILERPLATE_TOKENS = {
+    "all",
+    "an",
+    "and",
+    "are",
+    "by",
+    "companies",
+    "company",
+    "count",
+    "drug",
+    "exposure",
+    "fda",
+    "five",
+    "firm",
+    "firms",
+    "from",
+    "had",
+    "has",
+    "have",
+    "been",
+    "highest",
+    "how",
+    "in",
+    "leaderboard",
+    "many",
+    "most",
+    "of",
+    "or",
+    "rank",
+    "ranked",
+    "ranking",
+    "raw",
+    "recall",
+    "recalling",
+    "recalls",
+    "risk",
+    "score",
+    "scores",
+    "severity",
+    "state",
+    "country",
+    "located",
+    "the",
+    "there",
+    "ten",
+    "to",
+    "top",
+    "weighted",
+    "were",
+    "which",
+}
 _TAXONOMY_EXPLANATION_ALIASES = {
     "cgmp_deviation": (
         "cgmp deviation",
@@ -682,7 +734,36 @@ def _safe_hard_filter_specs_or_defer(question: str) -> tuple[list[FilterSpec], b
 
 
 def _looks_like_unhandled_subject_filter(question: str) -> bool:
-    return bool(_UNHANDLED_SUBJECT_FILTER_RE.search(question) or _OUT_OF_SCOPE_PRODUCT_HINT_RE.search(question))
+    return bool(
+        _UNHANDLED_SUBJECT_FILTER_RE.search(question)
+        or _OUT_OF_SCOPE_PRODUCT_HINT_RE.search(question)
+        or _unmatched_subject_tokens(question)
+    )
+
+
+def _unmatched_subject_tokens(question: str) -> list[str]:
+    """Return likely product/ingredient tokens left after known hard filters are removed.
+
+    Deterministic helpers do not represent product/ingredient constraints. If a prompt leaves
+    non-boilerplate tokens after removing the class/status/date/location filters that the helper
+    can preserve, the safe behavior is to defer to the LLM QuerySpec path rather than answering a
+    broader SQL question.
+    """
+    text = question.casefold()
+    text = _CLASS_SPECIFIC_RE.sub(" ", text)
+    text = _STATUS_FILTER_RE.sub(" ", text)
+    text = _COUNTRY_ALIAS_RE.sub(" ", text)
+    text = _STATE_NAME_RE.sub(" ", text)
+    text = re.sub(r"\b(" + "|".join(_US_STATE_CODES) + r")\b", " ", text, flags=re.IGNORECASE)
+    text = _BARE_YEAR_RE.sub(" ", text)
+    text = re.sub(r"\b\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?\b", " ", text)
+    tokens = re.findall(r"[a-z][a-z0-9]*", text)
+    return [
+        token
+        for token in tokens
+        if token not in _HELPER_BOILERPLATE_TOKENS
+        and len(token) > 1
+    ]
 
 
 def _maybe_raw_firm_exposure_spec(question: str) -> QuerySpec | None:

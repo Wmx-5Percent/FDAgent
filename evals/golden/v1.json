@@ -154,6 +154,24 @@
       }
     },
     {
+      "id": "helper-product-qualified-class-count-containing-defers",
+      "kind": "deterministic_helper",
+      "question": "How many Class I recalls containing acetaminophen are there?",
+      "assert": {
+        "simple_class_count_spec_empty": true,
+        "raw_firm_exposure_spec_empty": true
+      }
+    },
+    {
+      "id": "helper-product-qualified-class-count-bare-ingredient-defers",
+      "kind": "deterministic_helper",
+      "question": "How many acetaminophen Class I recalls are there?",
+      "assert": {
+        "simple_class_count_spec_empty": true,
+        "raw_firm_exposure_spec_empty": true
+      }
+    },
+    {
       "id": "numeric-class-i-by-firm",
       "kind": "ask",
       "question": "Which firms had the most Class I recalls?",
@@ -323,6 +341,24 @@
           {"firm_equals": "CARDINAL HEALTHCARE", "recall_count_equals": 42}
         ],
         "no_ilike": true
+      }
+    },
+    {
+      "id": "helper-product-qualified-raw-exposure-containing-defers",
+      "kind": "deterministic_helper",
+      "question": "Which firms had the most FDA drug recalls containing acetaminophen?",
+      "assert": {
+        "simple_class_count_spec_empty": true,
+        "raw_firm_exposure_spec_empty": true
+      }
+    },
+    {
+      "id": "helper-product-qualified-raw-exposure-bare-ingredient-defers",
+      "kind": "deterministic_helper",
+      "question": "Which firms had the most acetaminophen FDA drug recalls?",
+      "assert": {
+        "simple_class_count_spec_empty": true,
+        "raw_firm_exposure_spec_empty": true
       }
     },
     {
