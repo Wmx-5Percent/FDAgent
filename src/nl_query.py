@@ -380,13 +380,15 @@ _COUNTRY_ALIASES = {
     "dominican republic": "Dominican Republic (the)",
 }
 _COUNTRY_FILTER_RE = re.compile(
-    r"\b(?:in|from|country(?:\s+of)?|located\s+in)\s+("
+    r"\b(?:in|from|country(?:\s+of)?|located\s+in)\s+(?:the\s+)?("
     + "|".join(re.escape(name) for name in sorted(_COUNTRY_ALIASES, key=len, reverse=True))
-    + r")\b",
+    + r")(?=$|[\s,?.!;:])",
     re.IGNORECASE,
 )
 _LOCATION_FILTER_RE = re.compile(
-    r"\b(?:in|from|country(?:\s+of)?|located\s+in)\s+([A-Z][A-Za-z.]*(?:\s+[A-Z][A-Za-z.]*){0,3})\b"
+    r"\b(?:in|from|country(?:\s+of)?|located\s+in)\s+(?:the\s+)?"
+    r"([a-z][a-z.]+(?:\s+[a-z][a-z.]+){0,3})(?=$|[\s,?.!;:])",
+    re.IGNORECASE,
 )
 _DATE_OR_STATUS_FILTER_RE = re.compile(
     r"\b(?:ongoing|terminated|completed|since|after|before|between|during|in\s+(?:19|20)\d{2})\b",

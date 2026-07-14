@@ -184,6 +184,40 @@
       }
     },
     {
+      "id": "exposure-filtered-united-states-article-preserves-country",
+      "kind": "ask",
+      "question": "Which firms in the United States have the most FDA drug recalls?",
+      "assert": {
+        "route": "sql",
+        "intents": ["count_by", "raw_firm_exposure"],
+        "data_kinds": ["distribution", "raw_firm_exposure"],
+        "filters_include": [
+          {"column": "country", "op": "eq", "values": ["United States"]}
+        ],
+        "top_items": [
+          {"firm_equals": "Aidapak Services, LLC", "recall_count_equals": 538}
+        ],
+        "no_ilike": true
+      }
+    },
+    {
+      "id": "exposure-filtered-us-article-preserves-country",
+      "kind": "ask",
+      "question": "Which firms in the US have the most FDA drug recalls?",
+      "assert": {
+        "route": "sql",
+        "intents": ["count_by", "raw_firm_exposure"],
+        "data_kinds": ["distribution", "raw_firm_exposure"],
+        "filters_include": [
+          {"column": "country", "op": "eq", "values": ["United States"]}
+        ],
+        "top_items": [
+          {"firm_equals": "Aidapak Services, LLC", "recall_count_equals": 538}
+        ],
+        "no_ilike": true
+      }
+    },
+    {
       "id": "exposure-filtered-class-i-preserves-class",
       "kind": "ask",
       "question": "Rank firms by severity-weighted Class I recalls.",
