@@ -3,7 +3,7 @@
   const STORE_KEY = "fdagent.chat.v1";
   const MAX_TITLE = 44;
   const SVG_NS = "http://www.w3.org/2000/svg";
-  const OPENFDA_DRUG_ENFORCEMENT_URL = "https://api.fda.gov/drug/enforcement.json";
+  const RECALL_DETAIL_PREFIX = "/recalls/";
   const RECALL_NUMBER_PATTERN = /^[A-Z]-\d{3,4}-\d{4}$/;
   const TITLE_NEW = "new";
   const TITLE_PLACEHOLDER = "placeholder";
@@ -612,24 +612,21 @@
     return RECALL_NUMBER_PATTERN.test(normalized) ? normalized : null;
   }
 
-  function officialRecallUrl(recallNumber, candidateUrl) {
+  function recallDetailUrl(recallNumber, candidateUrl) {
     const normalized = normalizedRecallNumber(recallNumber);
     if (!normalized) return null;
     if (typeof candidateUrl === "string" && candidateUrl.trim()) {
       try {
-        const url = new URL(candidateUrl);
-        if (
-          url.protocol === "https:" &&
-          url.hostname === "api.fda.gov" &&
-          url.pathname === "/drug/enforcement.json"
-        ) {
-          return url.toString();
+        const url = new URL(candidateUrl, window.location.origin);
+        const expectedPath = `${RECALL_DETAIL_PREFIX}${encodeURIComponent(normalized)}`;
+        if (url.origin === window.location.origin && url.pathname === expectedPath) {
+          return `${url.pathname}${url.search}${url.hash}`;
         }
       } catch {
-        // Fall back to a locally constructed official openFDA URL.
+        // Fall back to a locally constructed FDAgent detail page URL.
       }
     }
-    return `${OPENFDA_DRUG_ENFORCEMENT_URL}?search=${encodeURIComponent(`recall_number:"${normalized}"`)}&limit=1`;
+    return `${RECALL_DETAIL_PREFIX}${encodeURIComponent(normalized)}`;
   }
 
   function recallValue(value) {
@@ -648,7 +645,7 @@
 
   function createRecallBadge(value, url) {
     const display = String(recallValue(value) ?? "").trim() || "-";
-    const href = officialRecallUrl(display, url || recallUrlValue(value));
+    const href = recallDetailUrl(display, url || recallUrlValue(value));
     if (!href) {
       const badge = document.createElement("span");
       badge.className = "badge";
@@ -662,7 +659,7 @@
     link.target = "_blank";
     link.rel = "noopener noreferrer";
     link.textContent = display;
-    link.setAttribute("aria-label", `Verify FDA recall ${display} on openFDA`);
+    link.setAttribute("aria-label", `Open readable detail page for FDA recall ${display}`);
     return link;
   }
 

@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-07-13T08:37Z · 70 files · 2 missing description
+> Last generated: 2026-07-14T15:19Z · 70 files · 2 missing description
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -72,7 +72,7 @@
 - [`src/analytics.py`](src/analytics.py) — Deterministic frequency/aggregation query engine over drug_enforcement.
   - symbols: `Kind`, `Filter`, `Group`, `RecallAnalytics`
 - [`src/api.py`](src/api.py) — FastAPI service exposing the deterministic NL->SQL analytics engine (Path 1, serving half).
-  - symbols: `lifespan`, `AskRequest`, `TitleRequest`, `TitleResponse`, `recall_verification_url`, `serialize_answer`, `health`, `title_endpoint`, `ask_endpoint`, `index`
+  - symbols: `lifespan`, `AskRequest`, `TitleRequest`, `TitleResponse`, `recall_verification_url`, `recall_detail_url`, `serialize_answer`, `health`, `title_endpoint`, `ask_endpoint`, `recall_detail`, `index`
 - [`src/classify/__init__.py`](src/classify/__init__.py) — Offline recall taxonomy induction, labeling, and discovery utilities.
 - [`src/classify/audit.py`](src/classify/audit.py) — Audit taxonomy coverage and exact offline recall-label counts.
   - symbols: `taxonomy_nodes`, `descendant_node_ids`, `coverage_report`, `count_by_report`, `write_or_print`, `parse_args`, `clean_labeler`, `main`

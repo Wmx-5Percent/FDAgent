@@ -736,6 +736,139 @@ tr:last-child td {
   color: var(--warning);
 }
 
+body.detail-page {
+  height: auto;
+  min-height: 100%;
+  overflow: auto;
+  background:
+    radial-gradient(circle at top left, rgb(78 161 255 / 0.12), transparent 34rem),
+    var(--bg);
+}
+
+.detail-shell {
+  width: min(980px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 34px 0 56px;
+}
+
+.detail-back-link,
+.detail-source-links a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.detail-back-link:hover,
+.detail-source-links a:hover,
+.detail-back-link:focus-visible,
+.detail-source-links a:focus-visible {
+  color: var(--fg);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  outline: none;
+}
+
+.detail-card {
+  display: grid;
+  gap: 14px;
+  margin-top: 16px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgb(23 34 48 / 0.82);
+  box-shadow: var(--shadow);
+}
+
+.detail-hero {
+  margin-top: 18px;
+  background:
+    linear-gradient(135deg, rgb(78 161 255 / 0.12), rgb(126 224 192 / 0.07)),
+    var(--panel);
+}
+
+.detail-kicker {
+  margin: 0;
+  color: var(--accent-2);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.detail-card h1,
+.detail-card h2,
+.detail-card p,
+.detail-grid,
+.detail-field dd {
+  margin: 0;
+}
+
+.detail-card h1 {
+  font-size: clamp(32px, 7vw, 54px);
+  letter-spacing: -0.04em;
+}
+
+.detail-card h2 {
+  font-size: 18px;
+}
+
+.detail-badge span {
+  color: var(--muted);
+}
+
+.detail-warning {
+  padding: 10px 12px;
+  border: 1px solid rgb(255 209 102 / 0.38);
+  border-radius: 12px;
+  background: rgb(255 209 102 / 0.08);
+  color: var(--warning);
+  font-size: 13px;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.detail-field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.detail-field-long {
+  grid-column: 1 / -1;
+}
+
+.detail-field dt {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.detail-field dd {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.source-card p {
+  color: var(--muted);
+}
+
+.detail-source-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.detail-source-links a {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgb(12 19 29 / 0.42);
+  font-size: 13px;
+}
+
 @media (max-width: 780px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -781,5 +914,9 @@ tr:last-child td {
   .message-row.assistant .bubble {
     width: 100%;
     max-width: 100%;
+  }
+
+  .detail-grid {
+    grid-template-columns: 1fr;
   }
 }

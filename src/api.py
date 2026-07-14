@@ -12,19 +12,21 @@ Run (from the repo root):
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
 import traceback
 from contextlib import asynccontextmanager
 from datetime import date, datetime
+from html import escape
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Optional
 from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -32,6 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # allow `import 
 import llm  # noqa: E402
 import agent_control  # noqa: E402
 import validation  # noqa: E402
+from analytics import RecallAnalytics  # noqa: E402
 from nl_query import Answer, Intent, MultiSectionResult, NLEngine, TaxonomyExplanation  # noqa: E402
 from observability import QueryLogEntry, QueryLogger, response_metadata  # noqa: E402
 
@@ -45,7 +48,92 @@ TITLE_FALLBACK_STOPWORDS = {
     "to", "was", "were", "what", "when", "which", "who", "with",
 }
 OPENFDA_DRUG_ENFORCEMENT_URL = "https://api.fda.gov/drug/enforcement.json"
+OPENFDA_TERMS_URL = "https://open.fda.gov/terms/"
+OPENFDA_DISCLAIMER_URL = "https://open.fda.gov/terms/#disclaimer-of-warranties"
+OPENFDA_LICENSE_URL = "https://open.fda.gov/license/"
 RECALL_NUMBER_RE = re.compile(r"^[A-Z]-\d{3,4}-\d{4}$")
+RECALL_DETAIL_COLUMNS = [
+    "recall_number",
+    "classification",
+    "status",
+    "product_type",
+    "recalling_firm",
+    "city",
+    "state",
+    "country",
+    "product_description",
+    "reason_for_recall",
+    "report_date",
+    "recall_initiation_date",
+    "center_classification_date",
+    "termination_date",
+    "distribution_pattern",
+    "code_info",
+    "product_quantity",
+    "voluntary_mandated",
+    "initial_firm_notification",
+    "event_id",
+    "raw",
+]
+RECALL_DETAIL_SECTIONS = [
+    (
+        "Product and recall reason",
+        [
+            ("product_description", "Product description"),
+            ("reason_for_recall", "Reason for recall"),
+        ],
+    ),
+    (
+        "Firm and location",
+        [
+            ("recalling_firm", "Recalling firm"),
+            ("city", "City"),
+            ("state", "State"),
+            ("country", "Country"),
+        ],
+    ),
+    (
+        "Dates",
+        [
+            ("report_date", "Report date"),
+            ("recall_initiation_date", "Recall initiation date"),
+            ("center_classification_date", "Center classification date"),
+            ("termination_date", "Termination date"),
+        ],
+    ),
+    (
+        "Distribution and code information",
+        [
+            ("distribution_pattern", "Distribution pattern"),
+            ("code_info", "Code / lot information"),
+            ("product_quantity", "Product quantity"),
+        ],
+    ),
+    (
+        "FDA administrative fields",
+        [
+            ("product_type", "Product type"),
+            ("voluntary_mandated", "Voluntary / mandated"),
+            ("initial_firm_notification", "Initial firm notification"),
+            ("event_id", "Event ID"),
+        ],
+    ),
+]
+RECALL_DETAIL_CORE_FIELDS = [
+    ("recall_number", "recall number"),
+    ("classification", "classification"),
+    ("status", "status"),
+    ("recalling_firm", "recalling firm"),
+    ("product_description", "product description"),
+    ("reason_for_recall", "reason for recall"),
+]
+RECALL_DETAIL_LONG_FIELDS = {
+    "product_description",
+    "reason_for_recall",
+    "distribution_pattern",
+    "code_info",
+    "product_quantity",
+}
 
 # Warmed at startup, reused across requests (see lifespan).
 _engine: Optional[NLEngine] = None
@@ -104,7 +192,7 @@ def _normalized_recall_number(value: Any) -> str | None:
 
 
 def recall_verification_url(value: Any) -> str | None:
-    """Official openFDA verification URL for a syntactically valid recall number."""
+    """Raw openFDA API verification URL for a syntactically valid recall number."""
     recall_number = _normalized_recall_number(value)
     if recall_number is None:
         return None
@@ -112,14 +200,24 @@ def recall_verification_url(value: Any) -> str | None:
     return f"{OPENFDA_DRUG_ENFORCEMENT_URL}?search={search}&limit=1"
 
 
+def recall_detail_url(value: Any) -> str | None:
+    """FDAgent-hosted readable detail page URL for a syntactically valid recall number."""
+    recall_number = _normalized_recall_number(value)
+    if recall_number is None:
+        return None
+    return f"/recalls/{quote(recall_number, safe='')}"
+
+
 def _recall_link(value: Any) -> dict[str, str] | None:
-    url = recall_verification_url(value)
-    if url is None:
+    detail_url = recall_detail_url(value)
+    source_url = recall_verification_url(value)
+    if detail_url is None or source_url is None:
         return None
     return {
-        "recall_number": str(value).strip(),
-        "url": url,
-        "source": "openFDA drug enforcement",
+        "recall_number": _normalized_recall_number(value) or str(value).strip(),
+        "url": detail_url,
+        "source_url": source_url,
+        "source": "FDAgent recall detail (openFDA drug enforcement)",
     }
 
 
@@ -129,9 +227,12 @@ def _recall_links(values: list[Any]) -> list[dict[str, str]]:
 
 def _attach_recall_url(item: dict[str, Any], recall_number: Any, *,
                        key: str = "url") -> dict[str, Any]:
-    url = recall_verification_url(recall_number)
-    if url:
-        item[key] = url
+    detail_url = recall_detail_url(recall_number)
+    source_url = recall_verification_url(recall_number)
+    if detail_url:
+        item[key] = detail_url
+    if source_url and key == "url":
+        item["source_url"] = source_url
     return item
 
 
@@ -520,6 +621,185 @@ def _log_error(req: AskRequest, exc: Exception, *, start: float, status_code: in
     ))
 
 
+def _load_recall_record(recall_number: str) -> dict[str, Any] | None:
+    """Load one recall detail record from the local openFDA-backed table."""
+    engine = _require_engine()
+    columns = ", ".join(RECALL_DETAIL_COLUMNS)
+    with RecallAnalytics(engine.dsn) as analytics:
+        with analytics.conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {columns} FROM drug_enforcement WHERE recall_number = %s LIMIT 1",
+                [recall_number],
+            )
+            row = cur.fetchone()
+    if row is None:
+        return None
+    return dict(zip(RECALL_DETAIL_COLUMNS, row))
+
+
+def _is_missing(value: Any) -> bool:
+    return value is None or value == "" or value == [] or value == {}
+
+
+def _record_value(record: dict[str, Any], key: str) -> Any:
+    value = record.get(key)
+    raw = record.get("raw")
+    if _is_missing(value) and isinstance(raw, dict):
+        value = raw.get(key)
+    return value
+
+
+def _detail_text(value: Any) -> str:
+    value = _json_safe(value)
+    if _is_missing(value):
+        return ""
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)
+    return str(value).strip()
+
+
+def _detail_html_text(value: Any) -> str:
+    return escape(_detail_text(value)).replace("\n", "<br>")
+
+
+def _detail_field_html(record: dict[str, Any], key: str, label: str) -> str:
+    text = _detail_html_text(_record_value(record, key))
+    if not text:
+        return ""
+    extra = " detail-field-long" if key in RECALL_DETAIL_LONG_FIELDS else ""
+    return (
+        f'<div class="detail-field{extra}">'
+        f"<dt>{escape(label)}</dt>"
+        f"<dd>{text}</dd>"
+        "</div>"
+    )
+
+
+def _detail_badge_html(record: dict[str, Any], key: str, label: str) -> str:
+    text = _detail_html_text(_record_value(record, key))
+    if not text:
+        return ""
+    return (
+        '<span class="badge detail-badge">'
+        f"<span>{escape(label)}:</span> {text}"
+        "</span>"
+    )
+
+
+def _detail_section_html(record: dict[str, Any], title: str, fields: list[tuple[str, str]]) -> str:
+    field_html = "".join(
+        _detail_field_html(record, key, label)
+        for key, label in fields
+    )
+    if not field_html:
+        return ""
+    return (
+        '<section class="detail-card">'
+        f"<h2>{escape(title)}</h2>"
+        f'<dl class="detail-grid">{field_html}</dl>'
+        "</section>"
+    )
+
+
+def _source_links_html(recall_number: str) -> str:
+    raw_url = recall_verification_url(recall_number) or OPENFDA_DRUG_ENFORCEMENT_URL
+    return (
+        '<section class="detail-card source-card">'
+        "<h2>Source and verification</h2>"
+        "<p>"
+        "This page renders the local FDAgent copy of the public openFDA "
+        "<code>drug/enforcement</code> record. Use the source links below to audit the "
+        "original API response and openFDA data terms."
+        "</p>"
+        '<div class="detail-source-links">'
+        f'<a href="{escape(raw_url, quote=True)}" target="_blank" rel="noopener noreferrer">'
+        "Raw openFDA API result</a>"
+        f'<a href="{escape(OPENFDA_TERMS_URL, quote=True)}" target="_blank" rel="noopener noreferrer">'
+        "openFDA terms</a>"
+        f'<a href="{escape(OPENFDA_DISCLAIMER_URL, quote=True)}" target="_blank" rel="noopener noreferrer">'
+        "openFDA disclaimer</a>"
+        f'<a href="{escape(OPENFDA_LICENSE_URL, quote=True)}" target="_blank" rel="noopener noreferrer">'
+        "openFDA license</a>"
+        "</div>"
+        "</section>"
+    )
+
+
+def _html_page(title: str, body_html: str, *, status_code: int = 200) -> HTMLResponse:
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{escape(title)} - FDAgent</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body class="detail-page">
+  {body_html}
+</body>
+</html>
+"""
+    return HTMLResponse(html, status_code=status_code)
+
+
+def _recall_not_found_page(recall_number: str, message: str) -> HTMLResponse:
+    normalized = _normalized_recall_number(recall_number)
+    source = _source_links_html(normalized) if normalized else ""
+    body = (
+        '<main class="detail-shell">'
+        '<a class="detail-back-link" href="/">← Back to FDAgent</a>'
+        '<section class="detail-card detail-hero">'
+        "<p class=\"detail-kicker\">Recall detail</p>"
+        "<h1>Recall not found</h1>"
+        f"<p>{escape(message)}</p>"
+        '<p class="muted">FDAgent only renders syntactically valid recall numbers that exist '
+        "in the local openFDA drug-enforcement table; it does not fabricate missing records.</p>"
+        "</section>"
+        f"{source}"
+        "</main>"
+    )
+    return _html_page("Recall not found", body, status_code=404)
+
+
+def _recall_detail_page(record: dict[str, Any]) -> HTMLResponse:
+    recall_number = _detail_text(_record_value(record, "recall_number"))
+    missing = [
+        label for key, label in RECALL_DETAIL_CORE_FIELDS
+        if not _detail_text(_record_value(record, key))
+    ]
+    missing_html = ""
+    if missing:
+        missing_html = (
+            '<div class="detail-warning" role="note">'
+            "Some expected FDA fields are absent from this source record: "
+            f"{escape(', '.join(missing))}."
+            "</div>"
+        )
+    sections = "".join(
+        _detail_section_html(record, title, fields)
+        for title, fields in RECALL_DETAIL_SECTIONS
+    )
+    badges = "".join([
+        _detail_badge_html(record, "classification", "Classification"),
+        _detail_badge_html(record, "status", "Status"),
+        _detail_badge_html(record, "product_type", "Product type"),
+    ])
+    body = (
+        '<main class="detail-shell">'
+        '<a class="detail-back-link" href="/">← Back to FDAgent</a>'
+        '<section class="detail-card detail-hero">'
+        "<p class=\"detail-kicker\">FDA drug enforcement recall</p>"
+        f"<h1>{escape(recall_number)}</h1>"
+        f'<div class="badge-row">{badges}</div>'
+        f"{missing_html}"
+        "</section>"
+        f"{sections}"
+        f"{_source_links_html(recall_number)}"
+        "</main>"
+    )
+    return _html_page(f"Recall {recall_number}", body)
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
     provider_status = _engine.provider_status() if _engine is not None else llm.provider_status()
@@ -574,6 +854,29 @@ def ask_endpoint(req: AskRequest) -> dict[str, Any]:
                             detail=f"could not answer this question ({type(exc).__name__})")
     _log_success(req, ans, payload, start=start, model=_engine.model)
     return payload
+
+
+@app.get("/recalls/{recall_number}", response_class=HTMLResponse)
+def recall_detail(recall_number: str) -> HTMLResponse:
+    normalized = _normalized_recall_number(recall_number)
+    if normalized is None:
+        return _recall_not_found_page(
+            recall_number,
+            f"{recall_number!r} is not a valid FDA drug recall number.",
+        )
+    try:
+        record = _load_recall_record(normalized)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 — log server-side, return a safe message
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="could not load recall detail") from exc
+    if record is None:
+        return _recall_not_found_page(
+            normalized,
+            f"No FDAgent/openFDA drug-enforcement record was found for {normalized}.",
+        )
+    return _recall_detail_page(record)
 
 
 @app.get("/")
