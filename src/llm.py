@@ -232,7 +232,14 @@ def _openrouter_headers() -> dict[str, str]:
         headers["HTTP-Referer"] = referer
     if title := os.environ.get("OPENROUTER_APP_TITLE", "FDAgent"):
         headers["X-Title"] = title
+        headers["X-OpenRouter-Title"] = title
     return headers
+
+
+def _embedding_model_for_provider(provider: str, model: str) -> str:
+    if provider == "openrouter" and model == DEFAULT_EMBED_MODEL:
+        return DEFAULT_OPENROUTER_EMBED_MODEL
+    return model
 
 
 def embedding_config(*, model: str | None = None) -> EmbeddingConfig:
@@ -240,6 +247,7 @@ def embedding_config(*, model: str | None = None) -> EmbeddingConfig:
     provider = os.environ.get("EMBED_PROVIDER", "openai").strip().lower() or "openai"
     if provider == "openai":
         chosen_model = model or _first_env("EMBED_MODEL", "OPENAI_EMBED_MODEL") or DEFAULT_EMBED_MODEL
+        chosen_model = _embedding_model_for_provider(provider, chosen_model)
         return EmbeddingConfig(
             provider=provider,
             model=chosen_model,
@@ -251,6 +259,7 @@ def embedding_config(*, model: str | None = None) -> EmbeddingConfig:
             or _first_env("EMBED_MODEL", "OPENROUTER_EMBED_MODEL")
             or DEFAULT_OPENROUTER_EMBED_MODEL
         )
+        chosen_model = _embedding_model_for_provider(provider, chosen_model)
         return EmbeddingConfig(
             provider=provider,
             model=chosen_model,
@@ -259,6 +268,7 @@ def embedding_config(*, model: str | None = None) -> EmbeddingConfig:
             default_headers=_openrouter_headers(),
         )
     chosen_model = model or os.environ.get("EMBED_MODEL") or DEFAULT_EMBED_MODEL
+    chosen_model = _embedding_model_for_provider(provider, chosen_model)
     return EmbeddingConfig(
         provider=provider,
         model=chosen_model,
