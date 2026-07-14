@@ -218,6 +218,7 @@
       "query": "glass particles in drug vials",
       "field": "both",
       "k": 10,
+      "retrieval_mode": "hybrid",
       "expected_recall_numbers": ["D-0580-2026", "D-0412-2025", "D-0416-2025"],
       "min_recall_at_k": 0.34
     }

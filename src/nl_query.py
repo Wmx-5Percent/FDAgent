@@ -675,7 +675,7 @@ def _run_semantic_count(
         embedding_error=embedding_error,
         fts_queries=spec.semantic_aliases,
     )
-    fallback_reason = (
+    fallback_reason = getattr(hits, "embedding_fallback_reason", None) or (
         hits[0].embedding_fallback_reason
         if hits else (
             type(embedding_error).__name__
@@ -683,7 +683,10 @@ def _run_semantic_count(
             else None
         )
     )
-    retrieval_mode = hits[0].retrieval_mode if hits else ("fts_only" if fallback_reason else "hybrid")
+    retrieval_mode = (
+        getattr(hits, "retrieval_mode", None)
+        or (hits[0].retrieval_mode if hits else ("fts_only" if fallback_reason else "hybrid"))
+    )
     eligible_hits = list(hits) if retrieval_mode == "fts_only" else [
         hit for hit in hits
         if hit.retrieval_score >= validation.MIN_RETRIEVAL_SCORE
@@ -885,8 +888,18 @@ def summarize(spec: QuerySpec, result: Any) -> str:
     if isinstance(result, TaxonomyExplanation):
         return result.answer
     if isinstance(result, validation.SemanticCountResult):
+        if result.retrieval_mode == "fts_only" and result.candidate_count == 0:
+            reason = (
+                f" ({result.embedding_fallback_reason})"
+                if result.embedding_fallback_reason else ""
+            )
+            return (
+                f"Semantic vector retrieval is unavailable{reason}; keyword fallback found no "
+                f"candidates for '{result.query}'. This degraded FTS-only result is not evidence "
+                "that FDA has zero matching recalls."
+            )
         mode_note = (
-            " using FTS-only fallback"
+            " using degraded FTS-only fallback"
             if result.retrieval_mode == "fts_only" else ""
         )
         if result.group_by:
@@ -910,8 +923,9 @@ def summarize(spec: QuerySpec, result: Any) -> str:
         )
     if spec.semantic_query:
         mode_note = (
-            " using FTS-only fallback"
-            if result and result[0].retrieval_mode == "fts_only" else ""
+            " using degraded FTS-only fallback"
+            if getattr(result, "retrieval_mode", None) == "fts_only"
+            or (result and result[0].retrieval_mode == "fts_only") else ""
         )
         head = f"Top {len(result)} recalls matching '{spec.semantic_query}'{mode_note}:"
         body = "\n".join(
@@ -1080,19 +1094,21 @@ class NLEngine:
         if (
             spec.semantic_query
             and spec.intent is Intent.sample
-            and not result
-            and self.embedding_error is not None
-            and llm.can_fallback_to_fts(self.embedding_error)
+            and getattr(result, "retrieval_mode", None) == "fts_only"
+            and getattr(result, "embedding_fallback_reason", None)
         ):
             metadata.update({
                 "retrieval_mode": "fts_only",
-                "embedding_fallback_reason": type(self.embedding_error).__name__,
+                "embedding_fallback_reason": getattr(result, "embedding_fallback_reason", None),
                 "degraded": True,
             })
-            summary = (
-                f"No keyword fallback matches for '{spec.semantic_query}'. Semantic vector retrieval "
-                "is currently unavailable, so this empty result is not a full semantic conclusion."
-            )
+            if not result:
+                summary = (
+                    f"No keyword fallback matches for '{spec.semantic_query}'. Semantic vector retrieval "
+                    "is currently unavailable, so this empty result is not a full semantic conclusion."
+                )
+            else:
+                summary = summarize(spec, result)
         else:
             summary = summarize(spec, result)
         return Answer(question, spec, summary, result, control=control, metadata=metadata)

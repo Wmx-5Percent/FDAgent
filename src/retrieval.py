@@ -59,6 +59,16 @@ class Hit:
         return self.score if self.score > 0 else self.similarity
 
 
+class SearchResult(list[Hit]):
+    """List of retrieval hits with degradation metadata even when the list is empty."""
+
+    def __init__(self, hits: Sequence[Hit] = (), *, retrieval_mode: str = "hybrid",
+                 embedding_fallback_reason: Optional[str] = None) -> None:
+        super().__init__(hits)
+        self.retrieval_mode = retrieval_mode
+        self.embedding_fallback_reason = embedding_fallback_reason
+
+
 @dataclass(frozen=True)
 class _Candidate:
     recall_number: str
@@ -233,7 +243,7 @@ def _fusion_key(candidate: _Candidate, field: str) -> tuple[str, ...]:
 
 def _rrf_fuse(vector_hits: Sequence[_Candidate], fts_hits: Sequence[_Candidate], *,
               k: int, field: str, retrieval_mode: str = "hybrid",
-              fallback_reason: str | None = None) -> list[Hit]:
+              fallback_reason: str | None = None) -> SearchResult:
     scores: dict[tuple[str, ...], float] = {}
     best: dict[tuple[str, ...], _Candidate] = {}
     best_component: dict[tuple[str, ...], float] = {}
@@ -259,7 +269,7 @@ def _rrf_fuse(vector_hits: Sequence[_Candidate], fts_hits: Sequence[_Candidate],
         scores,
         key=lambda key: (-scores[key], best[key].distance, best[key].recall_number, best[key].field),
     )
-    return [
+    hits = [
         Hit(
             recall_number=best[key].recall_number,
             field=best[key].field,
@@ -276,6 +286,11 @@ def _rrf_fuse(vector_hits: Sequence[_Candidate], fts_hits: Sequence[_Candidate],
         )
         for key in ranked_keys[:k]
     ]
+    return SearchResult(
+        hits,
+        retrieval_mode=retrieval_mode,
+        embedding_fallback_reason=fallback_reason,
+    )
 
 
 def search(conn: psycopg.Connection, client: Any | None, query: str, *,
@@ -283,7 +298,7 @@ def search(conn: psycopg.Connection, client: Any | None, query: str, *,
            filters: Sequence[Filter] = (), source: str = "drug_enforcement",
            embed_config: llm.EmbeddingConfig | None = None,
            embedding_error: BaseException | None = None,
-           fts_queries: Sequence[str] = ()) -> list[Hit]:
+           fts_queries: Sequence[str] = ()) -> SearchResult:
     """Hybrid records for ``query``, optionally pre-filtered by hard constraints.
 
     The vector and FTS halves both honor the same filters on the joined source table.
@@ -291,7 +306,7 @@ def search(conn: psycopg.Connection, client: Any | None, query: str, *,
     enriches from drug_enforcement (one source).
     """
     if k <= 0:
-        return []
+        return SearchResult()
     embed_config = embed_config or llm.embedding_config()
     limit = _candidate_limit(k)
     try:

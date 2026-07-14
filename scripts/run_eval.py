@@ -280,6 +280,7 @@ def _run_retrieval_case(case: Mapping[str, Any], *, dsn: str) -> EvalResult:
     k = int(case.get("k", 10))
     field = str(case.get("field", "both"))
     threshold = float(case.get("min_recall_at_k", 1.0))
+    expected_mode = case.get("retrieval_mode")
 
     embed_config = llm.embedding_config()
     embedding_error: llm.ProviderError | None = None
@@ -296,12 +297,18 @@ def _run_retrieval_case(case: Mapping[str, Any], *, dsn: str) -> EvalResult:
     with psycopg.connect(dsn) as conn:
         hits = retrieval.search(conn, client, query, k=k, field=field,
                                 embed_config=embed_config, embedding_error=embedding_error)
+    if expected_mode:
+        modes = {h.retrieval_mode for h in hits}
+        _require(modes == {expected_mode},
+                 f"expected retrieval_mode={expected_mode!r}, got {sorted(modes)!r}")
     returned = [h.recall_number for h in hits]
     matched = expected.intersection(returned)
     recall = len(matched) / len(expected)
     _require(recall >= threshold,
              f"recall@{k}={recall:.2f} below {threshold:.2f}; expected={sorted(expected)} got={returned}")
     return EvalResult(str(case["id"]), True,
+                      f"provider={embed_config.provider} model={embed_config.model} "
+                      f"retrieval_mode={getattr(hits, 'retrieval_mode', '-')} "
                       f"recall@{k}={recall:.2f} matched={sorted(matched)}")
 
 
