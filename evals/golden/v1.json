@@ -32,6 +32,16 @@
       }
     },
     {
+      "id": "control-out-of-domain-toyota-class-count",
+      "kind": "ask",
+      "question": "How many Class I recalls were there for Toyota cars?",
+      "assert": {
+        "route": "out_of_domain",
+        "data_kinds": ["message"],
+        "spec_empty": true
+      }
+    },
+    {
       "id": "control-zh-meta-ask",
       "kind": "ask",
       "question": "你可以做什么？",
@@ -124,6 +134,22 @@
           {"column": "country", "op": "eq", "values": ["United States"]}
         ],
         "value_equals": 1671,
+        "no_ilike": true
+      }
+    },
+    {
+      "id": "numeric-pending-class-i-preserves-status",
+      "kind": "ask",
+      "question": "How many pending Class I recalls are there?",
+      "assert": {
+        "route": "sql",
+        "intents": ["count_total"],
+        "data_kinds": ["scalar"],
+        "filters_include": [
+          {"column": "classification", "op": "eq", "values": ["Class I"]},
+          {"column": "status", "op": "eq", "values": ["Pending"]}
+        ],
+        "value_equals": 0,
         "no_ilike": true
       }
     },
@@ -232,6 +258,23 @@
       }
     },
     {
+      "id": "exposure-filtered-us-and-canada-preserves-all-countries",
+      "kind": "ask",
+      "question": "Which firms in the US and Canada have the most FDA drug recalls?",
+      "assert": {
+        "route": "sql",
+        "intents": ["count_by", "raw_firm_exposure"],
+        "data_kinds": ["distribution", "raw_firm_exposure"],
+        "filters_include": [
+          {"column": "country", "op": "in", "values": ["United States", "Canada"]}
+        ],
+        "top_items": [
+          {"firm_equals": "Aidapak Services, LLC", "recall_count_equals": 538}
+        ],
+        "no_ilike": true
+      }
+    },
+    {
       "id": "exposure-filtered-united-states-article-preserves-country",
       "kind": "ask",
       "question": "Which firms in the United States have the most FDA drug recalls?",
@@ -261,6 +304,23 @@
         ],
         "top_items": [
           {"firm_equals": "Aidapak Services, LLC", "recall_count_equals": 538}
+        ],
+        "no_ilike": true
+      }
+    },
+    {
+      "id": "exposure-filtered-bare-year-preserves-report-year",
+      "kind": "ask",
+      "question": "Which firms had the most FDA drug recalls 2024?",
+      "assert": {
+        "route": "sql",
+        "intents": ["count_by", "raw_firm_exposure"],
+        "data_kinds": ["distribution", "raw_firm_exposure"],
+        "filters_include": [
+          {"column": "report_date", "op": "between", "values": ["2024-01-01", "2024-12-31"]}
+        ],
+        "top_items": [
+          {"firm_equals": "CARDINAL HEALTHCARE", "recall_count_equals": 42}
         ],
         "no_ilike": true
       }

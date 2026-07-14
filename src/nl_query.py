@@ -339,14 +339,6 @@ _US_STATE_CODES = (
     "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
 )
 _US_STATE_NAME_TO_CODE = dict(zip(_US_STATE_NAMES, _US_STATE_CODES, strict=True))
-_STATE_FILTER_RE = re.compile(
-    r"\b(?:in|from|state(?:\s+of)?|州|加州)\s+("
-    + "|".join(re.escape(name) for name in _US_STATE_NAMES)
-    + r"|"
-    + "|".join(_US_STATE_CODES)
-    + r")\b",
-    re.IGNORECASE,
-)
 _COUNTRY_ALIASES = {
     "canada": "Canada",
     "united states": "United States",
@@ -379,19 +371,60 @@ _COUNTRY_ALIASES = {
     "uk": "United Kingdom",
     "dominican republic": "Dominican Republic (the)",
 }
-_COUNTRY_FILTER_RE = re.compile(
-    r"\b(?:in|from|country(?:\s+of)?|located\s+in)\s+(?:the\s+)?("
+_COUNTRY_ALIAS_RE = re.compile(
+    r"(?<![a-z0-9.])(?:the\s+)?("
     + "|".join(re.escape(name) for name in sorted(_COUNTRY_ALIASES, key=len, reverse=True))
-    + r")(?=$|[\s,?.!;:])",
+    + r")(?![a-z0-9.])",
     re.IGNORECASE,
 )
-_LOCATION_FILTER_RE = re.compile(
-    r"\b(?:in|from|country(?:\s+of)?|located\s+in)\s+(?:the\s+)?"
-    r"([a-z][a-z.]+(?:\s+[a-z][a-z.]+){0,3})(?=$|[\s,?.!;:])",
+_STATE_NAME_RE = re.compile(
+    r"\b(" + "|".join(re.escape(name) for name in _US_STATE_NAMES) + r")\b",
     re.IGNORECASE,
 )
-_DATE_OR_STATUS_FILTER_RE = re.compile(
-    r"\b(?:ongoing|terminated|completed|since|after|before|between|during|in\s+(?:19|20)\d{2})\b",
+_STATE_CODE_RE = re.compile(r"\b(" + "|".join(_US_STATE_CODES) + r")\b")
+_LOCATION_PHRASE_RE = re.compile(
+    r"\b(?:in|from|country(?:\s+of)?|located\s+in)\s+(?P<phrase>[^?.!;:]+)",
+    re.IGNORECASE,
+)
+_LOCATION_PHRASE_STOP_RE = re.compile(
+    r"\b(?:have|has|had|were|are|is|there|with|by|for|about|rank|ranking|top|most|"
+    r"highest|lowest|recalls?|drug|fda|companies?|firms?)\b",
+    re.IGNORECASE,
+)
+_STATUS_ALIASES = {
+    "completed": "Completed",
+    "ongoing": "Ongoing",
+    "terminated": "Terminated",
+    "pending": "Pending",
+}
+_STATUS_FILTER_RE = re.compile(
+    r"\b(" + "|".join(re.escape(name) for name in _STATUS_ALIASES) + r")\b",
+    re.IGNORECASE,
+)
+_NEGATED_STATUS_FILTER_RE = re.compile(
+    r"\b(?:not|except|excluding|without)\s+("
+    + "|".join(re.escape(name) for name in _STATUS_ALIASES)
+    + r")\b|\bnon[-\s]?("
+    + "|".join(re.escape(name) for name in _STATUS_ALIASES)
+    + r")\b",
+    re.IGNORECASE,
+)
+_BARE_YEAR_RE = re.compile(r"(?<![\d/-])((?:19|20)\d{2})(?![\d/-])")
+_UNSUPPORTED_TEMPORAL_FILTER_RE = re.compile(
+    r"\b(?:since|after|before|between|during|last|past|recent|current|today|yesterday|"
+    r"this\s+(?:year|quarter|month|week)|"
+    r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*|"
+    r"q[1-4]|quarter|month|week|day)\b|"
+    r"\b\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?\b",
+    re.IGNORECASE,
+)
+_UNHANDLED_SUBJECT_FILTER_RE = re.compile(
+    r"\b(?:for|about|involving|related\s+to|made\s+by|manufactured\s+by)\s+"
+    r"(?!the\s+most\b)(?!most\b)(?!fda\b)(?!drug\b)(?!recalls?\b)(?!class\b)(?!\d{4}\b)",
+    re.IGNORECASE,
+)
+_OUT_OF_SCOPE_PRODUCT_HINT_RE = re.compile(
+    r"\b(?:cars?|vehicles?|automobiles?|toyota|honda|ford|tesla)\b",
     re.IGNORECASE,
 )
 _RAW_EXPOSURE_TOPIC_EXCLUSIONS = (
@@ -410,6 +443,20 @@ _RAW_EXPOSURE_TOPIC_EXCLUSIONS = (
     "recall reason",
     "recall reasons",
     "原因",
+)
+_SIMPLE_CLASS_COUNT_TOPIC_EXCLUSIONS = _RAW_EXPOSURE_TOPIC_EXCLUSIONS + (
+    "product",
+    "products",
+    "brand",
+    "brands",
+    "firm",
+    "firms",
+    "company",
+    "companies",
+    "厂商",
+    "公司",
+    "产品",
+    "品牌",
 )
 _TAXONOMY_EXPLANATION_ALIASES = {
     "cgmp_deviation": (
@@ -490,13 +537,159 @@ def _extract_limit(question: str, default: int = 20) -> int:
     return default
 
 
+def _unique_preserve_order(values: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        key = value.casefold()
+        if key not in seen:
+            seen.add(key)
+            out.append(value)
+    return out
+
+
+def _multi_value_filter(column: str, values: list[str]) -> FilterSpec | None:
+    values = _unique_preserve_order([value for value in values if value])
+    if not values:
+        return None
+    op = Op.eq if len(values) == 1 else Op.in_
+    return FilterSpec(column=column, op=op, values=values)
+
+
+def _status_filter_spec_or_defer(question: str) -> tuple[FilterSpec | None, bool]:
+    if _NEGATED_STATUS_FILTER_RE.search(question):
+        return None, True
+    values = [
+        _STATUS_ALIASES[match.group(1).casefold()]
+        for match in _STATUS_FILTER_RE.finditer(question)
+    ]
+    return _multi_value_filter("status", values), False
+
+
+def _date_filter_spec_or_defer(question: str) -> tuple[FilterSpec | None, bool]:
+    if _UNSUPPORTED_TEMPORAL_FILTER_RE.search(question):
+        return None, True
+    years = _unique_preserve_order(list(_BARE_YEAR_RE.findall(question)))
+    if len(years) > 1:
+        return None, True
+    if not years:
+        return None, False
+    year = years[0]
+    return FilterSpec(
+        column="report_date",
+        op=Op.between,
+        values=[f"{year}-01-01", f"{year}-12-31"],
+    ), False
+
+
+def _state_codes_in_text(text: str) -> list[str]:
+    values: list[str] = []
+    for match in _STATE_NAME_RE.finditer(text):
+        code = _US_STATE_NAME_TO_CODE.get(match.group(1).casefold())
+        if code:
+            values.append(code)
+    for match in _STATE_CODE_RE.finditer(text):
+        values.append(match.group(1).upper())
+    return _unique_preserve_order(values)
+
+
+def _country_values_in_text(text: str) -> list[str]:
+    values: list[str] = []
+    for match in _COUNTRY_ALIAS_RE.finditer(text):
+        value = _COUNTRY_ALIASES.get(match.group(1).casefold())
+        if value:
+            values.append(value)
+    return _unique_preserve_order(values)
+
+
+def _trim_location_phrase(phrase: str) -> str:
+    phrase = _LOCATION_PHRASE_STOP_RE.split(phrase, maxsplit=1)[0]
+    return phrase.strip(" \t\r\n,")
+
+
+def _location_remainder(phrase: str) -> str:
+    remainder = _COUNTRY_ALIAS_RE.sub(" ", phrase)
+    remainder = _STATE_NAME_RE.sub(" ", remainder)
+    remainder = _STATE_CODE_RE.sub(" ", remainder)
+    remainder = re.sub(r"\b(?:the|and|or)\b", " ", remainder, flags=re.IGNORECASE)
+    remainder = re.sub(r"[,/&()+-]", " ", remainder)
+    return " ".join(re.findall(r"[a-z]+", remainder.casefold()))
+
+
+def _location_filter_specs_or_defer(question: str) -> tuple[list[FilterSpec], bool]:
+    country_values: list[str] = []
+    state_codes: list[str] = []
+    saw_location_phrase = False
+    for match in _LOCATION_PHRASE_RE.finditer(question):
+        phrase = _trim_location_phrase(match.group("phrase"))
+        if not phrase:
+            continue
+        # "in 2024" is a temporal filter handled by _date_filter_spec_or_defer, not a
+        # location phrase. Do not treat numeric-only phrases as unknown locations.
+        if not re.search(r"[a-z]", phrase, re.IGNORECASE):
+            continue
+        saw_location_phrase = True
+        phrase_countries = _country_values_in_text(phrase)
+        phrase_states = _state_codes_in_text(phrase)
+        if _location_remainder(phrase):
+            return [], True
+        # Mixing state and country in one deterministic pre-route can mean either an AND
+        # ("California, United States") or an OR ("California and Canada"). Defer rather
+        # than risk changing the user's location semantics.
+        if phrase_countries and phrase_states:
+            return [], True
+        country_values.extend(phrase_countries)
+        state_codes.extend(phrase_states)
+
+    filters: list[FilterSpec] = []
+    country_filter = _multi_value_filter("country", country_values)
+    if country_filter is not None:
+        filters.append(country_filter)
+    state_filter = _multi_value_filter("state", state_codes)
+    if state_filter is not None:
+        filters.append(state_filter)
+    if saw_location_phrase and not filters:
+        return [], True
+    return filters, False
+
+
+def _safe_hard_filter_specs_or_defer(question: str) -> tuple[list[FilterSpec], bool]:
+    """Parse hard filters the deterministic fast paths can represent exactly.
+
+    Any date/status/location wording outside this deliberately small grammar returns
+    ``defer=True`` so the LLM QuerySpec path can preserve it instead of a helper issuing
+    unfiltered or partially-filtered SQL.
+    """
+    filters: list[FilterSpec] = []
+    status_filter, defer = _status_filter_spec_or_defer(question)
+    if defer:
+        return [], True
+    if status_filter is not None:
+        filters.append(status_filter)
+    date_filter, defer = _date_filter_spec_or_defer(question)
+    if defer:
+        return [], True
+    if date_filter is not None:
+        filters.append(date_filter)
+    location_filters, defer = _location_filter_specs_or_defer(question)
+    if defer:
+        return [], True
+    filters.extend(location_filters)
+    return filters, False
+
+
+def _looks_like_unhandled_subject_filter(question: str) -> bool:
+    return bool(_UNHANDLED_SUBJECT_FILTER_RE.search(question) or _OUT_OF_SCOPE_PRODUCT_HINT_RE.search(question))
+
+
 def _maybe_raw_firm_exposure_spec(question: str) -> QuerySpec | None:
     """Deterministically catch the v0 raw-firm exposure wording before generic QuerySpec.
 
     This avoids relying on the model to discover the new intent while preserving the older
-    filtered/class-specific ``count_by recalling_firm`` paths. If a hard filter appears in
-    the prompt, the LLM-generated QuerySpec gets a chance to preserve it instead of this small
-    pre-router fabricating an unfiltered/global leaderboard.
+    filtered/class-specific ``count_by recalling_firm`` paths. The helper either preserves
+    every hard filter it recognizes exactly (status, one bare report year, country/countries,
+    state, classification) or returns ``None`` so the LLM-generated QuerySpec can handle the
+    prompt instead of this pre-router fabricating an unfiltered/global leaderboard.
     """
     q = question.casefold()
     if not (_RAW_EXPOSURE_CONTEXT_RE.search(question) or any(hint in question for hint in _RAW_EXPOSURE_ZH_HINTS)):
@@ -514,15 +707,11 @@ def _maybe_raw_firm_exposure_spec(question: str) -> QuerySpec | None:
         if metric is not ExposureMetric.severity_weighted:
             return None
         filters.append(FilterSpec(column="classification", op=Op.eq, values=[class_label]))
-    state_code = _state_filter_code(question)
-    if state_code:
-        filters.append(FilterSpec(column="state", op=Op.eq, values=[state_code]))
-    country_value = _country_filter_value(question)
-    if country_value:
-        filters.append(FilterSpec(column="country", op=Op.eq, values=[country_value]))
-    elif _looks_like_location_filter(question) and state_code is None:
+    hard_filters, defer = _safe_hard_filter_specs_or_defer(question)
+    if defer:
         return None
-    if _DATE_OR_STATUS_FILTER_RE.search(question):
+    filters.extend(hard_filters)
+    if _looks_like_unhandled_subject_filter(question):
         return None
     if any(hint in q for hint in _RAW_EXPOSURE_TOPIC_EXCLUSIONS):
         return None
@@ -554,54 +743,33 @@ def _class_filter_label(question: str) -> str | None:
     return labels.get(class_token)
 
 
-def _state_filter_code(question: str) -> str | None:
-    match = _STATE_FILTER_RE.search(question)
-    if not match:
-        return None
-    value = match.group(1).casefold()
-    if len(value) == 2:
-        return value.upper()
-    return _US_STATE_NAME_TO_CODE.get(value)
-
-
-def _country_filter_value(question: str) -> str | None:
-    match = _COUNTRY_FILTER_RE.search(question)
-    if not match:
-        return None
-    return _COUNTRY_ALIASES.get(match.group(1).casefold())
-
-
-def _looks_like_location_filter(question: str) -> bool:
-    return bool(_LOCATION_FILTER_RE.search(question))
-
-
 def _maybe_simple_class_count_spec(question: str) -> QuerySpec | None:
-    """Deterministic fast path for unfiltered "How many Class X recalls" questions.
+    """Deterministic fast path for simple "How many Class X recalls" questions.
 
     The LLM occasionally adds unrelated fields such as date grains or sample sizes to this
-    canonical count question. Keep the eval-stable, SQL-only interpretation explicit, but only
-    after the domain guard has accepted the prompt and only for unfiltered all-time wording.
+    canonical count question. Keep the eval-stable, SQL-only interpretation explicit, but
+    only after the domain guard has accepted the prompt and only when every hard constraint
+    is exactly represented. Unknown subject/product/location/time qualifiers defer to the
+    LLM QuerySpec path.
     """
     match = _SIMPLE_CLASS_COUNT_RE.search(question)
     if not match:
         return None
     q = question.casefold()
-    if _DATE_OR_STATUS_FILTER_RE.search(question):
-        return None
     if any(word in q for word in (" by ", " trend", " distribution", "breakdown", "most", "top", "rank")):
+        return None
+    if any(hint in q for hint in _SIMPLE_CLASS_COUNT_TOPIC_EXCLUSIONS):
+        return None
+    if _looks_like_unhandled_subject_filter(question):
         return None
     label = _class_filter_label(question)
     if label is None:
         return None
     filters = [FilterSpec(column="classification", op=Op.eq, values=[label])]
-    state_code = _state_filter_code(question)
-    if state_code:
-        filters.append(FilterSpec(column="state", op=Op.eq, values=[state_code]))
-    country_value = _country_filter_value(question)
-    if country_value:
-        filters.append(FilterSpec(column="country", op=Op.eq, values=[country_value]))
-    elif _looks_like_location_filter(question) and state_code is None:
+    hard_filters, defer = _safe_hard_filter_specs_or_defer(question)
+    if defer:
         return None
+    filters.extend(hard_filters)
     return QuerySpec(
         intent=Intent.count_total,
         filters=filters,
@@ -1670,14 +1838,7 @@ class NLEngine:
                 model=self.chat_config.model,
                 operation="chat",
             )
-        explanation_spec = _maybe_taxonomy_explanation_spec(question, self.taxonomy_nodes)
-        simple_class_count_spec = _maybe_simple_class_count_spec(question)
         control = agent_control.classify_llm(self.chat_client, self.chat_config, question)
-        if control.terminal and (explanation_spec is not None or simple_class_count_spec is not None):
-            control = agent_control.AgentControlDecision(
-                route="in_domain",
-                reason="taxonomy_explanation" if explanation_spec is not None else "simple_class_count",
-            )
         if control.terminal:
             result = agent_control.result_from_decision(control)
             return Answer(
@@ -1688,6 +1849,8 @@ class NLEngine:
                 control=control,
                 metadata={"control_route": control.route, "control_reason": control.reason},
             )
+        explanation_spec = _maybe_taxonomy_explanation_spec(question, self.taxonomy_nodes)
+        simple_class_count_spec = _maybe_simple_class_count_spec(question)
         exposure_spec = _maybe_raw_firm_exposure_spec(question)
         spec = explanation_spec or simple_class_count_spec or exposure_spec or generate_spec(
             self.chat_client, self.chat_config, question, self.schema_ctx, self.taxonomy_ctx)
