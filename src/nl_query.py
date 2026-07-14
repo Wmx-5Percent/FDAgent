@@ -347,6 +347,47 @@ _STATE_FILTER_RE = re.compile(
     + r")\b",
     re.IGNORECASE,
 )
+_COUNTRY_ALIASES = {
+    "canada": "Canada",
+    "united states": "United States",
+    "usa": "United States",
+    "u.s.": "United States",
+    "u.s": "United States",
+    "us": "United States",
+    "india": "India",
+    "china": "China",
+    "mexico": "Mexico",
+    "jordan": "Jordan",
+    "germany": "Germany",
+    "spain": "Spain",
+    "guyana": "Guyana",
+    "turkey": "Turkey",
+    "guatemala": "Guatemala",
+    "japan": "Japan",
+    "korea": "Korea (the Republic of)",
+    "south korea": "Korea (the Republic of)",
+    "united arab emirates": "United Arab Emirates",
+    "uae": "United Arab Emirates",
+    "switzerland": "Switzerland",
+    "aruba": "Aruba",
+    "australia": "Australia",
+    "croatia": "Croatia",
+    "ireland": "Ireland",
+    "israel": "Israel",
+    "taiwan": "Taiwan",
+    "united kingdom": "United Kingdom",
+    "uk": "United Kingdom",
+    "dominican republic": "Dominican Republic (the)",
+}
+_COUNTRY_FILTER_RE = re.compile(
+    r"\b(?:in|from|country(?:\s+of)?|located\s+in)\s+("
+    + "|".join(re.escape(name) for name in sorted(_COUNTRY_ALIASES, key=len, reverse=True))
+    + r")\b",
+    re.IGNORECASE,
+)
+_LOCATION_FILTER_RE = re.compile(
+    r"\b(?:in|from|country(?:\s+of)?|located\s+in)\s+([A-Z][A-Za-z.]*(?:\s+[A-Z][A-Za-z.]*){0,3})\b"
+)
 _DATE_OR_STATUS_FILTER_RE = re.compile(
     r"\b(?:ongoing|terminated|completed|since|after|before|between|during|in\s+(?:19|20)\d{2})\b",
     re.IGNORECASE,
@@ -474,6 +515,11 @@ def _maybe_raw_firm_exposure_spec(question: str) -> QuerySpec | None:
     state_code = _state_filter_code(question)
     if state_code:
         filters.append(FilterSpec(column="state", op=Op.eq, values=[state_code]))
+    country_value = _country_filter_value(question)
+    if country_value:
+        filters.append(FilterSpec(column="country", op=Op.eq, values=[country_value]))
+    elif _looks_like_location_filter(question) and state_code is None:
+        return None
     if _DATE_OR_STATUS_FILTER_RE.search(question):
         return None
     if any(hint in q for hint in _RAW_EXPOSURE_TOPIC_EXCLUSIONS):
@@ -514,6 +560,17 @@ def _state_filter_code(question: str) -> str | None:
     if len(value) == 2:
         return value.upper()
     return _US_STATE_NAME_TO_CODE.get(value)
+
+
+def _country_filter_value(question: str) -> str | None:
+    match = _COUNTRY_FILTER_RE.search(question)
+    if not match:
+        return None
+    return _COUNTRY_ALIASES.get(match.group(1).casefold())
+
+
+def _looks_like_location_filter(question: str) -> bool:
+    return bool(_LOCATION_FILTER_RE.search(question))
 
 
 def _maybe_simple_class_count_spec(question: str) -> QuerySpec | None:

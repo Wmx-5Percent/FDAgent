@@ -167,6 +167,23 @@
       }
     },
     {
+      "id": "exposure-filtered-canada-preserves-country",
+      "kind": "ask",
+      "question": "Which firms in Canada have the most FDA drug recalls?",
+      "assert": {
+        "route": "sql",
+        "intents": ["count_by", "raw_firm_exposure"],
+        "data_kinds": ["distribution", "raw_firm_exposure"],
+        "filters_include": [
+          {"column": "country", "op": "eq", "values": ["Canada"]}
+        ],
+        "top_items": [
+          {"firm_equals": "Attix Pharmaceuticals", "recall_count_equals": 470}
+        ],
+        "no_ilike": true
+      }
+    },
+    {
       "id": "exposure-filtered-class-i-preserves-class",
       "kind": "ask",
       "question": "Rank firms by severity-weighted Class I recalls.",
