@@ -154,6 +154,32 @@
       }
     },
     {
+      "id": "helper-bare-country-class-count-preserves-country",
+      "kind": "deterministic_helper",
+      "question": "How many Class I Canada drug recalls are there?",
+      "assert": {
+        "simple_class_count_filters_include": [
+          {"column": "classification", "op": "eq", "values": ["Class I"]},
+          {"column": "country", "op": "eq", "values": ["Canada"]}
+        ],
+        "raw_firm_exposure_spec_empty": true,
+        "helper_filter_invariant": true
+      }
+    },
+    {
+      "id": "helper-bare-state-class-count-preserves-state",
+      "kind": "deterministic_helper",
+      "question": "How many Class I California drug recalls are there?",
+      "assert": {
+        "simple_class_count_filters_include": [
+          {"column": "classification", "op": "eq", "values": ["Class I"]},
+          {"column": "state", "op": "eq", "values": ["CA"]}
+        ],
+        "raw_firm_exposure_spec_empty": true,
+        "helper_filter_invariant": true
+      }
+    },
+    {
       "id": "helper-product-qualified-class-count-containing-defers",
       "kind": "deterministic_helper",
       "question": "How many Class I recalls containing acetaminophen are there?",
@@ -273,6 +299,30 @@
           {"firm_equals": "Attix Pharmaceuticals", "recall_count_equals": 470}
         ],
         "no_ilike": true
+      }
+    },
+    {
+      "id": "helper-bare-country-raw-exposure-preserves-country",
+      "kind": "deterministic_helper",
+      "question": "Which firms have the most Canada FDA drug recalls?",
+      "assert": {
+        "simple_class_count_spec_empty": true,
+        "raw_firm_exposure_filters_include": [
+          {"column": "country", "op": "eq", "values": ["Canada"]}
+        ],
+        "helper_filter_invariant": true
+      }
+    },
+    {
+      "id": "helper-bare-state-raw-exposure-preserves-state",
+      "kind": "deterministic_helper",
+      "question": "Which firms have the most California FDA drug recalls?",
+      "assert": {
+        "simple_class_count_spec_empty": true,
+        "raw_firm_exposure_filters_include": [
+          {"column": "state", "op": "eq", "values": ["CA"]}
+        ],
+        "helper_filter_invariant": true
       }
     },
     {

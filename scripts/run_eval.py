@@ -24,8 +24,10 @@ from api import serialize_answer  # noqa: E402
 from nl_query import (  # noqa: E402
     MODEL,
     NLEngine,
+    _class_filter_label,
     _maybe_raw_firm_exposure_spec,
     _maybe_simple_class_count_spec,
+    _safe_hard_filter_specs_or_defer,
 )
 
 DEFAULT_DSN = os.environ.get("DATABASE_URL", "postgresql://localhost:5432/fda")
@@ -359,6 +361,10 @@ def _assert_deterministic_helper_case(case: Mapping[str, Any]) -> EvalResult:
     question = str(case["question"])
     simple_spec = _maybe_simple_class_count_spec(question)
     raw_spec = _maybe_raw_firm_exposure_spec(question)
+    specs = {
+        "simple_class_count": simple_spec,
+        "raw_firm_exposure": raw_spec,
+    }
     if assertions.get("simple_class_count_spec_empty"):
         _require(
             simple_spec is None,
@@ -371,6 +377,31 @@ def _assert_deterministic_helper_case(case: Mapping[str, Any]) -> EvalResult:
             "expected raw firm exposure fast path to defer, got "
             f"{raw_spec.model_dump(mode='json', exclude_none=True) if raw_spec else None}",
         )
+    for helper_name, spec in specs.items():
+        expected_filters = assertions.get(f"{helper_name}_filters_include") or []
+        if expected_filters:
+            _require(spec is not None, f"expected {helper_name} fast path to match")
+            _assert_filters(
+                {"filters_include": expected_filters},
+                spec.model_dump(mode="json", exclude_none=True),
+            )
+    if assertions.get("helper_filter_invariant"):
+        hard_filters, defer = _safe_hard_filter_specs_or_defer(question)
+        class_label = _class_filter_label(question)
+        expected = [
+            {"column": f.column, "op": f.op.value, "values": f.values}
+            for f in hard_filters
+        ]
+        if class_label:
+            expected.insert(0, {"column": "classification", "op": "eq", "values": [class_label]})
+        for helper_name, spec in specs.items():
+            if spec is None:
+                continue
+            _require(not defer, f"{helper_name} matched although hard-filter parser requested deferral")
+            _assert_filters(
+                {"filters_include": expected},
+                spec.model_dump(mode="json", exclude_none=True),
+            )
     return EvalResult(
         str(case["id"]),
         True,

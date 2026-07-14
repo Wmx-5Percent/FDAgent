@@ -696,6 +696,19 @@ def _location_filter_specs_or_defer(question: str) -> tuple[list[FilterSpec], bo
         country_values.extend(phrase_countries)
         state_codes.extend(phrase_states)
 
+    # Bare location adjectives before the recall noun are hard filters too:
+    # "Canada drug recalls", "California FDA drug recalls", "CA Class I recalls".
+    # Preserve them exactly instead of letting unmatched-token cleanup hide them.
+    country_values.extend(_country_values_in_text(question))
+    state_codes.extend(_state_codes_in_text(question))
+    country_values = _unique_preserve_order(country_values)
+    state_codes = _unique_preserve_order(state_codes)
+
+    # Mixed country+state can be an AND ("California, United States") or an OR/list
+    # ("California and Canada"). Deterministic helpers cannot infer that safely; defer.
+    if country_values and state_codes:
+        return [], True
+
     filters: list[FilterSpec] = []
     country_filter = _multi_value_filter("country", country_values)
     if country_filter is not None:
@@ -733,15 +746,36 @@ def _safe_hard_filter_specs_or_defer(question: str) -> tuple[list[FilterSpec], b
     return filters, False
 
 
-def _looks_like_unhandled_subject_filter(question: str) -> bool:
+def _looks_like_unhandled_subject_filter(
+    question: str,
+    emitted_filters: list[FilterSpec] | None = None,
+) -> bool:
     return bool(
         _UNHANDLED_SUBJECT_FILTER_RE.search(question)
         or _OUT_OF_SCOPE_PRODUCT_HINT_RE.search(question)
-        or _unmatched_subject_tokens(question)
+        or _unmatched_subject_tokens(question, emitted_filters)
     )
 
 
-def _unmatched_subject_tokens(question: str) -> list[str]:
+def _filter_values(emitted_filters: list[FilterSpec] | None, column: str) -> list[str]:
+    values: list[str] = []
+    for filter_spec in emitted_filters or []:
+        if filter_spec.column == column:
+            values.extend(filter_spec.values)
+    return _unique_preserve_order(values)
+
+
+def _remove_words(text: str, words: list[str]) -> str:
+    for word in words:
+        if word:
+            text = re.sub(r"\b" + re.escape(word.casefold()) + r"\b", " ", text, flags=re.IGNORECASE)
+    return text
+
+
+def _unmatched_subject_tokens(
+    question: str,
+    emitted_filters: list[FilterSpec] | None = None,
+) -> list[str]:
     """Return likely product/ingredient tokens left after known hard filters are removed.
 
     Deterministic helpers do not represent product/ingredient constraints. If a prompt leaves
@@ -750,13 +784,22 @@ def _unmatched_subject_tokens(question: str) -> list[str]:
     broader SQL question.
     """
     text = question.casefold()
-    text = _CLASS_SPECIFIC_RE.sub(" ", text)
-    text = _STATUS_FILTER_RE.sub(" ", text)
-    text = _COUNTRY_ALIAS_RE.sub(" ", text)
-    text = _STATE_NAME_RE.sub(" ", text)
-    text = re.sub(r"\b(" + "|".join(_US_STATE_CODES) + r")\b", " ", text, flags=re.IGNORECASE)
-    text = _BARE_YEAR_RE.sub(" ", text)
-    text = re.sub(r"\b\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?\b", " ", text)
+    if _filter_values(emitted_filters, "classification"):
+        text = _CLASS_SPECIFIC_RE.sub(" ", text)
+    text = _remove_words(text, [value.casefold() for value in _filter_values(emitted_filters, "status")])
+    for country in _filter_values(emitted_filters, "country"):
+        aliases = [alias for alias, value in _COUNTRY_ALIASES.items() if value == country]
+        text = _remove_words(text, aliases)
+    for state_code in _filter_values(emitted_filters, "state"):
+        state_names = [
+            name for name, code in _US_STATE_NAME_TO_CODE.items()
+            if code == state_code
+        ]
+        text = _remove_words(text, [state_code, *state_names])
+    for filter_spec in emitted_filters or []:
+        if filter_spec.column.endswith("_date") and filter_spec.values:
+            years = [value[:4] for value in filter_spec.values if re.match(r"^(?:19|20)\d{2}", value)]
+            text = _remove_words(text, years)
     tokens = re.findall(r"[a-z][a-z0-9]*", text)
     return [
         token
@@ -795,7 +838,7 @@ def _maybe_raw_firm_exposure_spec(question: str) -> QuerySpec | None:
     if defer:
         return None
     filters.extend(hard_filters)
-    if _looks_like_unhandled_subject_filter(question):
+    if _looks_like_unhandled_subject_filter(question, filters):
         return None
     if any(hint in q for hint in _RAW_EXPOSURE_TOPIC_EXCLUSIONS):
         return None
@@ -844,8 +887,6 @@ def _maybe_simple_class_count_spec(question: str) -> QuerySpec | None:
         return None
     if any(hint in q for hint in _SIMPLE_CLASS_COUNT_TOPIC_EXCLUSIONS):
         return None
-    if _looks_like_unhandled_subject_filter(question):
-        return None
     label = _class_filter_label(question)
     if label is None:
         return None
@@ -854,6 +895,8 @@ def _maybe_simple_class_count_spec(question: str) -> QuerySpec | None:
     if defer:
         return None
     filters.extend(hard_filters)
+    if _looks_like_unhandled_subject_filter(question, filters):
+        return None
     return QuerySpec(
         intent=Intent.count_total,
         filters=filters,
