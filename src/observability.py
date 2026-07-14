@@ -89,10 +89,6 @@ def response_metadata(response: Mapping[str, Any], *, model: str | None = None,
         "data_kind": data_kind,
         "summary_chars": len(str(response.get("summary") or "")),
     }
-    highlights = response.get("highlights")
-    if isinstance(highlights, list):
-        metadata["highlight_count"] = len(highlights)
-        metadata["highlight_chars"] = sum(len(str(item)) for item in highlights)
     if provider:
         metadata["provider"] = provider
     if model:
