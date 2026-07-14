@@ -122,6 +122,14 @@ def _assert_item_matches(actual: Mapping[str, Any], expected: Mapping[str, Any],
                 str(expected_value).casefold() in str(actual_value).casefold(),
                 f"{context}.{actual_key} expected to contain {expected_value!r}, got {actual_value!r}",
             )
+        elif key == "firm_equals":
+            actual_value = actual.get("recalling_firm", actual.get("value"))
+            _require(actual_value == expected_value,
+                     f"{context}.firm expected {expected_value!r}, got {actual_value!r}")
+        elif key == "recall_count_equals":
+            actual_value = actual.get("total_recalls", actual.get("count"))
+            _require(actual_value == expected_value,
+                     f"{context}.recall_count expected {expected_value!r}, got {actual_value!r}")
         else:
             actual_value = actual.get(key)
             _require(actual_value == expected_value,
@@ -185,6 +193,30 @@ def _assert_sections(assertions: Mapping[str, Any], data: Mapping[str, Any]) -> 
             )
 
 
+def _assert_filters(assertions: Mapping[str, Any], spec: Mapping[str, Any]) -> None:
+    expected_filters = assertions.get("filters_include") or []
+    if not expected_filters:
+        return
+    filters = _spec_filters(spec)
+    for expected in expected_filters:
+        _require(isinstance(expected, Mapping), "filters_include entries must be objects")
+        expected_column = expected.get("column")
+        expected_op = expected.get("op")
+        expected_values = [str(v).casefold() for v in expected.get("values", [])]
+        matched = False
+        for actual in filters:
+            if expected_column and actual.get("column") != expected_column:
+                continue
+            if expected_op and _plain(actual.get("op")) != expected_op:
+                continue
+            actual_values = [str(v).casefold() for v in (actual.get("values") or [])]
+            if expected_values and not all(v in actual_values for v in expected_values):
+                continue
+            matched = True
+            break
+        _require(matched, f"expected filter {dict(expected)!r}, got {filters!r}")
+
+
 def _assert_ask_case(case: Mapping[str, Any], answer: Mapping[str, Any]) -> EvalResult:
     assertions = case.get("assert") or {}
     _require(isinstance(assertions, Mapping), "ask case assert must be an object")
@@ -213,6 +245,7 @@ def _assert_ask_case(case: Mapping[str, Any], answer: Mapping[str, Any]) -> Eval
         _assert_no_ilike(spec)
     if assertions.get("spec_empty"):
         _require(not spec, f"expected empty spec for guarded response, got {spec!r}")
+    _assert_filters(assertions, spec)
     if data_kind in {"semantic_count", "semantic_distribution"}:
         _assert_semantic_count(assertions, data)
     _assert_sections(assertions, data)

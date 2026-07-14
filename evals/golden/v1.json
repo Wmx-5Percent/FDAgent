@@ -22,6 +22,16 @@
       }
     },
     {
+      "id": "control-out-of-domain-company-employees",
+      "kind": "ask",
+      "question": "Which companies have the most employees?",
+      "assert": {
+        "route": "out_of_domain",
+        "data_kinds": ["message"],
+        "spec_empty": true
+      }
+    },
+    {
       "id": "control-zh-meta-ask",
       "kind": "ask",
       "question": "你可以做什么？",
@@ -132,6 +142,40 @@
           }
         ],
         "summary_contains_any": ["severity-weighted exposure score", "not a safety verdict", "raw FDA"],
+        "no_ilike": true
+      }
+    },
+    {
+      "id": "exposure-filtered-california-preserves-state",
+      "kind": "ask",
+      "question": "Which firms in California have the most FDA drug recalls?",
+      "assert": {
+        "route": "sql",
+        "intents": ["count_by", "raw_firm_exposure"],
+        "data_kinds": ["distribution", "raw_firm_exposure"],
+        "filters_include": [
+          {"column": "state", "op": "eq", "values": ["CA"]}
+        ],
+        "top_items": [
+          {"firm_equals": "Herbal Doctor Remedies", "recall_count_equals": 113}
+        ],
+        "no_ilike": true
+      }
+    },
+    {
+      "id": "exposure-filtered-class-i-preserves-class",
+      "kind": "ask",
+      "question": "Rank firms by severity-weighted Class I recalls.",
+      "assert": {
+        "route": "sql",
+        "intents": ["count_by", "raw_firm_exposure"],
+        "data_kinds": ["distribution", "raw_firm_exposure"],
+        "filters_include": [
+          {"column": "classification", "op": "eq", "values": ["Class I"]}
+        ],
+        "top_items": [
+          {"firm_equals": "King Bio Inc.", "recall_count_equals": 465}
+        ],
         "no_ilike": true
       }
     },

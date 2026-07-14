@@ -175,7 +175,8 @@ Rules:
   class-specific distribution such as "Which firms had the most Class I recalls?", or for a
   concept-specific distribution such as "Which firms had the most sterility recalls?" -- use
   intent=count_by, group_by="recalling_firm", plus the classification/taxonomy/semantic concept
-  filter instead.
+  filter instead. When raw_firm_exposure is appropriate and the user adds HARD constraints
+  (state/country/status/date), preserve those constraints in filters; never drop them.
 - semantic_query: when the question asks about a fuzzy CONCEPT/topic in free text (e.g.
   "sterility problems", "cancer-causing impurity", "pills that are too strong", "glass fragments",
   or the same idea in another language such as "药效太强" or "细菌感染"), put the CORE concept here
@@ -271,6 +272,10 @@ _COUNT_OR_CHART_ZH_HINTS = (
     "排名", "排行", "趋势", "按公司", "按厂商", "按州", "按分类", "哪几家", "哪些公司",
 )
 _CLASS_SPECIFIC_RE = re.compile(r"\bclass\s*(?:i{1,3}|1|2|3)\b", re.IGNORECASE)
+_RAW_EXPOSURE_CONTEXT_RE = re.compile(
+    r"\b(?:recall|recalls|recalling|exposure|severity[-\s]?weighted)\b",
+    re.IGNORECASE,
+)
 _RAW_EXPOSURE_EN_PATTERNS = (
     re.compile(r"\bwhich\s+(?:raw\s+)?(?:recalling\s+)?(?:firms|companies)\b.*\bmost\b", re.I),
     re.compile(r"\btop\s*\d*\s+(?:raw\s+)?(?:recalling\s+)?(?:firms|companies)\b", re.I),
@@ -305,6 +310,34 @@ _RAW_EXPOSURE_WEIGHTED_HINTS = (
     "风险暴露",
     "严重度",
     "加权",
+)
+_US_STATE_NAMES = (
+    "alabama", "alaska", "arizona", "arkansas", "california", "colorado", "connecticut",
+    "delaware", "florida", "georgia", "hawaii", "idaho", "illinois", "indiana", "iowa",
+    "kansas", "kentucky", "louisiana", "maine", "maryland", "massachusetts", "michigan",
+    "minnesota", "mississippi", "missouri", "montana", "nebraska", "nevada",
+    "new hampshire", "new jersey", "new mexico", "new york", "north carolina",
+    "north dakota", "ohio", "oklahoma", "oregon", "pennsylvania", "rhode island",
+    "south carolina", "south dakota", "tennessee", "texas", "utah", "vermont",
+    "virginia", "washington", "west virginia", "wisconsin", "wyoming",
+)
+_US_STATE_CODES = (
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL", "IN",
+    "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV",
+    "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN",
+    "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
+)
+_STATE_FILTER_RE = re.compile(
+    r"\b(?:in|from|state(?:\s+of)?|州|加州)\s+("
+    + "|".join(re.escape(name) for name in _US_STATE_NAMES)
+    + r"|"
+    + "|".join(_US_STATE_CODES)
+    + r")\b",
+    re.IGNORECASE,
+)
+_DATE_OR_STATUS_FILTER_RE = re.compile(
+    r"\b(?:ongoing|terminated|completed|since|after|before|between|during|in\s+(?:19|20)\d{2})\b",
+    re.IGNORECASE,
 )
 _RAW_EXPOSURE_TOPIC_EXCLUSIONS = (
     "sterility",
@@ -400,10 +433,16 @@ def _maybe_raw_firm_exposure_spec(question: str) -> QuerySpec | None:
     """Deterministically catch the v0 raw-firm exposure wording before generic QuerySpec.
 
     This avoids relying on the model to discover the new intent while preserving the older
-    class-specific ``count_by recalling_firm`` path for questions such as "Class I by firm".
+    filtered/class-specific ``count_by recalling_firm`` paths. If a hard filter appears in
+    the prompt, the LLM-generated QuerySpec gets a chance to preserve it instead of this small
+    pre-router fabricating an unfiltered/global leaderboard.
     """
     q = question.casefold()
-    if _CLASS_SPECIFIC_RE.search(q) and not any(h in q for h in _RAW_EXPOSURE_WEIGHTED_HINTS):
+    if not (_RAW_EXPOSURE_CONTEXT_RE.search(question) or any(hint in question for hint in _RAW_EXPOSURE_ZH_HINTS)):
+        return None
+    if _CLASS_SPECIFIC_RE.search(q):
+        return None
+    if _STATE_FILTER_RE.search(question) or _DATE_OR_STATUS_FILTER_RE.search(question):
         return None
     if any(hint in q for hint in _RAW_EXPOSURE_TOPIC_EXCLUSIONS):
         return None
@@ -1190,12 +1229,11 @@ class NLEngine:
                 operation="chat",
             )
         explanation_spec = _maybe_taxonomy_explanation_spec(question, self.taxonomy_nodes)
-        exposure_spec = _maybe_raw_firm_exposure_spec(question)
         control = agent_control.classify_llm(self.chat_client, self.chat_config, question)
-        if control.terminal and (explanation_spec is not None or exposure_spec is not None):
+        if control.terminal and explanation_spec is not None:
             control = agent_control.AgentControlDecision(
                 route="in_domain",
-                reason="taxonomy_explanation" if explanation_spec is not None else "raw_firm_exposure",
+                reason="taxonomy_explanation",
             )
         if control.terminal:
             result = agent_control.result_from_decision(control)
@@ -1207,6 +1245,7 @@ class NLEngine:
                 control=control,
                 metadata={"control_route": control.route, "control_reason": control.reason},
             )
+        exposure_spec = _maybe_raw_firm_exposure_spec(question)
         spec = explanation_spec or exposure_spec or generate_spec(
             self.chat_client, self.chat_config, question, self.schema_ctx, self.taxonomy_ctx)
         with RecallAnalytics(self.dsn) as a:
