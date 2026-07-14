@@ -278,7 +278,11 @@ _COUNT_OR_CHART_ZH_HINTS = (
     "排名", "排行", "趋势", "按公司", "按厂商", "按州", "按分类", "哪几家", "哪些公司",
 )
 _SAMPLE_REQUEST_ZH_HINTS = ("给我看", "看几个", "找", "查找", "列出", "示例", "例子", "样本")
-_CLASS_SPECIFIC_RE = re.compile(r"\bclass\s*(?:i{1,3}|1|2|3)\b", re.IGNORECASE)
+_CLASS_SPECIFIC_RE = re.compile(r"\bclass\s*(?P<class>i{1,3}|1|2|3)\b", re.IGNORECASE)
+_SIMPLE_CLASS_COUNT_RE = re.compile(
+    r"\bhow\s+many\b.*\bclass\s*(?P<class>i{1,3}|1|2|3)\b.*\brecalls?\b",
+    re.IGNORECASE,
+)
 _RAW_EXPOSURE_CONTEXT_RE = re.compile(
     r"\b(?:recall|recalls|recalling|exposure|severity[-\s]?weighted)\b",
     re.IGNORECASE,
@@ -334,6 +338,7 @@ _US_STATE_CODES = (
     "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN",
     "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
 )
+_US_STATE_NAME_TO_CODE = dict(zip(_US_STATE_NAMES, _US_STATE_CODES, strict=True))
 _STATE_FILTER_RE = re.compile(
     r"\b(?:in|from|state(?:\s+of)?|州|加州)\s+("
     + "|".join(re.escape(name) for name in _US_STATE_NAMES)
@@ -453,9 +458,23 @@ def _maybe_raw_firm_exposure_spec(question: str) -> QuerySpec | None:
     q = question.casefold()
     if not (_RAW_EXPOSURE_CONTEXT_RE.search(question) or any(hint in question for hint in _RAW_EXPOSURE_ZH_HINTS)):
         return None
-    if _CLASS_SPECIFIC_RE.search(q):
-        return None
-    if _STATE_FILTER_RE.search(question) or _DATE_OR_STATUS_FILTER_RE.search(question):
+    metric = (
+        ExposureMetric.severity_weighted
+        if any(hint in q or hint in question for hint in _RAW_EXPOSURE_WEIGHTED_HINTS)
+        else ExposureMetric.recall_count
+    )
+    filters: list[FilterSpec] = []
+    class_label = _class_filter_label(question)
+    if class_label:
+        # Preserve class-specific constraints only for explicit exposure/severity wording.
+        # Plain "Which firms had the most Class I recalls?" stays on the legacy count_by path.
+        if metric is not ExposureMetric.severity_weighted:
+            return None
+        filters.append(FilterSpec(column="classification", op=Op.eq, values=[class_label]))
+    state_code = _state_filter_code(question)
+    if state_code:
+        filters.append(FilterSpec(column="state", op=Op.eq, values=[state_code]))
+    if _DATE_OR_STATUS_FILTER_RE.search(question):
         return None
     if any(hint in q for hint in _RAW_EXPOSURE_TOPIC_EXCLUSIONS):
         return None
@@ -463,15 +482,61 @@ def _maybe_raw_firm_exposure_spec(question: str) -> QuerySpec | None:
     matched = matched or any(hint in question for hint in _RAW_EXPOSURE_ZH_HINTS)
     if not matched:
         return None
-    metric = (
-        ExposureMetric.severity_weighted
-        if any(hint in q or hint in question for hint in _RAW_EXPOSURE_WEIGHTED_HINTS)
-        else ExposureMetric.recall_count
-    )
     return QuerySpec(
         intent=Intent.raw_firm_exposure,
         exposure_metric=metric,
+        filters=filters,
         limit=_extract_limit(question),
+    )
+
+
+def _class_filter_label(question: str) -> str | None:
+    match = _CLASS_SPECIFIC_RE.search(question)
+    if not match:
+        return None
+    class_token = match.group("class").casefold()
+    labels = {
+        "i": "Class I",
+        "1": "Class I",
+        "ii": "Class II",
+        "2": "Class II",
+        "iii": "Class III",
+        "3": "Class III",
+    }
+    return labels.get(class_token)
+
+
+def _state_filter_code(question: str) -> str | None:
+    match = _STATE_FILTER_RE.search(question)
+    if not match:
+        return None
+    value = match.group(1).casefold()
+    if len(value) == 2:
+        return value.upper()
+    return _US_STATE_NAME_TO_CODE.get(value)
+
+
+def _maybe_simple_class_count_spec(question: str) -> QuerySpec | None:
+    """Deterministic fast path for unfiltered "How many Class X recalls" questions.
+
+    The LLM occasionally adds unrelated fields such as date grains or sample sizes to this
+    canonical count question. Keep the eval-stable, SQL-only interpretation explicit, but only
+    after the domain guard has accepted the prompt and only for unfiltered all-time wording.
+    """
+    match = _SIMPLE_CLASS_COUNT_RE.search(question)
+    if not match:
+        return None
+    q = question.casefold()
+    if _STATE_FILTER_RE.search(question) or _DATE_OR_STATUS_FILTER_RE.search(question):
+        return None
+    if any(word in q for word in (" by ", " trend", " distribution", "breakdown", "most", "top", "rank")):
+        return None
+    label = _class_filter_label(question)
+    if label is None:
+        return None
+    return QuerySpec(
+        intent=Intent.count_total,
+        filters=[FilterSpec(column="classification", op=Op.eq, values=[label])],
     )
 
 
@@ -683,12 +748,13 @@ def refine_spec(spec: QuerySpec, question: str = "") -> QuerySpec:
         spec.semantic_aliases = []
         return spec
     if (
-        spec.intent is Intent.count_total
+        spec.intent in {Intent.count_total, Intent.count_by}
         and question
         and _asks_for_sample(question)
         and not _asks_for_count_or_chart(question)
     ):
         spec.intent = Intent.sample
+        spec.group_by = None
     concept = spec.semantic_query.casefold()
     seen: set[str] = set()
     aliases: list[str] = []
@@ -1553,8 +1619,9 @@ class NLEngine:
                 control=control,
                 metadata={"control_route": control.route, "control_reason": control.reason},
             )
+        simple_class_count_spec = _maybe_simple_class_count_spec(question)
         exposure_spec = _maybe_raw_firm_exposure_spec(question)
-        spec = explanation_spec or exposure_spec or generate_spec(
+        spec = explanation_spec or simple_class_count_spec or exposure_spec or generate_spec(
             self.chat_client, self.chat_config, question, self.schema_ctx, self.taxonomy_ctx)
         with RecallAnalytics(self.dsn) as a:
             try:
