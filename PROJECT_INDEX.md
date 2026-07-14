@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-07-14T15:19Z · 70 files · 2 missing description
+> Last generated: 2026-07-14T15:29Z · 70 files · 2 missing description
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -104,7 +104,7 @@
 - [`src/observability.py`](src/observability.py) — Postgres-backed query logging for the /ask API.
   - symbols: `QueryLogEntry`, `QueryLogger`, `response_metadata`
 - [`src/retrieval.py`](src/retrieval.py) — Hybrid retrieval over the `embeddings` table — Path 2 / slice 2.2.
-  - symbols: `Hit`, `embed_query`, `search`, `parse_args`, `main`
+  - symbols: `Hit`, `SearchResult`, `embed_query`, `search`, `parse_args`, `main`
 - [`src/validation.py`](src/validation.py) — Validate semantic retrieval candidates and build semantic-count results.
   - symbols: `CandidateValidation`, `ValidationBatch`, `SemanticValidationError`, `ValidatedHit`, `SemanticCountGroup`, `SemanticCountResult`, `threshold_policy`, `bounded_candidate_limit`, `bounded_validation_limit`, `bounded_retrieval_pool_limit`, `select_validation_sample`, `snippet_is_grounded`
 

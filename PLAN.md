@@ -52,7 +52,7 @@ flowchart TB
 | --- | --- | --- | --- |
 | 语言 | ✅ **Python 3.13** | — | 与你技能一致、生态最全 |
 | LLM（NL→QuerySpec / Agent 推理） | ✅ **gpt-4o-mini**（`OPENAI_MODEL` 可调） | gpt-4o / gpt-4.1 / Claude | 受约束 spec 生成够用又便宜；复杂 routing 可临时升级 |
-| Embedding | ✅ **text-embedding-3-small**（1536 维）；🔜 query embedding 走 **OpenRouter** `openai/text-embedding-3-small` | -3-large / bge-small(本地免费) | 已存 pgvector 依赖同一 1536-d embedding space；当前 direct OpenAI quota 会让查询降级到 FTS-only，需用 OpenRouter 统一 endpoint/key 恢复 hybrid |
+| Embedding | ✅ **text-embedding-3-small**（1536 维）；✅ query embedding 可走 **OpenRouter** `openai/text-embedding-3-small` | -3-large / bge-small(本地免费) | 已存 pgvector 依赖同一 1536-d embedding space；direct OpenAI quota 不足时可用 OpenRouter endpoint/key 恢复 hybrid |
 | 向量库 | ✅ **pgvector**（Postgres 内） | Chroma / FAISS / Qdrant | 一个库搞定结构化 + 向量，无需额外服务 |
 | 关键词检索 | ✅ **Postgres 全文检索（FTS, `ts_rank`）** | pg_search(真 BM25) / rank-bm25 / ES | v1 留在 Postgres、带词干化；FTS 召回不够再上真 BM25 |
 | 混合融合 | ✅ **RRF**（Reciprocal Rank Fusion） | 加权和 | 无需调权重，简单稳健 |
@@ -91,7 +91,7 @@ flowchart TB
   [频率查询系统设计](频率查询系统设计-过滤检索校验.md) §9。✅
 - 概念走 `semantic_query` → 混合检索（pgvector + Postgres FTS + RRF，可叠加 Tier-A 硬过滤），不再用字面 `ilike`。✅
 - 逐条 LLM 校验 + 语义计数（估计值 + 置信区间）已接入，`semantic_query` 可以与 `count_total` / `count_by` 组合。✅
-- **当前设计缺口不是“要不要混合检索”，而是 agent-control + query embedding provider**：当 embedding provider 不可用时，系统会退化到 FTS-only；多词/口语化 query（`sterility problems`, `pills that are too strong`）在 FTS-only 下可能 0 命中，这不能被解释为“FDA 数据中没有”。当前运行时的具体缺口是：存量 `embeddings` 表完整，但查询 embedding 仍走 direct OpenAI；当 OpenAI embedding quota/key 路径触发 `ProviderQuotaError` 时，`query_log` 记录 `retrieval_mode=fts_only`。应支持 `EMBED_PROVIDER=openrouter`，通过 `https://openrouter.ai/api/v1/embeddings` + `OPENROUTER_API_KEY` 调用 `openai/text-embedding-3-small`，在不重嵌 corpus 的前提下恢复 query-vector + FTS 的 hybrid/RRF。同时，`who you are?` 这类元问题会被 QuerySpec 空间硬塞进 `sample`，返回无关 rows。
+- **当前设计缺口不是“要不要混合检索”，而是 agent-control + 降级治理**：当 embedding provider 不可用时，系统会退化到 FTS-only；多词/口语化 query（`sterility problems`, `pills that are too strong`）在 FTS-only 下可能 0 命中，这不能被解释为“FDA 数据中没有”。query embedding provider 已支持 `EMBED_PROVIDER=openrouter`，通过 `https://openrouter.ai/api/v1/embeddings` + `OPENROUTER_API_KEY` 调用 `openai/text-embedding-3-small`，在不重嵌 corpus 的前提下恢复 query-vector + FTS 的 hybrid/RRF；direct OpenAI `text-embedding-3-small` 仍兼容。同时，`who you are?` 这类元问题会被 QuerySpec 空间硬塞进 `sample`，返回无关 rows。
 - **治理原则**：QuerySpec 前面必须有一层 `{in_domain, chitchat/meta, out_of_domain, ambiguous}` 守卫；semantic count 的 query rewrite 要保留核心概念并把 synonyms/expansions 分开；检索降级必须显式告诉用户和 `query_log`。
 
 ### 前端 — ChatGPT 式聊天 UI（✅ v1 已完成）

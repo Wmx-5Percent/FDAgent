@@ -578,6 +578,10 @@ def _log_success(req: AskRequest, ans: Answer, payload: dict[str, Any],
         decision["sections"] = ans.metadata["sections"]
     if ans.metadata.get("sub_specs"):
         decision["sub_specs"] = ans.metadata["sub_specs"]
+    if route == "semantic" and _engine is not None:
+        decision["embedding_provider"] = _engine.embed_config.provider
+        decision["embedding_model"] = _engine.embed_config.model
+        decision["embedding_available"] = _engine.embedding_error is None
     _require_query_logger().write(QueryLogEntry(
         route="/ask",
         question=req.question,

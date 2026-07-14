@@ -22,7 +22,7 @@ guessed by the model), each result carrying the recall numbers that back it.
 - **NL→SQL layer** — [src/nl_query.py](src/nl_query.py): an LLM turns a question into a *validated* `QuerySpec` (columns/values whitelisted, schema + column comments injected) that runs through the analytics engine — so every number comes from SQL.
 - **Serving** — [src/api.py](src/api.py): a FastAPI `/ask` endpoint + a zero-build ChatGPT-style UI ([web/index.html](web/index.html), [web/app.js](web/app.js), [web/styles.css](web/styles.css)) that renders answers and evidence; resources are warmed once at startup and requests are logged to `query_log`.
 - **Agent control** — [src/agent_control.py](src/agent_control.py): an LLM intent gate keeps meta/chitchat, out-of-domain, and too-vague prompts out of the database; only in-domain recall questions produce a `QuerySpec`.
-- **Hybrid retrieval + semantic counting (Path 2)** — [src/embed.py](src/embed.py) + [src/retrieval.py](src/retrieval.py) + [src/validation.py](src/validation.py): recall text is embedded into a multi-source `pgvector` `embeddings` table; fuzzy concepts (e.g. "pills that are too strong" → *superpotent*) use pgvector + Postgres FTS with RRF, and count-style concept questions add LLM yes/no validation plus confidence bands.
+- **Hybrid retrieval + semantic counting (Path 2)** — [src/embed.py](src/embed.py) + [src/retrieval.py](src/retrieval.py) + [src/validation.py](src/validation.py): recall text is embedded into a multi-source `pgvector` `embeddings` table; fuzzy concepts (e.g. "pills that are too strong" → *superpotent*) use pgvector + Postgres FTS with RRF, and count-style concept questions add LLM yes/no validation plus confidence bands. Query embeddings can use direct OpenAI or OpenRouter `openai/text-embedding-3-small` while staying compatible with the stored 1536-d corpus vectors.
 
 ## Agent workflow and routing
 
@@ -137,6 +137,8 @@ columns (`classification`, `status`, `reason_for_recall`, `recalling_firm`, `sta
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env            # add provider keys and DATABASE_URL
+# To route query embeddings through OpenRouter, keep:
+# EMBED_PROVIDER=openrouter and EMBED_MODEL=openai/text-embedding-3-small
 
 # Postgres (Postgres.app): create the db + enable pgvector
 createdb fda && psql -d fda -c "CREATE EXTENSION IF NOT EXISTS vector;"
@@ -180,7 +182,7 @@ docker run --rm -p 8000:8000 --env-file .env \
 ## Tech stack
 
 Python 3.13 · PostgreSQL + `pgvector` + `hypopg` · `psycopg` 3 · OpenAI-compatible chat
-providers with Pydantic-validated structured output · FastAPI + a static Chart.js UI · Docker ·
+and query-embedding providers with Pydantic-validated structured output · FastAPI + a static Chart.js UI · Docker ·
 a read-only Postgres MCP for safe schema exploration.
 
 ---

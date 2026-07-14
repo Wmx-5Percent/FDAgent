@@ -31,7 +31,15 @@ DEFAULT_OPENROUTER_CHAT_MODEL = "openai/gpt-4o-mini"
 DEFAULT_OPENROUTER_TITLE_MODEL = "openai/gpt-4o-mini"
 DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_EMBED_MODEL = "text-embedding-3-small"
-SUPPORTED_EMBED_MODELS = {DEFAULT_EMBED_MODEL: 1536}
+DEFAULT_OPENROUTER_EMBED_MODEL = "openai/text-embedding-3-small"
+SUPPORTED_EMBED_MODELS = {
+    DEFAULT_EMBED_MODEL: 1536,
+    DEFAULT_OPENROUTER_EMBED_MODEL: 1536,
+}
+SUPPORTED_EMBED_PROVIDER_MODELS = {
+    "openai": {DEFAULT_EMBED_MODEL},
+    "openrouter": {DEFAULT_OPENROUTER_EMBED_MODEL},
+}
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -128,6 +136,8 @@ class EmbeddingConfig:
     provider: str
     model: str
     api_key: str | None
+    base_url: str | None = None
+    default_headers: Mapping[str, str] = field(default_factory=dict)
 
     @property
     def configured(self) -> bool:
@@ -135,7 +145,7 @@ class EmbeddingConfig:
 
     @property
     def dimension(self) -> int | None:
-        return SUPPORTED_EMBED_MODELS.get(self.model)
+        return _embedding_dimension(self)
 
     def status(self) -> dict[str, Any]:
         return {
@@ -194,17 +204,12 @@ def _chat_config_for_provider(
             api_key=os.environ.get("OPENAI_API_KEY"),
         )
     if provider == "openrouter":
-        headers: dict[str, str] = {}
-        if referer := os.environ.get("OPENROUTER_HTTP_REFERER"):
-            headers["HTTP-Referer"] = referer
-        if title := os.environ.get("OPENROUTER_APP_TITLE", "FDAgent"):
-            headers["X-Title"] = title
         return ChatConfig(
             provider=provider,
             model=chosen_model or openrouter_default,
             api_key=os.environ.get("OPENROUTER_API_KEY"),
             base_url=os.environ.get("OPENROUTER_BASE_URL", DEFAULT_OPENROUTER_BASE_URL),
-            default_headers=headers,
+            default_headers=_openrouter_headers(),
         )
     raise ProviderUnsupportedConfigError(
         f"unsupported LLM_PROVIDER {provider!r}",
@@ -221,15 +226,53 @@ def _first_env(*keys: str) -> str | None:
     return None
 
 
+def _openrouter_headers() -> dict[str, str]:
+    headers: dict[str, str] = {}
+    if referer := os.environ.get("OPENROUTER_HTTP_REFERER"):
+        headers["HTTP-Referer"] = referer
+    if title := os.environ.get("OPENROUTER_APP_TITLE", "FDAgent"):
+        headers["X-Title"] = title
+        headers["X-OpenRouter-Title"] = title
+    return headers
+
+
+def _embedding_model_for_provider(provider: str, model: str) -> str:
+    if provider == "openrouter" and model == DEFAULT_EMBED_MODEL:
+        return DEFAULT_OPENROUTER_EMBED_MODEL
+    return model
+
+
 def embedding_config(*, model: str | None = None) -> EmbeddingConfig:
     """Load embedding provider config separately from chat provider config."""
     provider = os.environ.get("EMBED_PROVIDER", "openai").strip().lower() or "openai"
-    chosen_model = model or os.environ.get("EMBED_MODEL") or os.environ.get("OPENAI_EMBED_MODEL") \
-        or DEFAULT_EMBED_MODEL
+    if provider == "openai":
+        chosen_model = model or _first_env("EMBED_MODEL", "OPENAI_EMBED_MODEL") or DEFAULT_EMBED_MODEL
+        chosen_model = _embedding_model_for_provider(provider, chosen_model)
+        return EmbeddingConfig(
+            provider=provider,
+            model=chosen_model,
+            api_key=os.environ.get("OPENAI_API_KEY"),
+        )
+    if provider == "openrouter":
+        chosen_model = (
+            model
+            or _first_env("EMBED_MODEL", "OPENROUTER_EMBED_MODEL")
+            or DEFAULT_OPENROUTER_EMBED_MODEL
+        )
+        chosen_model = _embedding_model_for_provider(provider, chosen_model)
+        return EmbeddingConfig(
+            provider=provider,
+            model=chosen_model,
+            api_key=os.environ.get("OPENROUTER_API_KEY"),
+            base_url=os.environ.get("OPENROUTER_BASE_URL", DEFAULT_OPENROUTER_BASE_URL),
+            default_headers=_openrouter_headers(),
+        )
+    chosen_model = model or os.environ.get("EMBED_MODEL") or DEFAULT_EMBED_MODEL
+    chosen_model = _embedding_model_for_provider(provider, chosen_model)
     return EmbeddingConfig(
         provider=provider,
         model=chosen_model,
-        api_key=os.environ.get("OPENAI_API_KEY") if provider == "openai" else None,
+        api_key=None,
     )
 
 
@@ -260,24 +303,43 @@ def create_embedding_client(config: EmbeddingConfig | None = None) -> OpenAI:
             model=config.model,
             operation="create_embedding_client",
         )
-    return OpenAI(api_key=config.api_key)
+    kwargs: dict[str, Any] = {"api_key": config.api_key}
+    if config.base_url:
+        kwargs["base_url"] = config.base_url
+    if config.default_headers:
+        kwargs["default_headers"] = dict(config.default_headers)
+    return OpenAI(**kwargs)
 
 
 def _validate_embedding_config(config: EmbeddingConfig) -> None:
-    if config.provider != "openai":
+    supported_models = SUPPORTED_EMBED_PROVIDER_MODELS.get(config.provider)
+    if supported_models is None:
         raise ProviderUnsupportedConfigError(
-            "only OpenAI embeddings are currently compatible with stored pgvector rows",
+            "embedding provider is not supported for stored pgvector rows",
             provider=config.provider,
             model=config.model,
             operation="embedding_config",
         )
-    if config.model not in SUPPORTED_EMBED_MODELS:
+    if config.model not in supported_models:
+        expected = (
+            DEFAULT_EMBED_MODEL
+            if config.provider == "openai"
+            else DEFAULT_OPENROUTER_EMBED_MODEL
+        )
         raise ProviderUnsupportedConfigError(
-            f"embedding model {config.model!r} is not known to be compatible with stored vectors",
+            f"embedding model {config.model!r} is not known to be compatible with "
+            f"stored vectors for provider {config.provider!r}; use {expected!r}",
             provider=config.provider,
             model=config.model,
             operation="embedding_config",
         )
+
+
+def _embedding_dimension(config: EmbeddingConfig) -> int | None:
+    supported_models = SUPPORTED_EMBED_PROVIDER_MODELS.get(config.provider)
+    if supported_models is None or config.model not in supported_models:
+        return None
+    return SUPPORTED_EMBED_MODELS.get(config.model)
 
 
 def provider_status(chat: ChatConfig | None = None,
@@ -365,8 +427,11 @@ def chat_completion_text(
 
 def embed_text(client: OpenAI, config: EmbeddingConfig, text: str) -> list[float]:
     _validate_embedding_config(config)
+    kwargs: dict[str, Any] = {"model": config.model, "input": [text]}
+    if config.provider == "openrouter":
+        kwargs["encoding_format"] = "float"
     try:
-        response = client.embeddings.create(model=config.model, input=[text])
+        response = client.embeddings.create(**kwargs)
     except OpenAIError as exc:
         raise provider_error_from_openai(
             exc,
@@ -375,7 +440,8 @@ def embed_text(client: OpenAI, config: EmbeddingConfig, text: str) -> list[float
             operation="embedding",
         ) from exc
     embedding = response.data[0].embedding
-    if len(embedding) != SUPPORTED_EMBED_MODELS[config.model]:
+    dimension = _embedding_dimension(config)
+    if dimension is None or len(embedding) != dimension:
         raise ProviderUnsupportedConfigError(
             "embedding response dimension does not match stored vectors",
             provider=config.provider,
