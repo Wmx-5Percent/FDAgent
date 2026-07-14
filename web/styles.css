@@ -533,6 +533,41 @@ button:disabled {
   white-space: pre-wrap;
 }
 
+.highlights {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid rgb(126 224 192 / 0.24);
+  border-radius: 14px;
+  background:
+    linear-gradient(135deg, rgb(78 161 255 / 0.10), rgb(126 224 192 / 0.07)),
+    rgb(12 19 29 / 0.58);
+}
+
+.highlights-title {
+  color: var(--accent-2);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.highlights-list {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.highlights-list li {
+  padding-left: 2px;
+  color: var(--fg);
+}
+
+.highlights-list li::marker {
+  color: var(--accent-2);
+}
+
 .scalar {
   color: var(--accent-2);
   font-size: clamp(34px, 8vw, 56px);
