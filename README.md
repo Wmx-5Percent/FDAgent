@@ -21,6 +21,7 @@ guessed by the model), each result carrying the recall numbers that back it.
 - **Analytics engine** — [src/analytics.py](src/analytics.py): safe, parameterized, read-only `count / group-by / trend / sample`, returning evidence `recall_number`s.
 - **NL→SQL layer** — [src/nl_query.py](src/nl_query.py): an LLM turns a question into a *validated* `QuerySpec` (columns/values whitelisted, schema + column comments injected) that runs through the analytics engine — so every number comes from SQL.
 - **Serving** — [src/api.py](src/api.py): a FastAPI `/ask` endpoint + a zero-build ChatGPT-style UI ([web/index.html](web/index.html), [web/app.js](web/app.js), [web/styles.css](web/styles.css)) that renders answers and evidence; resources are warmed once at startup and requests are logged to `query_log`.
+- **Hybrid search lab** — `GET/POST /hybrid-search` serves a separate debug UI for retrieval experiments, with safe progress states, vector/FTS/RRF metadata, CSV/JSON export, and per-run logging to `hybrid_search_log`.
 - **Agent control** — [src/agent_control.py](src/agent_control.py): an LLM intent gate keeps meta/chitchat, out-of-domain, and too-vague prompts out of the database; only in-domain recall questions produce a `QuerySpec`.
 - **Hybrid retrieval + semantic counting (Path 2)** — [src/embed.py](src/embed.py) + [src/retrieval.py](src/retrieval.py) + [src/validation.py](src/validation.py): recall text is embedded into a multi-source `pgvector` `embeddings` table; fuzzy concepts (e.g. "pills that are too strong" → *superpotent*) use pgvector + Postgres FTS with RRF, and count-style concept questions add LLM yes/no validation plus confidence bands. Query embeddings can use direct OpenAI or OpenRouter `openai/text-embedding-3-small` while staying compatible with the stored 1536-d corpus vectors.
 
@@ -142,6 +143,8 @@ cp .env.example .env            # add provider keys and DATABASE_URL
 
 # Postgres (Postgres.app): create the db + enable pgvector
 createdb fda && psql -d fda -c "CREATE EXTENSION IF NOT EXISTS vector;"
+# If upgrading an existing local DB for the retrieval lab:
+psql -d fda -f sql/010_hybrid_search_log.sql
 
 # load data, then try the two engines
 .venv/bin/python src/fetch_openfda.py --endpoint drug/enforcement --table drug_enforcement
@@ -150,6 +153,7 @@ createdb fda && psql -d fda -c "CREATE EXTENSION IF NOT EXISTS vector;"
 
 # serve it: FastAPI /ask + chart UI, then open http://127.0.0.1:8000/
 .venv/bin/python -m uvicorn src.api:app --reload
+# retrieval lab/debug surface: http://127.0.0.1:8000/hybrid-search
 ```
 
 ---

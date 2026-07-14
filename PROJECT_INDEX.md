@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-07-14T15:29Z · 70 files · 2 missing description
+> Last generated: 2026-07-14T15:53Z · 73 files · 2 missing description
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -65,6 +65,7 @@
 - [`sql/007_taxonomy.sql`](sql/007_taxonomy.sql) — Create recall taxonomy sidecar tables for offline classification.
 - [`sql/008_firm_resolution.sql`](sql/008_firm_resolution.sql) — Create firm-resolution sidecar tables for offline FDA recalling-firm resolution.
 - [`sql/009_firm_resolution_runs.sql`](sql/009_firm_resolution_runs.sql) — Create firm-resolution run/pair audit tables for incremental company normalization.
+- [`sql/010_hybrid_search_log.sql`](sql/010_hybrid_search_log.sql) — Create hybrid_search_log: versioned retrieval-lab traces for /hybrid-search.
 
 ## src/
 - [`src/agent_control.py`](src/agent_control.py) — Guard /ask prompts before they enter the FDA recall query pipeline.
@@ -72,7 +73,7 @@
 - [`src/analytics.py`](src/analytics.py) — Deterministic frequency/aggregation query engine over drug_enforcement.
   - symbols: `Kind`, `Filter`, `Group`, `RecallAnalytics`
 - [`src/api.py`](src/api.py) — FastAPI service exposing the deterministic NL->SQL analytics engine (Path 1, serving half).
-  - symbols: `lifespan`, `AskRequest`, `TitleRequest`, `TitleResponse`, `recall_verification_url`, `recall_detail_url`, `serialize_answer`, `health`, `title_endpoint`, `ask_endpoint`, `recall_detail`, `index`
+  - symbols: `lifespan`, `AskRequest`, `TitleRequest`, `TitleResponse`, `HybridSearchRequest`, `recall_verification_url`, `recall_detail_url`, `serialize_answer`, `health`, `hybrid_search_page`, `hybrid_search_endpoint`, `title_endpoint`
 - [`src/classify/__init__.py`](src/classify/__init__.py) — Offline recall taxonomy induction, labeling, and discovery utilities.
 - [`src/classify/audit.py`](src/classify/audit.py) — Audit taxonomy coverage and exact offline recall-label counts.
   - symbols: `taxonomy_nodes`, `descendant_node_ids`, `coverage_report`, `count_by_report`, `write_or_print`, `parse_args`, `clean_labeler`, `main`
@@ -102,7 +103,7 @@
 - [`src/nl_query.py`](src/nl_query.py) — Natural-language front-end for the deterministic analytics engine.
   - symbols: `Intent`, `Op`, `FilterSpec`, `QuerySpec`, `Answer`, `TaxonomyNodeInfo`, `TaxonomyExplanation`, `ResultSection`, `MultiSectionResult`, `build_schema_context`, `load_taxonomy_nodes`, `build_taxonomy_context`
 - [`src/observability.py`](src/observability.py) — Postgres-backed query logging for the /ask API.
-  - symbols: `QueryLogEntry`, `QueryLogger`, `response_metadata`
+  - symbols: `QueryLogEntry`, `HybridSearchLogEntry`, `QueryLogger`, `HybridSearchLogger`, `response_metadata`
 - [`src/retrieval.py`](src/retrieval.py) — Hybrid retrieval over the `embeddings` table — Path 2 / slice 2.2.
   - symbols: `Hit`, `SearchResult`, `embed_query`, `search`, `parse_args`, `main`
 - [`src/validation.py`](src/validation.py) — Validate semantic retrieval candidates and build semantic-count results.
@@ -110,5 +111,7 @@
 
 ## web/
 - [`web/app.js`](web/app.js) — ChatGPT-style zero-build frontend for FDAgent /ask conversations.
+- [`web/hybrid-search.html`](web/hybrid-search.html) — Retrieval lab/debug surface for FDAgent /hybrid-search.
+- [`web/hybrid-search.js`](web/hybrid-search.js) — Zero-build frontend for the FDAgent hybrid retrieval lab.
 - [`web/index.html`](web/index.html) — ChatGPT-style zero-build UI shell for the FDAgent /ask endpoint.
 - [`web/styles.css`](web/styles.css) — ChatGPT-style layout and result rendering styles for the FDAgent static UI.
