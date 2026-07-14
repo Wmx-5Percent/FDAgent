@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import os
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Any, Optional, Sequence
 
 import psycopg
@@ -49,6 +50,12 @@ class Hit:
     score_kind: str = "similarity"
     retrieval_mode: str = "hybrid"
     embedding_fallback_reason: Optional[str] = None
+    fused_rank: Optional[int] = None
+    vector_rank: Optional[int] = None
+    vector_distance: Optional[float] = None
+    vector_similarity: Optional[float] = None
+    fts_rank: Optional[int] = None
+    fts_score: Optional[float] = None
 
     @property
     def similarity(self) -> float:
@@ -63,10 +70,20 @@ class SearchResult(list[Hit]):
     """List of retrieval hits with degradation metadata even when the list is empty."""
 
     def __init__(self, hits: Sequence[Hit] = (), *, retrieval_mode: str = "hybrid",
-                 embedding_fallback_reason: Optional[str] = None) -> None:
+                 embedding_fallback_reason: Optional[str] = None,
+                 vector_hit_count: int = 0,
+                 fts_hit_count: int = 0,
+                 fused_hit_count: int | None = None,
+                 timings_ms: dict[str, int] | None = None,
+                 fts_queries: Sequence[str] = ()) -> None:
         super().__init__(hits)
         self.retrieval_mode = retrieval_mode
         self.embedding_fallback_reason = embedding_fallback_reason
+        self.vector_hit_count = vector_hit_count
+        self.fts_hit_count = fts_hit_count
+        self.fused_hit_count = len(hits) if fused_hit_count is None else fused_hit_count
+        self.timings_ms = dict(timings_ms or {})
+        self.fts_queries = list(fts_queries)
 
 
 @dataclass(frozen=True)
@@ -241,19 +258,32 @@ def _fusion_key(candidate: _Candidate, field: str) -> tuple[str, ...]:
     return (candidate.recall_number, candidate.field)
 
 
+def _elapsed_ms(start: float) -> int:
+    return max(0, round((perf_counter() - start) * 1000))
+
+
 def _rrf_fuse(vector_hits: Sequence[_Candidate], fts_hits: Sequence[_Candidate], *,
               k: int, field: str, retrieval_mode: str = "hybrid",
-              fallback_reason: str | None = None) -> SearchResult:
+              fallback_reason: str | None = None,
+              timings_ms: dict[str, int] | None = None,
+              fts_queries: Sequence[str] = ()) -> SearchResult:
     scores: dict[tuple[str, ...], float] = {}
     best: dict[tuple[str, ...], _Candidate] = {}
     best_component: dict[tuple[str, ...], float] = {}
     best_is_fts: dict[tuple[str, ...], bool] = {}
+    vector_meta: dict[tuple[str, ...], tuple[int, float, float]] = {}
+    fts_meta: dict[tuple[str, ...], tuple[int, float]] = {}
 
     def add(candidates: Sequence[_Candidate], *, is_fts: bool) -> None:
         for rank, candidate in enumerate(candidates, 1):
             key = _fusion_key(candidate, field)
             component = 1.0 / (RRF_K + rank)
             scores[key] = scores.get(key, 0.0) + component
+            if is_fts:
+                fts_meta.setdefault(key, (rank, candidate.rank_score))
+            else:
+                distance = candidate.distance
+                vector_meta.setdefault(key, (rank, distance, max(0.0, 1.0 - distance)))
             if (
                 key not in best
                 or component > best_component[key]
@@ -269,27 +299,48 @@ def _rrf_fuse(vector_hits: Sequence[_Candidate], fts_hits: Sequence[_Candidate],
         scores,
         key=lambda key: (-scores[key], best[key].distance, best[key].recall_number, best[key].field),
     )
-    hits = [
-        Hit(
-            recall_number=best[key].recall_number,
-            field=best[key].field,
-            distance=best[key].distance,
-            content=best[key].content,
-            recalling_firm=best[key].recalling_firm,
-            classification=best[key].classification,
-            rrf_score=scores[key],
-            score=best[key].rank_score if retrieval_mode == "fts_only"
-            else max(0.0, 1.0 - best[key].distance),
-            score_kind="fts_rank" if retrieval_mode == "fts_only" else "similarity",
-            retrieval_mode=retrieval_mode,
-            embedding_fallback_reason=fallback_reason,
+    hits = []
+    for fused_rank, key in enumerate(ranked_keys[:k], 1):
+        vector_rank: int | None = None
+        vector_distance: float | None = None
+        vector_similarity: float | None = None
+        if key in vector_meta:
+            vector_rank, vector_distance, vector_similarity = vector_meta[key]
+        fts_rank: int | None = None
+        fts_score: float | None = None
+        if key in fts_meta:
+            fts_rank, fts_score = fts_meta[key]
+        hits.append(
+            Hit(
+                recall_number=best[key].recall_number,
+                field=best[key].field,
+                distance=best[key].distance,
+                content=best[key].content,
+                recalling_firm=best[key].recalling_firm,
+                classification=best[key].classification,
+                rrf_score=scores[key],
+                score=best[key].rank_score if retrieval_mode == "fts_only"
+                else max(0.0, 1.0 - best[key].distance),
+                score_kind="fts_rank" if retrieval_mode == "fts_only" else "similarity",
+                retrieval_mode=retrieval_mode,
+                embedding_fallback_reason=fallback_reason,
+                fused_rank=fused_rank,
+                vector_rank=vector_rank,
+                vector_distance=vector_distance,
+                vector_similarity=vector_similarity,
+                fts_rank=fts_rank,
+                fts_score=fts_score,
+            )
         )
-        for key in ranked_keys[:k]
-    ]
     return SearchResult(
         hits,
         retrieval_mode=retrieval_mode,
         embedding_fallback_reason=fallback_reason,
+        vector_hit_count=len(vector_hits),
+        fts_hit_count=len(fts_hits),
+        fused_hit_count=len(ranked_keys),
+        timings_ms=timings_ms,
+        fts_queries=fts_queries,
     )
 
 
@@ -309,7 +360,11 @@ def search(conn: psycopg.Connection, client: Any | None, query: str, *,
         return SearchResult()
     embed_config = embed_config or llm.embedding_config()
     limit = _candidate_limit(k)
+    timings_ms: dict[str, int] = {}
+    search_started = perf_counter()
+    used_fts_queries: list[str] = []
     try:
+        embedding_started = perf_counter()
         if embedding_error is not None:
             raise embedding_error
         if client is None:
@@ -320,30 +375,59 @@ def search(conn: psycopg.Connection, client: Any | None, query: str, *,
                 operation="embedding",
             )
         qvec = _vec_literal(embed_query(client, embed_config, query))
+        timings_ms["embedding"] = _elapsed_ms(embedding_started)
     except Exception as exc:
+        timings_ms["embedding"] = _elapsed_ms(embedding_started)
         if not llm.can_fallback_to_fts(exc):
             raise
         fts_hits: list[_Candidate] = []
+        fts_started = perf_counter()
         for fts_query in agent_control.broad_fts_queries(query, list(fts_queries)):
+            used_fts_queries.append(fts_query)
             fts_hits.extend(_fts_candidates(conn, fts_query, None, source=source, field=field,
                                             filters=filters, limit=limit))
             if fts_hits:
                 break
-        return _rrf_fuse(
+        timings_ms["fts"] = _elapsed_ms(fts_started)
+        fusion_started = perf_counter()
+        result = _rrf_fuse(
             [],
             fts_hits,
             k=k,
             field=field,
             retrieval_mode="fts_only",
             fallback_reason=type(exc).__name__,
+            timings_ms=timings_ms,
+            fts_queries=used_fts_queries,
         )
+        timings_ms["fusion"] = _elapsed_ms(fusion_started)
+        timings_ms["total"] = _elapsed_ms(search_started)
+        result.timings_ms = dict(timings_ms)
+        return result
+    vector_started = perf_counter()
     vector_hits = _vector_candidates(conn, qvec, source=source, field=field,
                                      filters=filters, limit=limit)
+    timings_ms["vector"] = _elapsed_ms(vector_started)
     fts_hits: list[_Candidate] = []
+    fts_started = perf_counter()
     for fts_query in agent_control.broad_fts_queries(query, list(fts_queries)):
+        used_fts_queries.append(fts_query)
         fts_hits.extend(_fts_candidates(conn, fts_query, qvec, source=source, field=field,
                                         filters=filters, limit=limit))
-    return _rrf_fuse(vector_hits, fts_hits, k=k, field=field)
+    timings_ms["fts"] = _elapsed_ms(fts_started)
+    fusion_started = perf_counter()
+    result = _rrf_fuse(
+        vector_hits,
+        fts_hits,
+        k=k,
+        field=field,
+        timings_ms=timings_ms,
+        fts_queries=used_fts_queries,
+    )
+    timings_ms["fusion"] = _elapsed_ms(fusion_started)
+    timings_ms["total"] = _elapsed_ms(search_started)
+    result.timings_ms = dict(timings_ms)
+    return result
 
 
 def parse_args() -> argparse.Namespace:

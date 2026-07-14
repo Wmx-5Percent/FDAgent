@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<!-- Retrieval lab/debug surface for FDAgent /hybrid-search. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hybrid Search Lab - FDAgent</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body class="lab-page">
+  <main class="lab-shell">
+    <header class="lab-hero">
+      <div>
+        <p class="detail-kicker">Retrieval lab</p>
+        <h1>Hybrid Search Debug UI</h1>
+        <p>
+          Inspect vector, FTS, and RRF fusion behavior directly without changing the main
+          <a href="/">/ask chat</a> flow.
+        </p>
+      </div>
+      <div class="lab-badges" aria-label="Lab safeguards">
+        <span class="badge detail-badge">No secrets exposed</span>
+        <span class="badge detail-badge">Operational stages only</span>
+      </div>
+    </header>
+
+    <section class="lab-card">
+      <form id="hybridSearchForm" class="lab-form">
+        <label class="lab-field lab-field-wide">
+          <span>Search query</span>
+          <input id="queryInput" name="query" type="search" autocomplete="off"
+            placeholder="pills too strong" required />
+        </label>
+        <label class="lab-field">
+          <span>Field</span>
+          <select id="fieldSelect" name="field">
+            <option value="both" selected>both</option>
+            <option value="reason_for_recall">reason_for_recall</option>
+            <option value="product_description">product_description</option>
+          </select>
+        </label>
+        <label class="lab-field">
+          <span>k</span>
+          <input id="kInput" name="k" type="number" min="1" max="100" value="20" />
+        </label>
+        <label class="lab-field lab-field-wide">
+          <span>FTS aliases (optional, comma-separated)</span>
+          <input id="aliasesInput" name="aliases" type="text"
+            placeholder="too strong, over strength, high assay" />
+        </label>
+        <label class="lab-field lab-field-wide lab-field-json">
+          <span>Filters JSON (optional)</span>
+          <textarea id="filtersInput" name="filters" rows="4" spellcheck="false"
+            placeholder='{"classification": "Class I", "report_date": {"gte": "2020-01-01"}}'></textarea>
+        </label>
+        <div class="lab-actions">
+          <button type="submit" id="searchButton">Run hybrid search</button>
+          <button class="secondary" type="button" id="exampleButton">Load example</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="lab-card lab-progress-card" aria-live="polite">
+      <div class="lab-section-heading">
+        <div>
+          <h2>Progress</h2>
+          <p id="statusText">Ready.</p>
+        </div>
+      </div>
+      <ol class="lab-progress" id="progressList"></ol>
+    </section>
+
+    <section class="lab-card" id="metadataCard" hidden>
+      <div class="lab-section-heading">
+        <div>
+          <h2>Run metadata</h2>
+          <p>Safe provider/model, retrieval mode, fallback, counts, timings, and top hits.</p>
+        </div>
+        <div class="lab-actions">
+          <button class="secondary" type="button" id="downloadCsv" disabled>Download CSV</button>
+          <button class="secondary" type="button" id="downloadJson" disabled>Download JSON</button>
+        </div>
+      </div>
+      <dl class="lab-metadata" id="metadataGrid"></dl>
+    </section>
+
+    <section class="lab-card" id="resultsCard" hidden>
+      <div class="lab-section-heading">
+        <div>
+          <h2>Results</h2>
+          <p id="resultsSummary">No search has run yet.</p>
+        </div>
+      </div>
+      <div class="lab-table-wrap">
+        <table class="lab-results-table" id="resultsTable"></table>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/hybrid-search.js" defer></script>
+</body>
+</html>

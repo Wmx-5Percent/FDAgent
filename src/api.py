@@ -22,7 +22,7 @@ from datetime import date, datetime
 from html import escape
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException
@@ -33,10 +33,17 @@ from pydantic import BaseModel, Field
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # allow `import nl_query` under uvicorn
 import llm  # noqa: E402
 import agent_control  # noqa: E402
+import retrieval  # noqa: E402
 import validation  # noqa: E402
-from analytics import RawFirmExposureLeaderboard, RecallAnalytics  # noqa: E402
+from analytics import CATALOG, OPS, Filter, Kind, RawFirmExposureLeaderboard, RecallAnalytics  # noqa: E402
 from nl_query import Answer, Intent, MultiSectionResult, NLEngine, TaxonomyExplanation  # noqa: E402
-from observability import QueryLogEntry, QueryLogger, response_metadata  # noqa: E402
+from observability import (  # noqa: E402
+    HybridSearchLogEntry,
+    HybridSearchLogger,
+    QueryLogEntry,
+    QueryLogger,
+    response_metadata,
+)
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 TITLE_WORD_LIMIT = 6
@@ -138,17 +145,32 @@ RECALL_DETAIL_LONG_FIELDS = {
 # Warmed at startup, reused across requests (see lifespan).
 _engine: Optional[NLEngine] = None
 _query_logger: Optional[QueryLogger] = None
+_hybrid_search_logger: Optional[HybridSearchLogger] = None
+HYBRID_FILTER_ALLOWED_OPS: dict[Kind, set[str]] = {
+    # Lab filters are hard constraints, so categorical/id fields stay exact-match only.
+    Kind.DIMENSION: {"eq", "ne", "in"},
+    Kind.ID: {"eq", "ne", "in"},
+    # Free-text fields may use ILIKE in addition to exact matches.
+    Kind.TEXT: {"eq", "ne", "in", "ilike"},
+    # Date fields support chronological comparisons; ILIKE is intentionally rejected.
+    Kind.DATE: {"eq", "ne", "in", "gte", "lte", "between"},
+}
+HYBRID_FILTER_STRING_MAX_CHARS = 200
+HYBRID_FILTER_IN_MAX_ITEMS = 25
+HYBRID_FILTER_MAX_SERIALIZED_BYTES = 4096
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Warm provider clients + cached schema context once, before serving traffic."""
-    global _engine, _query_logger
+    global _engine, _query_logger, _hybrid_search_logger
     _engine = NLEngine()
     _query_logger = QueryLogger(_engine.dsn)
+    _hybrid_search_logger = HybridSearchLogger(_engine.dsn)
     yield
     _engine = None
     _query_logger = None
+    _hybrid_search_logger = None
 
 
 app = FastAPI(
@@ -173,6 +195,30 @@ class TitleRequest(BaseModel):
 
 class TitleResponse(BaseModel):
     title: str = Field(description="A concise chat title, capped at six words.")
+
+
+class HybridSearchRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=500,
+                       description="Natural-language retrieval query to inspect.")
+    field: Literal["reason_for_recall", "product_description", "both"] = Field(
+        default="both",
+        description="Which embedded recall text field to search.",
+    )
+    k: int = Field(default=20, ge=1, le=100,
+                   description="Number of fused retrieval rows to return.")
+    filters: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Hard filters over whitelisted drug_enforcement columns. Accepts either "
+            "{column: value}, {column: [values]}, {column: {op, value}}, or "
+            "{column: {gte/lte/between/...}}."
+        ),
+    )
+    aliases: list[str] = Field(
+        default_factory=list,
+        max_length=20,
+        description="Optional FTS aliases/synonyms to compare alongside the query.",
+    )
 
 
 def _json_safe(v: Any) -> Any:
@@ -506,10 +552,318 @@ def _require_query_logger() -> QueryLogger:
     return _query_logger
 
 
+def _require_hybrid_search_logger() -> HybridSearchLogger:
+    if _hybrid_search_logger is None:
+        raise RuntimeError("hybrid search logger not initialized")
+    return _hybrid_search_logger
+
+
 def _require_engine() -> NLEngine:
     if _engine is None:
         raise HTTPException(status_code=503, detail="engine not ready")
     return _engine
+
+
+def _coerce_filter_atom(column: str, value: Any) -> Any:
+    kind = CATALOG[column]
+    if kind is Kind.DATE:
+        if isinstance(value, date) and not isinstance(value, datetime):
+            return value
+        if not isinstance(value, str):
+            raise ValueError(f"date filter {column!r} must be a string")
+        text = value.strip()
+        if len(text) > HYBRID_FILTER_STRING_MAX_CHARS:
+            raise ValueError(
+                f"filter {column!r} exceeds {HYBRID_FILTER_STRING_MAX_CHARS} characters"
+            )
+        for fmt in ("%Y-%m-%d", "%Y%m%d", "%Y/%m/%d"):
+            try:
+                return datetime.strptime(text, fmt).date()
+            except ValueError:
+                continue
+        raise ValueError(f"date filter {column!r} must be YYYY-MM-DD")
+    if not isinstance(value, str):
+        raise ValueError(f"filter {column!r} must be a string")
+    text = value.strip()
+    if not text:
+        raise ValueError(f"filter {column!r} cannot be empty")
+    if len(text) > HYBRID_FILTER_STRING_MAX_CHARS:
+        raise ValueError(
+            f"filter {column!r} exceeds {HYBRID_FILTER_STRING_MAX_CHARS} characters"
+        )
+    return text
+
+
+def _clean_aliases(values: list[str]) -> list[str]:
+    aliases: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        alias = " ".join(value.split())
+        key = alias.casefold()
+        if alias and key not in seen:
+            aliases.append(alias[:120])
+            seen.add(key)
+    return aliases[:20]
+
+
+def _filters_for_request(raw_filters: dict[str, Any]) -> list[Filter]:
+    if not isinstance(raw_filters, dict):
+        raise ValueError("filters must be an object")
+    _validate_filter_payload_size(raw_filters)
+    filters: list[Filter] = []
+    for column, raw in raw_filters.items():
+        if column not in CATALOG:
+            raise ValueError(f"unknown filter column {column!r}")
+        filters.extend(_filters_for_column(column, raw))
+    return filters
+
+
+def _validate_filter_payload_size(raw_filters: dict[str, Any]) -> None:
+    try:
+        serialized = json.dumps(
+            raw_filters,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("filters must be JSON-serializable") from exc
+    size = len(serialized.encode("utf-8"))
+    if size > HYBRID_FILTER_MAX_SERIALIZED_BYTES:
+        raise ValueError(
+            f"filters payload exceeds {HYBRID_FILTER_MAX_SERIALIZED_BYTES} bytes"
+        )
+
+
+def _filters_for_column(column: str, raw: Any) -> list[Filter]:
+    if raw is None or raw == "" or raw == []:
+        return []
+    if isinstance(raw, dict):
+        if "op" in raw:
+            op = str(raw.get("op") or "").strip()
+            value = raw.get("value", raw.get("values"))
+            return [_make_filter(column, op, value)]
+        out: list[Filter] = []
+        for op in ("eq", "ne", "in", "gte", "lte", "between", "ilike"):
+            if op in raw and raw[op] not in (None, "", []):
+                out.append(_make_filter(column, op, raw[op]))
+        if out:
+            return out
+        raise ValueError(f"filter object for {column!r} needs an op/value")
+    if isinstance(raw, list):
+        return [_make_filter(column, "in", raw)]
+    return [_make_filter(column, "eq", raw)]
+
+
+def _make_filter(column: str, op: str, raw_value: Any) -> Filter:
+    if op not in OPS:
+        raise ValueError(f"unknown filter op {op!r}")
+    kind = CATALOG[column]
+    allowed_ops = HYBRID_FILTER_ALLOWED_OPS[kind]
+    if op not in allowed_ops:
+        allowed = ", ".join(sorted(allowed_ops))
+        raise ValueError(
+            f"filter op {op!r} is not allowed for {kind.value} column {column!r}; "
+            f"allowed: {allowed}"
+        )
+    if op == "in":
+        if not isinstance(raw_value, list) or not raw_value:
+            raise ValueError(f"filter {column!r}.in needs a non-empty array")
+        if len(raw_value) > HYBRID_FILTER_IN_MAX_ITEMS:
+            raise ValueError(
+                f"filter {column!r}.in accepts at most {HYBRID_FILTER_IN_MAX_ITEMS} items"
+            )
+        return Filter(column, op, [_coerce_filter_atom(column, item) for item in raw_value])
+    if op == "between":
+        if not isinstance(raw_value, list) or len(raw_value) != 2:
+            raise ValueError(f"filter {column!r}.between needs [start, end]")
+        return Filter(
+            column,
+            op,
+            (
+                _coerce_filter_atom(column, raw_value[0]),
+                _coerce_filter_atom(column, raw_value[1]),
+            ),
+        )
+    if isinstance(raw_value, list):
+        if len(raw_value) != 1:
+            raise ValueError(f"filter {column!r}.{op} needs one value")
+        raw_value = raw_value[0]
+    return Filter(column, op, _coerce_filter_atom(column, raw_value))
+
+
+def _filter_debug_payload(filters: list[Filter]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for item in filters:
+        value = item.value
+        if isinstance(value, tuple):
+            value = [_json_safe(v) for v in value]
+        elif isinstance(value, list):
+            value = [_json_safe(v) for v in value]
+        else:
+            value = _json_safe(value)
+        out.append({"column": item.column, "op": item.op, "value": value})
+    return out
+
+
+def _round_float(value: Any, digits: int = 4) -> float | None:
+    if value is None:
+        return None
+    try:
+        return round(float(value), digits)
+    except (TypeError, ValueError):
+        return None
+
+
+def _hybrid_request_payload(
+    req: HybridSearchRequest,
+    *,
+    normalized_filters: list[dict[str, Any]],
+    filters_valid: bool,
+) -> dict[str, Any]:
+    filters_payload: dict[str, Any] = {"items": normalized_filters}
+    if not filters_valid:
+        filters_payload.update({"valid": False, "omitted_raw": True})
+    return {
+        "query": req.query,
+        "field": req.field,
+        "k": req.k,
+        "aliases": _clean_aliases(req.aliases),
+        "filters": filters_payload,
+    }
+
+
+def _load_hybrid_hit_details(conn: Any, recall_numbers: list[str]) -> dict[str, dict[str, Any]]:
+    if not recall_numbers:
+        return {}
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT recall_number, status, recalling_firm, classification,
+                   product_description, reason_for_recall, report_date
+            FROM drug_enforcement
+            WHERE recall_number = ANY(%s)
+            """,
+            [recall_numbers],
+        )
+        return {
+            row[0]: {
+                "recall_number": row[0],
+                "status": row[1],
+                "recalling_firm": row[2],
+                "classification": row[3],
+                "product_description": row[4],
+                "reason_for_recall": row[5],
+                "report_date": _json_safe(row[6]),
+            }
+            for row in cur.fetchall()
+        }
+
+
+def _serialize_hybrid_hit(hit: retrieval.Hit, rank: int,
+                          details: dict[str, Any]) -> dict[str, Any]:
+    recall_number = hit.recall_number
+    detail_url = recall_detail_url(recall_number)
+    source_url = recall_verification_url(recall_number)
+    row = {
+        "rank": hit.fused_rank or rank,
+        "recall_number": recall_number,
+        "field": hit.field,
+        "retrieval_mode": hit.retrieval_mode,
+        "score_kind": hit.score_kind,
+        "retrieval_score": _round_float(hit.retrieval_score),
+        "rrf_score": _round_float(hit.rrf_score, 6),
+        "vector_rank": hit.vector_rank,
+        "vector_distance": _round_float(hit.vector_distance),
+        "vector_similarity": _round_float(hit.vector_similarity),
+        "fts_rank": hit.fts_rank,
+        "fts_score": _round_float(hit.fts_score),
+        "classification": details.get("classification") or hit.classification,
+        "status": details.get("status"),
+        "recalling_firm": details.get("recalling_firm") or hit.recalling_firm,
+        "product_description": details.get("product_description"),
+        "reason_for_recall": details.get("reason_for_recall"),
+        "report_date": details.get("report_date"),
+        "content": hit.content,
+    }
+    if detail_url:
+        row["url"] = detail_url
+        row["evidence_link"] = detail_url
+    if source_url:
+        row["source_url"] = source_url
+    return row
+
+
+def _hybrid_response_metadata(
+    req: HybridSearchRequest,
+    hits: retrieval.SearchResult,
+    *,
+    aliases: list[str],
+    rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "query": req.query,
+        "field": req.field,
+        "k": req.k,
+        "aliases": aliases,
+        "fts_queries": list(getattr(hits, "fts_queries", [])),
+        "retrieval_mode": getattr(hits, "retrieval_mode", "hybrid"),
+        "fallback_reason": getattr(hits, "embedding_fallback_reason", None),
+        "vector_hit_count": int(getattr(hits, "vector_hit_count", 0)),
+        "fts_hit_count": int(getattr(hits, "fts_hit_count", 0)),
+        "fused_hit_count": int(getattr(hits, "fused_hit_count", len(hits))),
+        "returned_count": len(rows),
+        "top_recall_numbers": [row["recall_number"] for row in rows[:10]],
+    }
+
+
+def _log_hybrid_search(
+    req: HybridSearchRequest,
+    *,
+    filters: list[Filter],
+    hits: retrieval.SearchResult | None,
+    timings_ms: dict[str, Any],
+    response_meta: dict[str, Any],
+    error_type: str | None = None,
+    error_message: str | None = None,
+) -> int:
+    engine = _require_engine()
+    retrieval_mode = (
+        getattr(hits, "retrieval_mode", None)
+        if hits is not None else response_meta.get("retrieval_mode")
+    ) or ("error" if error_type else "hybrid")
+    fallback_reason = (
+        getattr(hits, "embedding_fallback_reason", None)
+        if hits is not None else response_meta.get("fallback_reason")
+    )
+    top_recall_numbers = list(response_meta.get("top_recall_numbers") or [])
+    normalized_filters = _filter_debug_payload(filters)
+    filters_valid = not (error_type == "ValueError" and bool(req.filters) and not filters)
+    return _require_hybrid_search_logger().write(HybridSearchLogEntry(
+        query=req.query,
+        field=req.field,
+        k=req.k,
+        filters={"items": normalized_filters},
+        embedding_provider=engine.embed_config.provider,
+        embedding_model=engine.embed_config.model,
+        retrieval_mode=str(retrieval_mode),
+        fallback_reason=fallback_reason,
+        vector_hit_count=int(getattr(hits, "vector_hit_count", 0)) if hits is not None else 0,
+        fts_hit_count=int(getattr(hits, "fts_hit_count", 0)) if hits is not None else 0,
+        fused_hit_count=int(getattr(hits, "fused_hit_count", 0)) if hits is not None else 0,
+        top_recall_numbers=top_recall_numbers,
+        timings_ms=timings_ms,
+        request=_hybrid_request_payload(
+            req,
+            normalized_filters=normalized_filters,
+            filters_valid=filters_valid,
+        ),
+        response_metadata=response_meta,
+        error_type=error_type,
+        error_message=error_message,
+    ))
 
 
 def _clean_title(raw: str) -> str:
@@ -859,6 +1213,137 @@ def health() -> dict[str, Any]:
         "engine": "ready" if _engine is not None else "starting",
         **provider_status,
     }
+
+
+@app.get("/hybrid-search")
+def hybrid_search_page() -> FileResponse:
+    return FileResponse(WEB_DIR / "hybrid-search.html")
+
+
+@app.post("/hybrid-search")
+def hybrid_search_endpoint(req: HybridSearchRequest) -> dict[str, Any]:
+    start = perf_counter()
+    engine = _require_engine()
+    filters: list[Filter] = []
+    hits: retrieval.SearchResult | None = None
+    response_meta: dict[str, Any] = {}
+    timings_ms: dict[str, Any] = {}
+    try:
+        aliases = _clean_aliases(req.aliases)
+        filters = _filters_for_request(req.filters)
+        with RecallAnalytics(engine.dsn) as analytics:
+            hits = retrieval.search(
+                analytics.conn,
+                engine.embed_client,
+                req.query.strip(),
+                k=req.k,
+                field=req.field,
+                filters=filters,
+                embed_config=engine.embed_config,
+                embedding_error=engine.embedding_error,
+                fts_queries=aliases,
+            )
+            details_by_recall = _load_hybrid_hit_details(
+                analytics.conn,
+                [hit.recall_number for hit in hits],
+            )
+        timings_ms = dict(getattr(hits, "timings_ms", {}))
+        rows = [
+            _serialize_hybrid_hit(hit, rank, details_by_recall.get(hit.recall_number, {}))
+            for rank, hit in enumerate(hits, 1)
+        ]
+        response_meta = _hybrid_response_metadata(req, hits, aliases=aliases, rows=rows)
+        timings_ms["api_total"] = _elapsed_ms(start)
+        log_started = perf_counter()
+        log_id = _log_hybrid_search(
+            req,
+            filters=filters,
+            hits=hits,
+            timings_ms=timings_ms,
+            response_meta=response_meta,
+        )
+        timings_ms["log_write"] = _elapsed_ms(log_started)
+        response_meta["log_id"] = log_id
+        payload = {
+            "query": req.query,
+            "field": req.field,
+            "k": req.k,
+            "filters": _filter_debug_payload(filters),
+            "aliases": aliases,
+            "retrieval_mode": getattr(hits, "retrieval_mode", "hybrid"),
+            "embedding_provider": engine.embed_config.provider,
+            "embedding_model": engine.embed_config.model,
+            "embedding_available": engine.embedding_error is None,
+            "fallback_reason": getattr(hits, "embedding_fallback_reason", None),
+            "timings_ms": timings_ms,
+            "counts": {
+                "vector_hit_count": int(getattr(hits, "vector_hit_count", 0)),
+                "fts_hit_count": int(getattr(hits, "fts_hit_count", 0)),
+                "fused_hit_count": int(getattr(hits, "fused_hit_count", len(hits))),
+                "returned_count": len(rows),
+            },
+            "fts_queries": list(getattr(hits, "fts_queries", [])),
+            "top_recall_numbers": [row["recall_number"] for row in rows[:10]],
+            "log_id": log_id,
+            "rows": rows,
+        }
+        return payload
+    except ValueError as exc:
+        timings_ms["api_total"] = _elapsed_ms(start)
+        response_meta = {
+            **response_meta,
+            "retrieval_mode": "error",
+            "fallback_reason": None,
+            "top_recall_numbers": [],
+        }
+        _log_hybrid_search(
+            req,
+            filters=filters,
+            hits=hits,
+            timings_ms=timings_ms,
+            response_meta=response_meta,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except llm.ProviderError as exc:
+        timings_ms["api_total"] = _elapsed_ms(start)
+        response_meta = {
+            **response_meta,
+            "retrieval_mode": "error",
+            "fallback_reason": type(exc).__name__,
+            "top_recall_numbers": [],
+        }
+        _log_hybrid_search(
+            req,
+            filters=filters,
+            hits=hits,
+            timings_ms=timings_ms,
+            response_meta=response_meta,
+            error_type=type(exc).__name__,
+            error_message=llm.public_error_detail(exc),
+        )
+        raise HTTPException(status_code=llm.http_status(exc),
+                            detail=llm.public_error_detail(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 — log server-side, return a safe message
+        traceback.print_exc()
+        timings_ms["api_total"] = _elapsed_ms(start)
+        response_meta = {
+            **response_meta,
+            "retrieval_mode": "error",
+            "fallback_reason": None,
+            "top_recall_numbers": [],
+        }
+        _log_hybrid_search(
+            req,
+            filters=filters,
+            hits=hits,
+            timings_ms=timings_ms,
+            response_meta=response_meta,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
+        raise HTTPException(status_code=500, detail="could not run hybrid search") from exc
 
 
 @app.post("/title", response_model=TitleResponse)
