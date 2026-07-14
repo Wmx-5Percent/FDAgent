@@ -21,17 +21,105 @@ guessed by the model), each result carrying the recall numbers that back it.
 - **Analytics engine** — [src/analytics.py](src/analytics.py): safe, parameterized, read-only `count / group-by / trend / sample`, returning evidence `recall_number`s.
 - **NL→SQL layer** — [src/nl_query.py](src/nl_query.py): an LLM turns a question into a *validated* `QuerySpec` (columns/values whitelisted, schema + column comments injected) that runs through the analytics engine — so every number comes from SQL.
 - **Serving** — [src/api.py](src/api.py): a FastAPI `/ask` endpoint + a zero-build ChatGPT-style UI ([web/index.html](web/index.html), [web/app.js](web/app.js), [web/styles.css](web/styles.css)) that renders answers and evidence; resources are warmed once at startup and requests are logged to `query_log`.
-- **Hybrid retrieval (Path 2)** — [src/embed.py](src/embed.py) + [src/retrieval.py](src/retrieval.py): recall text embedded into a multi-source `pgvector` `embeddings` table; `/ask` routes fuzzy concepts (e.g. "pills that are too strong" → *superpotent* recalls) to pgvector + Postgres FTS with RRF instead of literal keyword matching.
+- **Agent control** — [src/agent_control.py](src/agent_control.py): an LLM intent gate keeps meta/chitchat, out-of-domain, and too-vague prompts out of the database; only in-domain recall questions produce a `QuerySpec`.
+- **Hybrid retrieval + semantic counting (Path 2)** — [src/embed.py](src/embed.py) + [src/retrieval.py](src/retrieval.py) + [src/validation.py](src/validation.py): recall text is embedded into a multi-source `pgvector` `embeddings` table; fuzzy concepts (e.g. "pills that are too strong" → *superpotent*) use pgvector + Postgres FTS with RRF, and count-style concept questions add LLM yes/no validation plus confidence bands.
 
-```text
-openFDA API ─▶ src/fetch_openfda.py ─▶ Postgres (raw JSONB + parsed columns)
-                                            │
-   question ─▶ src/api.py ─▶ src/nl_query.py (LLM → QuerySpec) ─▶ src/analytics.py (SQL) ─▶ answer + evidence
-                                            │
-                                       web/index.html (chart + evidence)
+## Agent workflow and routing
+
+The diagrams below name the current serving-path modules. Live priorities and provider caveats
+stay in [PROGRESS.md](PROGRESS.md).
+
+### `/ask` request lifecycle
+
+```mermaid
+flowchart LR
+  UI["Browser UI<br/>web/index.html + web/app.js<br/>localStorage chats, edit/stop/progress"]
+  Ask["POST /ask<br/>src/api.py"]
+  Engine["NLEngine.ask()<br/>src/nl_query.py<br/>warmed clients + schema/taxonomy context"]
+  Guard["agent_control.classify_llm()<br/>in_domain | chitchat_meta | out_of_domain | ambiguous"]
+  Spec["generate_spec() → QuerySpec<br/>intent, filters, taxonomy_node_id,<br/>semantic_query, semantic_aliases"]
+  Run["run_spec() / _run_question_spec()"]
+  SQL["RecallAnalytics<br/>read-only parameterized SQL<br/>drug_enforcement"]
+  Tax["taxonomy sidecar<br/>taxonomy + recall_label<br/>exact category counts/explanations"]
+  Retrieve["retrieval.search()<br/>pgvector + FTS + RRF<br/>embeddings"]
+  Validate["validation.validate_hits()<br/>LLM yes/no snippets"]
+  Serialize["serialize_answer()<br/>data.kind cards"]
+  Log["QueryLogger.write()<br/>query_log metadata"]
+
+  UI -->|fetch JSON| Ask --> Engine --> Guard
+  Guard -->|terminal route| Serialize
+  Guard -->|in_domain| Spec --> Run
+  Run --> SQL --> Serialize
+  Run --> Tax --> Serialize
+  Run --> Retrieve --> Serialize
+  Retrieve --> Validate --> Serialize
+  Serialize -->|answer + evidence| UI
+  Serialize -.-> Log
 ```
 
-**Next:** per-item retrieval validation, semantic counting, and the agentic capstone — see [PROGRESS.md](PROGRESS.md).
+### Routing/control flow
+
+```mermaid
+flowchart TD
+  Q["User question"] --> ExplainProbe{"Definition question<br/>matching taxonomy node?"}
+  ExplainProbe -->|yes| Guard
+  ExplainProbe -->|no| Guard{"LLM domain/meta guard<br/>agent_control.classify_llm()"}
+
+  Guard -->|chitchat_meta| Meta["AgentControlResult message<br/>identity/capabilities; no DB rows"]
+  Guard -->|out_of_domain| OOD["Scope message<br/>FDA drug-recall data only; no DB rows"]
+  Guard -->|ambiguous| Clarify["Clarification + suggestions<br/>no DB rows"]
+  Guard -->|in_domain| QuerySpec["LLM → validated QuerySpec"]
+
+  QuerySpec -->|explain_taxonomy_node| TaxExplain["TaxonomyExplanation<br/>definition + example recall reasons"]
+  QuerySpec -->|count_by_taxonomy<br/>or taxonomy_node_id| TaxSQL["Exact taxonomy SQL<br/>recall_label / taxonomy"]
+  QuerySpec -->|count_total / count_by / trend| Analytics["RecallAnalytics SQL<br/>count, group-by, trend"]
+  QuerySpec -->|sample + hard filters| Rows["RecallAnalytics.sample()"]
+  QuerySpec -->|sample with no filters<br/>and no semantic_query| SafeSample["Safe sample policy<br/>clarification instead of arbitrary LIMIT 5"]
+  QuerySpec -->|semantic_query + sample| Retrieval["Ranked retrieval hits"]
+  QuerySpec -->|semantic_query + count_total/count_by| SemCount["Retrieval pool → semantic validation<br/>estimated count/distribution"]
+  QuerySpec -->|firm-scoped reason+product Top-N| Multi["MultiSectionResult<br/>taxonomy reason table + product table"]
+
+  Meta --> API["Serialized /ask response"]
+  OOD --> API
+  Clarify --> API
+  TaxExplain --> API
+  TaxSQL --> API
+  Analytics --> API
+  Rows --> API
+  SafeSample --> API
+  Retrieval --> API
+  SemCount --> API
+  Multi --> API
+  API -.-> QueryLog["query_log<br/>QuerySpec/decision/response metadata/errors"]
+```
+
+### Hybrid retrieval and current degradation behavior
+
+```mermaid
+flowchart TD
+  SQ["QuerySpec.semantic_query<br/>+ optional semantic_aliases + hard filters"]
+  Embed{"Embedding client available<br/>and compatible?"}
+  Vector["Vector candidates<br/>embeddings.embedding <=> query vector"]
+  FTS["Keyword candidates<br/>Postgres FTS over content_tsv<br/>query + aliases + broad OR terms"]
+  RRF["RRF fusion<br/>retrieval_mode=hybrid"]
+  FTSOnly["FTS-only fallback<br/>retrieval_mode=fts_only<br/>embedding_fallback_reason recorded"]
+  Sample["sample intent<br/>data.kind=retrieval"]
+  Count["count_total/count_by intent<br/>LLM validates candidate snippets"]
+  Estimate["SemanticCountResult<br/>estimated_count, confidence_interval,<br/>evidence recall_numbers"]
+  DegradedZero["If degraded sample has zero hits:<br/>answer says vector retrieval is unavailable,<br/>so empty FTS result is not a full semantic conclusion"]
+  Obs["/ask response + query_log<br/>capture retrieval_mode, fallback reason,<br/>and degraded flag when set"]
+
+  SQ --> Embed
+  Embed -->|yes| Vector --> RRF
+  Embed -->|yes| FTS --> RRF
+  Embed -->|fallback-allowed provider error| FTSOnly
+  RRF --> Sample
+  RRF --> Count
+  FTSOnly --> Sample
+  FTSOnly --> Count
+  Sample --> DegradedZero --> Obs
+  Count --> Estimate --> Obs
+```
 
 ---
 
