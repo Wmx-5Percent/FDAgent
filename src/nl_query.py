@@ -31,7 +31,15 @@ import llm  # noqa: E402  (OpenAI-compatible provider gateway)
 import agent_control  # noqa: E402  (/ask guard before the query pipeline)
 import retrieval  # noqa: E402  (semantic search for concept queries)
 import validation  # noqa: E402  (LLM validation for semantic counting)
-from analytics import CATALOG, GRAINS, OPS, Filter, Kind, RecallAnalytics  # noqa: E402
+from analytics import (  # noqa: E402
+    CATALOG,
+    GRAINS,
+    OPS,
+    Filter,
+    Kind,
+    RawFirmExposureLeaderboard,
+    RecallAnalytics,
+)
 
 load_dotenv()
 DEFAULT_DSN = os.environ.get("DATABASE_URL", "postgresql://localhost:5432/fda")
@@ -52,12 +60,18 @@ class Intent(str, Enum):
     count_by = "count_by"         # distribution across a dimension
     count_by_taxonomy = "count_by_taxonomy"  # distribution across recall-reason taxonomy categories
     explain_taxonomy_node = "explain_taxonomy_node"  # plain-language definition of a taxonomy category
+    raw_firm_exposure = "raw_firm_exposure"  # raw recalling_firm leaderboard + severity exposure score
     trend = "trend"               # counts over time
     sample = "sample"             # a few example rows
 
 
 class Op(str, Enum):
     eq = "eq"; ne = "ne"; in_ = "in"; gte = "gte"; lte = "lte"; between = "between"; ilike = "ilike"
+
+
+class ExposureMetric(str, Enum):
+    severity_weighted = "severity_weighted"
+    recall_count = "recall_count"
 
 
 class FilterSpec(BaseModel):
@@ -74,6 +88,7 @@ class QuerySpec(BaseModel):
     filters: list[FilterSpec] = Field(default_factory=list)
     group_by: Optional[str] = None      # count_by: a dimension column
     taxonomy_node_id: Optional[str] = None  # exact recall-reason category filter (recall_label)
+    exposure_metric: Optional[ExposureMetric] = None  # raw_firm_exposure ranking metric
     grain: Optional[str] = None         # trend: year/quarter/month/week/day
     date_column: Optional[str] = None   # trend: a date column
     limit: int = 20
@@ -134,6 +149,7 @@ Rules:
 - Choose intent: count_total (one number), count_by (distribution across a dimension -> set group_by),
   count_by_taxonomy (distribution across recall-reason categories from the TAXONOMY list),
   explain_taxonomy_node (plain-language definition/explanation of one TAXONOMY category),
+  raw_firm_exposure (rank raw FDA recalling_firm values with count + severity score),
   trend (counts over time -> set grain and date_column), sample (a few example rows).
 - Use explain_taxonomy_node when the user asks what a recall-reason category or FDA recall term MEANS,
   asks for a definition, or uses phrasing such as "what is", "what does X mean", "define X",
@@ -150,6 +166,16 @@ Rules:
   recalls by firm"), or with intent=explain_taxonomy_node when the user asks what the category means.
   For "most common recall reasons / reason distribution", use intent=count_by_taxonomy (no node_id).
   When you set taxonomy_node_id or use count_by_taxonomy, do NOT set semantic_query.
+- raw_firm_exposure: use when the user asks which firms/companies/厂商/公司 have the most FDA drug
+  recalls, the highest recall exposure, or a severity-weighted raw company exposure leaderboard.
+  This ranks raw FDA `recalling_firm` strings only. Set exposure_metric="recall_count" for recall-count
+  wording ("most recalls", "top companies by recall count", "哪些公司召回最多"). Set
+  exposure_metric="severity_weighted" for exposure/risk-exposure/severity-weighted wording
+  ("recall exposure", "severity-weighted recalls", "风险暴露"). Do NOT use this intent for a
+  class-specific distribution such as "Which firms had the most Class I recalls?", or for a
+  concept-specific distribution such as "Which firms had the most sterility recalls?" -- use
+  intent=count_by, group_by="recalling_firm", plus the classification/taxonomy/semantic concept
+  filter instead.
 - semantic_query: when the question asks about a fuzzy CONCEPT/topic in free text (e.g.
   "sterility problems", "cancer-causing impurity", "pills that are too strong", "glass fragments",
   or the same idea in another language such as "药效太强" or "细菌感染"), put the CORE concept here
@@ -244,6 +270,59 @@ _COUNT_OR_CHART_ZH_HINTS = (
     "多少", "几个", "几次", "总数", "计数", "统计", "分布", "最多", "最常见",
     "排名", "排行", "趋势", "按公司", "按厂商", "按州", "按分类", "哪几家", "哪些公司",
 )
+_CLASS_SPECIFIC_RE = re.compile(r"\bclass\s*(?:i{1,3}|1|2|3)\b", re.IGNORECASE)
+_RAW_EXPOSURE_EN_PATTERNS = (
+    re.compile(r"\bwhich\s+(?:raw\s+)?(?:recalling\s+)?(?:firms|companies)\b.*\bmost\b", re.I),
+    re.compile(r"\btop\s*\d*\s+(?:raw\s+)?(?:recalling\s+)?(?:firms|companies)\b", re.I),
+    re.compile(r"\brank(?:ing)?\s+(?:raw\s+)?(?:recalling\s+)?(?:firms|companies)\b", re.I),
+    re.compile(r"\b(?:firms|companies)\b.*\bby\s+(?:recall\s+count|severity-weighted|exposure)\b", re.I),
+    re.compile(r"\b(?:recall\s+exposure|risk\s+exposure)\b.*\b(?:firms|companies)\b", re.I),
+)
+_RAW_EXPOSURE_ZH_HINTS = (
+    "哪些公司召回最多",
+    "哪家公司召回最多",
+    "哪个公司召回最多",
+    "哪些厂商召回最多",
+    "哪个厂商召回最多",
+    "召回最多的公司",
+    "召回最多的厂商",
+    "公司召回排名",
+    "厂商召回排名",
+    "公司召回排行",
+    "厂商召回排行",
+    "哪个公司风险暴露最高",
+    "哪家公司风险暴露最高",
+    "哪个公司暴露最高",
+    "哪家公司暴露最高",
+)
+_RAW_EXPOSURE_WEIGHTED_HINTS = (
+    "severity-weighted",
+    "severity weighted",
+    "weighted",
+    "exposure",
+    "risk exposure",
+    "暴露",
+    "风险暴露",
+    "严重度",
+    "加权",
+)
+_RAW_EXPOSURE_TOPIC_EXCLUSIONS = (
+    "sterility",
+    "sterile",
+    "cgmp",
+    "gmp",
+    "contamination",
+    "microbial",
+    "glass",
+    "nitrosamine",
+    "subpotent",
+    "superpotent",
+    "labeling",
+    "deviation",
+    "recall reason",
+    "recall reasons",
+    "原因",
+)
 _TAXONOMY_EXPLANATION_ALIASES = {
     "cgmp_deviation": (
         "cgmp deviation",
@@ -300,6 +379,48 @@ def _maybe_taxonomy_explanation_spec(
     if best is None:
         return None
     return QuerySpec(intent=Intent.explain_taxonomy_node, taxonomy_node_id=best[1])
+
+
+def _extract_limit(question: str, default: int = 20) -> int:
+    q = question.casefold()
+    match = re.search(r"\btop\s*(\d{1,3})\b", q)
+    if match:
+        return max(1, min(int(match.group(1)), 100))
+    match = re.search(r"前\s*(\d{1,3})", question)
+    if match:
+        return max(1, min(int(match.group(1)), 100))
+    if "前十" in question or "top ten" in q:
+        return 10
+    if "前五" in question or "top five" in q:
+        return 5
+    return default
+
+
+def _maybe_raw_firm_exposure_spec(question: str) -> QuerySpec | None:
+    """Deterministically catch the v0 raw-firm exposure wording before generic QuerySpec.
+
+    This avoids relying on the model to discover the new intent while preserving the older
+    class-specific ``count_by recalling_firm`` path for questions such as "Class I by firm".
+    """
+    q = question.casefold()
+    if _CLASS_SPECIFIC_RE.search(q) and not any(h in q for h in _RAW_EXPOSURE_WEIGHTED_HINTS):
+        return None
+    if any(hint in q for hint in _RAW_EXPOSURE_TOPIC_EXCLUSIONS):
+        return None
+    matched = any(pattern.search(question) for pattern in _RAW_EXPOSURE_EN_PATTERNS)
+    matched = matched or any(hint in question for hint in _RAW_EXPOSURE_ZH_HINTS)
+    if not matched:
+        return None
+    metric = (
+        ExposureMetric.severity_weighted
+        if any(hint in q or hint in question for hint in _RAW_EXPOSURE_WEIGHTED_HINTS)
+        else ExposureMetric.recall_count
+    )
+    return QuerySpec(
+        intent=Intent.raw_firm_exposure,
+        exposure_metric=metric,
+        limit=_extract_limit(question),
+    )
 
 
 def _valid_taxonomy_ids(a: RecallAnalytics, version: str = TAXONOMY_VERSION) -> set[str]:
@@ -488,6 +609,15 @@ def refine_spec(spec: QuerySpec) -> QuerySpec:
         spec.grain = None
         spec.date_column = None
         return spec
+    if spec.intent is Intent.raw_firm_exposure:
+        spec.semantic_query = None
+        spec.semantic_aliases = []
+        spec.group_by = None
+        spec.taxonomy_node_id = None
+        spec.grain = None
+        spec.date_column = None
+        spec.exposure_metric = spec.exposure_metric or ExposureMetric.severity_weighted
+        return spec
     if spec.taxonomy_node_id or spec.intent is Intent.count_by_taxonomy:
         spec.semantic_query = None
         spec.semantic_aliases = []
@@ -560,7 +690,7 @@ _TOPN_HINTS = (
 def _has_firm_filter(spec: QuerySpec) -> bool:
     return any(
         f.column == "recalling_firm"
-        and f.op in {Op.eq, Op.in_}
+        and f.op in {Op.eq, Op.in_, Op.ilike}
         and bool(f.values)
         for f in spec.filters
     )
@@ -818,6 +948,17 @@ def run_spec(
     if spec.intent is Intent.explain_taxonomy_node:
         return _explain_taxonomy_node(a, spec, question, chat_client, chat_config)
     filters = _to_filters(spec)
+    if spec.intent is Intent.raw_firm_exposure:
+        rank_by = (
+            "recall_count"
+            if spec.exposure_metric is ExposureMetric.recall_count
+            else "severity_weighted_exposure"
+        )
+        return a.raw_firm_exposure_leaderboard(
+            filters,
+            limit=spec.limit or 20,
+            rank_by=rank_by,
+        )
     if spec.intent is Intent.count_by_taxonomy:  # exact distribution across recall-reason categories
         return a.count_by_taxonomy(filters, limit=spec.limit or 20, with_evidence=True)
     if spec.taxonomy_node_id:  # exact counts filtered to one recall-reason category
@@ -887,6 +1028,40 @@ def summarize(spec: QuerySpec, result: Any) -> str:
         return "\n".join(lines)
     if isinstance(result, TaxonomyExplanation):
         return result.answer
+    if isinstance(result, RawFirmExposureLeaderboard):
+        metric_label = (
+            "severity-weighted exposure score"
+            if result.metric == "severity_weighted" else "raw recall count"
+        )
+        lines = [
+            f"Raw FDA `recalling_firm` exposure leaderboard (top {len(result.items)}, "
+            f"ranked by {metric_label}).",
+            f"Formula ({result.formula_version}): {result.formula}.",
+            *result.caveats,
+        ]
+        for item in result.items[:10]:
+            reason = (
+                f"; top reason category: {item.top_reason_category}"
+                f" ({item.top_reason_count:,})"
+                if item.top_reason_category and item.top_reason_count is not None else ""
+            )
+            evidence = f"; e.g. {', '.join(item.evidence)}" if item.evidence else ""
+            class_breakdown = (
+                f"Class I/II/III "
+                f"{item.class_i_recalls:,}/{item.class_ii_recalls:,}/{item.class_iii_recalls:,}"
+            )
+            if result.metric == "severity_weighted":
+                primary = (
+                    f"score {item.exposure_score:,}; total {item.total_recalls:,}; "
+                    f"{class_breakdown}"
+                )
+            else:
+                primary = (
+                    f"total {item.total_recalls:,}; severity score {item.exposure_score:,}; "
+                    f"{class_breakdown}"
+                )
+            lines.append(f"  {item.rank}. {item.recalling_firm}: {primary}{reason}{evidence}")
+        return "\n".join(lines)
     if isinstance(result, validation.SemanticCountResult):
         if result.retrieval_mode == "fts_only" and result.candidate_count == 0:
             reason = (
@@ -1015,11 +1190,12 @@ class NLEngine:
                 operation="chat",
             )
         explanation_spec = _maybe_taxonomy_explanation_spec(question, self.taxonomy_nodes)
+        exposure_spec = _maybe_raw_firm_exposure_spec(question)
         control = agent_control.classify_llm(self.chat_client, self.chat_config, question)
-        if control.terminal and explanation_spec is not None:
+        if control.terminal and (explanation_spec is not None or exposure_spec is not None):
             control = agent_control.AgentControlDecision(
                 route="in_domain",
-                reason="taxonomy_explanation",
+                reason="taxonomy_explanation" if explanation_spec is not None else "raw_firm_exposure",
             )
         if control.terminal:
             result = agent_control.result_from_decision(control)
@@ -1031,7 +1207,7 @@ class NLEngine:
                 control=control,
                 metadata={"control_route": control.route, "control_reason": control.reason},
             )
-        spec = explanation_spec or generate_spec(
+        spec = explanation_spec or exposure_spec or generate_spec(
             self.chat_client, self.chat_config, question, self.schema_ctx, self.taxonomy_ctx)
         with RecallAnalytics(self.dsn) as a:
             try:
@@ -1091,6 +1267,14 @@ class NLEngine:
                 section.spec.model_dump(mode="json", exclude_none=True)
                 for section in result.sections
             ]
+        if isinstance(result, RawFirmExposureLeaderboard):
+            metadata.update({
+                "formula_version": result.formula_version,
+                "formula": result.formula,
+                "scope": result.scope,
+                "exposure_metric": result.metric,
+                "result_count": len(result.items),
+            })
         if (
             spec.semantic_query
             and spec.intent is Intent.sample

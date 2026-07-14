@@ -221,11 +221,20 @@ def _assert_ask_case(case: Mapping[str, Any], answer: Mapping[str, Any]) -> Eval
         actual_node = spec.get("taxonomy_node_id") or data.get("node_id")
         _require(actual_node == expected_node,
                  f"expected taxonomy_node_id {expected_node!r}, got {actual_node!r}")
+    for key, expected_value in (assertions.get("data_fields") or {}).items():
+        actual_value = data.get(key)
+        _require(actual_value == expected_value,
+                 f"data.{key} expected {expected_value!r}, got {actual_value!r}")
     summary_needles = [str(v).lower() for v in assertions.get("summary_contains_any", [])]
     if summary_needles:
         summary = str(answer.get("summary") or "").lower()
         _require(any(n in summary for n in summary_needles),
                  f"summary did not contain any of {summary_needles}: {summary!r}")
+    summary_banned = [str(v).lower() for v in assertions.get("summary_not_contains_any", [])]
+    if summary_banned:
+        summary = str(answer.get("summary") or "").lower()
+        _require(not any(n in summary for n in summary_banned),
+                 f"summary unexpectedly contained one of {summary_banned}: {summary!r}")
 
     if "value_equals" in assertions:
         _require(data_kind == "scalar",
@@ -248,7 +257,7 @@ def _assert_ask_case(case: Mapping[str, Any], answer: Mapping[str, Any]) -> Eval
                  f"semantic_query={semantic_query!r} unexpectedly contained one of {banned_needles}")
     if route == "sql":
         _require(not semantic_query, f"numeric/SQL case unexpectedly used semantic_query={semantic_query!r}")
-        _require(data_kind in {"scalar", "distribution", "series", "rows", "multi_section"},
+        _require(data_kind in {"scalar", "distribution", "series", "rows", "multi_section", "raw_firm_exposure"},
                  f"SQL-backed case returned non-SQL data.kind={data_kind!r}")
     elif route == "explanation":
         _require(not semantic_query,

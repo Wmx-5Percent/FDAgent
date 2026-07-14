@@ -28,6 +28,14 @@ DEFAULT_DSN = os.environ.get("DATABASE_URL", "postgresql://localhost:5432/fda")
 TABLE = "drug_enforcement"
 LABEL_TABLE = "recall_label"          # taxonomy sidecar: one row per (record, version, node_id, labeler)
 DEFAULT_TAXONOMY_VERSION = "v1"
+RAW_FIRM_EXPOSURE_FORMULA_VERSION = "raw_severity_v0"
+RAW_FIRM_EXPOSURE_FORMULA = "3 * Class I recalls + 2 * Class II recalls + 1 * Class III recalls"
+RAW_FIRM_EXPOSURE_SCOPE = "raw_fda_recalling_firm"
+RAW_FIRM_EXPOSURE_CAVEATS = [
+    "This leaderboard uses raw FDA `recalling_firm` strings exactly as they appear in openFDA.",
+    "Legal entities, subsidiaries, and parent groups are not normalized or merged in this v0 view.",
+    "The score is a recall-data exposure signal, not a legal, medical, or safety verdict.",
+]
 
 
 class Kind(str, Enum):
@@ -87,6 +95,34 @@ class Group:
     evidence: list[str] = field(default_factory=list)
     label: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class FirmExposure:
+    """One raw FDA recalling_firm row in the exposure leaderboard."""
+    rank: int
+    recalling_firm: str
+    exposure_score: int
+    total_recalls: int
+    class_i_recalls: int
+    class_ii_recalls: int
+    class_iii_recalls: int
+    unclassified_recalls: int
+    top_reason_category: str | None = None
+    top_reason_node_id: str | None = None
+    top_reason_count: int | None = None
+    evidence: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class RawFirmExposureLeaderboard:
+    """Ranked v0 exposure view over raw FDA recalling_firm strings."""
+    metric: str
+    items: list[FirmExposure]
+    formula_version: str = RAW_FIRM_EXPOSURE_FORMULA_VERSION
+    formula: str = RAW_FIRM_EXPOSURE_FORMULA
+    scope: str = RAW_FIRM_EXPOSURE_SCOPE
+    caveats: list[str] = field(default_factory=lambda: list(RAW_FIRM_EXPOSURE_CAVEATS))
 
 
 def _conditions(filters: Sequence[Filter]) -> tuple[list[sql.Composable], list[Any]]:
@@ -285,6 +321,146 @@ class RecallAnalytics:
             )
             for r in self._rows(q, params)
         ]
+
+    def raw_firm_exposure_leaderboard(
+        self,
+        filters: Sequence[Filter] = (),
+        *,
+        limit: int = 20,
+        rank_by: str = "severity_weighted_exposure",
+        evidence_n: int = 3,
+        taxonomy_version: str = DEFAULT_TAXONOMY_VERSION,
+    ) -> RawFirmExposureLeaderboard:
+        """Rank raw FDA ``recalling_firm`` strings by recall exposure.
+
+        This is intentionally a v0 FDA-name-level view: it does not consume the firm
+        resolution sidecar, parent groups, brand aliases, or any safety verdict model.
+        The severity score is fully deterministic SQL:
+        ``3 * Class I + 2 * Class II + 1 * Class III``.
+        """
+        if rank_by not in {"severity_weighted_exposure", "recall_count"}:
+            raise ValueError("rank_by must be 'severity_weighted_exposure' or 'recall_count'")
+        limit = max(1, min(int(limit), 100))
+        evidence_n = max(1, min(int(evidence_n), 10))
+
+        conds, params = _conditions(filters)
+        conds.extend([
+            sql.SQL("recalling_firm IS NOT NULL"),
+            sql.SQL("btrim(recalling_firm) <> ''"),
+        ])
+        where = sql.SQL(" WHERE ") + sql.SQL(" AND ").join(conds)
+        order_by = (
+            sql.SQL("severity_weighted_exposure DESC, total_recalls DESC, recalling_firm ASC")
+            if rank_by == "severity_weighted_exposure"
+            else sql.SQL("total_recalls DESC, severity_weighted_exposure DESC, recalling_firm ASC")
+        )
+        tbl, label_tbl, taxonomy_tbl = (
+            sql.Identifier(TABLE),
+            sql.Identifier(LABEL_TABLE),
+            sql.Identifier("taxonomy"),
+        )
+        q = sql.SQL(
+            """
+            WITH base AS (
+                SELECT id, recall_number, recalling_firm, classification, recall_initiation_date
+                FROM {tbl}
+                {where}
+            ),
+            firm_counts AS (
+                SELECT
+                    recalling_firm,
+                    count(*) AS total_recalls,
+                    count(*) FILTER (WHERE classification = 'Class I') AS class_i_recalls,
+                    count(*) FILTER (WHERE classification = 'Class II') AS class_ii_recalls,
+                    count(*) FILTER (WHERE classification = 'Class III') AS class_iii_recalls,
+                    count(*) FILTER (
+                        WHERE classification IS NULL
+                           OR classification NOT IN ('Class I', 'Class II', 'Class III')
+                    ) AS unclassified_recalls,
+                    (
+                        3 * count(*) FILTER (WHERE classification = 'Class I')
+                        + 2 * count(*) FILTER (WHERE classification = 'Class II')
+                        + count(*) FILTER (WHERE classification = 'Class III')
+                    ) AS severity_weighted_exposure,
+                    (
+                        array_agg(
+                            recall_number
+                            ORDER BY
+                                CASE classification
+                                    WHEN 'Class I' THEN 3
+                                    WHEN 'Class II' THEN 2
+                                    WHEN 'Class III' THEN 1
+                                    ELSE 0
+                                END DESC,
+                                recall_initiation_date DESC NULLS LAST,
+                                recall_number
+                        )
+                    )[1:%s] AS evidence
+                FROM base
+                GROUP BY recalling_firm
+            ),
+            reason_counts AS (
+                SELECT
+                    b.recalling_firm,
+                    t.label,
+                    rl.node_id,
+                    count(DISTINCT b.id) AS category_count,
+                    row_number() OVER (
+                        PARTITION BY b.recalling_firm
+                        ORDER BY count(DISTINCT b.id) DESC, t.label ASC
+                    ) AS rn
+                FROM base b
+                JOIN {label_tbl} rl ON rl.record_id = b.id AND rl.version = %s
+                JOIN {taxonomy_tbl} t ON t.version = rl.version AND t.node_id = rl.node_id
+                GROUP BY b.recalling_firm, t.label, rl.node_id
+            )
+            SELECT
+                fc.recalling_firm,
+                fc.severity_weighted_exposure,
+                fc.total_recalls,
+                fc.class_i_recalls,
+                fc.class_ii_recalls,
+                fc.class_iii_recalls,
+                fc.unclassified_recalls,
+                rc.label AS top_reason_category,
+                rc.node_id AS top_reason_node_id,
+                rc.category_count AS top_reason_count,
+                fc.evidence
+            FROM firm_counts fc
+            LEFT JOIN reason_counts rc
+                ON rc.recalling_firm = fc.recalling_firm AND rc.rn = 1
+            ORDER BY {order_by}
+            LIMIT %s
+            """
+        ).format(
+            tbl=tbl,
+            where=where,
+            label_tbl=label_tbl,
+            taxonomy_tbl=taxonomy_tbl,
+            order_by=order_by,
+        )
+        rows = self._rows(q, [*params, evidence_n, taxonomy_version, limit])
+        items = [
+            FirmExposure(
+                rank=i,
+                recalling_firm=str(row[0]),
+                exposure_score=int(row[1] or 0),
+                total_recalls=int(row[2] or 0),
+                class_i_recalls=int(row[3] or 0),
+                class_ii_recalls=int(row[4] or 0),
+                class_iii_recalls=int(row[5] or 0),
+                unclassified_recalls=int(row[6] or 0),
+                top_reason_category=row[7],
+                top_reason_node_id=row[8],
+                top_reason_count=int(row[9]) if row[9] is not None else None,
+                evidence=list(row[10]) if row[10] else [],
+            )
+            for i, row in enumerate(rows, start=1)
+        ]
+        return RawFirmExposureLeaderboard(
+            metric="severity_weighted" if rank_by == "severity_weighted_exposure" else "recall_count",
+            items=items,
+        )
 
     def trend(
         self,

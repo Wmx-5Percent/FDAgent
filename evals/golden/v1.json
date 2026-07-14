@@ -80,6 +80,62 @@
       }
     },
     {
+      "id": "exposure-raw-firm-count-leaderboard",
+      "kind": "ask",
+      "question": "Which recalling firms have the most FDA drug recalls?",
+      "assert": {
+        "route": "sql",
+        "intents": ["raw_firm_exposure"],
+        "data_kinds": ["raw_firm_exposure"],
+        "data_fields": {
+          "metric": "recall_count",
+          "formula_version": "raw_severity_v0",
+          "scope": "raw_fda_recalling_firm"
+        },
+        "top_items": [
+          {
+            "rank": 1,
+            "recalling_firm": "Aidapak Services, LLC",
+            "total_recalls": 538,
+            "class_i_recalls": 0,
+            "class_ii_recalls": 538,
+            "class_iii_recalls": 0,
+            "exposure_score": 1076
+          }
+        ],
+        "summary_contains_any": ["raw FDA `recalling_firm`", "not a safety verdict", "3 * Class I"],
+        "no_ilike": true
+      }
+    },
+    {
+      "id": "exposure-severity-weighted-leaderboard",
+      "kind": "ask",
+      "question": "Rank firms by severity-weighted recalls.",
+      "assert": {
+        "route": "sql",
+        "intents": ["raw_firm_exposure"],
+        "data_kinds": ["raw_firm_exposure"],
+        "data_fields": {
+          "metric": "severity_weighted",
+          "formula_version": "raw_severity_v0",
+          "scope": "raw_fda_recalling_firm"
+        },
+        "top_items": [
+          {
+            "rank": 1,
+            "recalling_firm": "King Bio Inc.",
+            "total_recalls": 465,
+            "class_i_recalls": 465,
+            "class_ii_recalls": 0,
+            "class_iii_recalls": 0,
+            "exposure_score": 1395
+          }
+        ],
+        "summary_contains_any": ["severity-weighted exposure score", "not a safety verdict", "raw FDA"],
+        "no_ilike": true
+      }
+    },
+    {
       "id": "fuzzy-sterility-routing",
       "kind": "ask",
       "question": "Show me a few sterility-related recalls.",
