@@ -80,6 +80,54 @@
       }
     },
     {
+      "id": "numeric-class-i-count-canada-preserves-country",
+      "kind": "ask",
+      "question": "How many Class I drug recalls in Canada?",
+      "assert": {
+        "route": "sql",
+        "intents": ["count_total"],
+        "data_kinds": ["scalar"],
+        "filters_include": [
+          {"column": "classification", "op": "eq", "values": ["Class I"]},
+          {"column": "country", "op": "eq", "values": ["Canada"]}
+        ],
+        "value_equals": 4,
+        "no_ilike": true
+      }
+    },
+    {
+      "id": "numeric-class-i-count-united-states-preserves-country",
+      "kind": "ask",
+      "question": "How many Class I drug recalls in the United States?",
+      "assert": {
+        "route": "sql",
+        "intents": ["count_total"],
+        "data_kinds": ["scalar"],
+        "filters_include": [
+          {"column": "classification", "op": "eq", "values": ["Class I"]},
+          {"column": "country", "op": "eq", "values": ["United States"]}
+        ],
+        "value_equals": 1671,
+        "no_ilike": true
+      }
+    },
+    {
+      "id": "numeric-class-i-count-us-preserves-country",
+      "kind": "ask",
+      "question": "How many Class I drug recalls in the US?",
+      "assert": {
+        "route": "sql",
+        "intents": ["count_total"],
+        "data_kinds": ["scalar"],
+        "filters_include": [
+          {"column": "classification", "op": "eq", "values": ["Class I"]},
+          {"column": "country", "op": "eq", "values": ["United States"]}
+        ],
+        "value_equals": 1671,
+        "no_ilike": true
+      }
+    },
+    {
       "id": "numeric-class-i-by-firm",
       "kind": "ask",
       "question": "Which firms had the most Class I recalls?",

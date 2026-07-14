@@ -586,16 +586,25 @@ def _maybe_simple_class_count_spec(question: str) -> QuerySpec | None:
     if not match:
         return None
     q = question.casefold()
-    if _STATE_FILTER_RE.search(question) or _DATE_OR_STATUS_FILTER_RE.search(question):
+    if _DATE_OR_STATUS_FILTER_RE.search(question):
         return None
     if any(word in q for word in (" by ", " trend", " distribution", "breakdown", "most", "top", "rank")):
         return None
     label = _class_filter_label(question)
     if label is None:
         return None
+    filters = [FilterSpec(column="classification", op=Op.eq, values=[label])]
+    state_code = _state_filter_code(question)
+    if state_code:
+        filters.append(FilterSpec(column="state", op=Op.eq, values=[state_code]))
+    country_value = _country_filter_value(question)
+    if country_value:
+        filters.append(FilterSpec(column="country", op=Op.eq, values=[country_value]))
+    elif _looks_like_location_filter(question) and state_code is None:
+        return None
     return QuerySpec(
         intent=Intent.count_total,
-        filters=[FilterSpec(column="classification", op=Op.eq, values=[label])],
+        filters=filters,
     )
 
 
@@ -1662,11 +1671,12 @@ class NLEngine:
                 operation="chat",
             )
         explanation_spec = _maybe_taxonomy_explanation_spec(question, self.taxonomy_nodes)
+        simple_class_count_spec = _maybe_simple_class_count_spec(question)
         control = agent_control.classify_llm(self.chat_client, self.chat_config, question)
-        if control.terminal and explanation_spec is not None:
+        if control.terminal and (explanation_spec is not None or simple_class_count_spec is not None):
             control = agent_control.AgentControlDecision(
                 route="in_domain",
-                reason="taxonomy_explanation",
+                reason="taxonomy_explanation" if explanation_spec is not None else "simple_class_count",
             )
         if control.terminal:
             result = agent_control.result_from_decision(control)
@@ -1678,7 +1688,6 @@ class NLEngine:
                 control=control,
                 metadata={"control_route": control.route, "control_reason": control.reason},
             )
-        simple_class_count_spec = _maybe_simple_class_count_spec(question)
         exposure_spec = _maybe_raw_firm_exposure_spec(question)
         spec = explanation_spec or simple_class_count_spec or exposure_spec or generate_spec(
             self.chat_client, self.chat_config, question, self.schema_ctx, self.taxonomy_ctx)
