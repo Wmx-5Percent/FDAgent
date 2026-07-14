@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-07-14T15:53Z · 73 files · 2 missing description
+> Last generated: 2026-07-14T16:07Z · 74 files · 2 missing description
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -48,6 +48,8 @@
 - [`evals/golden/v1.json`](evals/golden/v1.json) — {"description": "FDAgent v1 golden eval set for /ask routing and retrieval recall@k.",
 
 ## scripts/
+- [`scripts/check_hybrid_filter_validation.py`](scripts/check_hybrid_filter_validation.py) — Focused smoke checks for /hybrid-search bad-filter handling.
+  - symbols: `main`
 - [`scripts/gen_index.py`](scripts/gen_index.py) — Generate PROJECT_INDEX.md — a reliable, auto-derived map of the repository.
   - symbols: `repo_root`, `list_files`, `read_text`, `describe_python`, `describe_markdown`, `describe_html`, `describe_generic`, `describe`, `group_key`, `render`, `strip_volatile`, `main`
 - [`scripts/hooks/install.sh`](scripts/hooks/install.sh) — Install the version-controlled git hooks into .git/hooks.

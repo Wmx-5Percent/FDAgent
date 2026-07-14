@@ -146,6 +146,15 @@ RECALL_DETAIL_LONG_FIELDS = {
 _engine: Optional[NLEngine] = None
 _query_logger: Optional[QueryLogger] = None
 _hybrid_search_logger: Optional[HybridSearchLogger] = None
+HYBRID_FILTER_ALLOWED_OPS: dict[Kind, set[str]] = {
+    # Lab filters are hard constraints, so categorical/id fields stay exact-match only.
+    Kind.DIMENSION: {"eq", "ne", "in"},
+    Kind.ID: {"eq", "ne", "in"},
+    # Free-text fields may use ILIKE in addition to exact matches.
+    Kind.TEXT: {"eq", "ne", "in", "ilike"},
+    # Date fields support chronological comparisons; ILIKE is intentionally rejected.
+    Kind.DATE: {"eq", "ne", "in", "gte", "lte", "between"},
+}
 
 
 @asynccontextmanager
@@ -515,7 +524,8 @@ def _require_engine() -> NLEngine:
 
 
 def _coerce_filter_atom(column: str, value: Any) -> Any:
-    if CATALOG[column] is Kind.DATE:
+    kind = CATALOG[column]
+    if kind is Kind.DATE:
         if isinstance(value, date) and not isinstance(value, datetime):
             return value
         if not isinstance(value, str):
@@ -527,9 +537,12 @@ def _coerce_filter_atom(column: str, value: Any) -> Any:
             except ValueError:
                 continue
         raise ValueError(f"date filter {column!r} must be YYYY-MM-DD")
-    if isinstance(value, str):
-        return value.strip()
-    return value
+    if not isinstance(value, str):
+        raise ValueError(f"filter {column!r} must be a string")
+    text = value.strip()
+    if not text:
+        raise ValueError(f"filter {column!r} cannot be empty")
+    return text
 
 
 def _clean_aliases(values: list[str]) -> list[str]:
@@ -580,6 +593,14 @@ def _filters_for_column(column: str, raw: Any) -> list[Filter]:
 def _make_filter(column: str, op: str, raw_value: Any) -> Filter:
     if op not in OPS:
         raise ValueError(f"unknown filter op {op!r}")
+    kind = CATALOG[column]
+    allowed_ops = HYBRID_FILTER_ALLOWED_OPS[kind]
+    if op not in allowed_ops:
+        allowed = ", ".join(sorted(allowed_ops))
+        raise ValueError(
+            f"filter op {op!r} is not allowed for {kind.value} column {column!r}; "
+            f"allowed: {allowed}"
+        )
     if op == "in":
         if not isinstance(raw_value, list) or not raw_value:
             raise ValueError(f"filter {column!r}.in needs a non-empty array")
