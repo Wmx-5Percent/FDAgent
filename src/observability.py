@@ -30,6 +30,27 @@ class QueryLogEntry:
     error_detail: dict[str, Any] | None = None
 
 
+@dataclass(frozen=True)
+class HybridSearchLogEntry:
+    query: str
+    field: str
+    k: int
+    filters: dict[str, Any]
+    embedding_provider: str
+    embedding_model: str
+    retrieval_mode: str
+    fallback_reason: str | None
+    vector_hit_count: int
+    fts_hit_count: int
+    fused_hit_count: int
+    top_recall_numbers: list[str]
+    timings_ms: dict[str, Any]
+    request: dict[str, Any]
+    response_metadata: dict[str, Any]
+    error_type: str | None = None
+    error_message: str | None = None
+
+
 def _jsonb(value: dict[str, Any] | None) -> Jsonb | None:
     return Jsonb(value) if value is not None else None
 
@@ -78,6 +99,59 @@ class QueryLogger:
                 row = cur.fetchone()
         if row is None:
             raise RuntimeError("query_log insert did not return an id")
+        return int(row[0])
+
+
+class HybridSearchLogger:
+    """Writes one hybrid_search_log row per lab/debug retrieval run."""
+
+    def __init__(self, dsn: str = DEFAULT_DSN) -> None:
+        self.dsn = dsn
+
+    def write(self, entry: HybridSearchLogEntry) -> int:
+        with psycopg.connect(self.dsn, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO hybrid_search_log (
+                        query, field, k, filters,
+                        embedding_provider, embedding_model, retrieval_mode, fallback_reason,
+                        vector_hit_count, fts_hit_count, fused_hit_count,
+                        top_recall_numbers, timings_ms, request, response_metadata,
+                        error_type, error_message
+                    )
+                    VALUES (
+                        %s, %s, %s, %s,
+                        %s, %s, %s, %s,
+                        %s, %s, %s,
+                        %s, %s, %s, %s,
+                        %s, %s
+                    )
+                    RETURNING id
+                    """,
+                    [
+                        entry.query,
+                        entry.field,
+                        entry.k,
+                        Jsonb(entry.filters),
+                        entry.embedding_provider,
+                        entry.embedding_model,
+                        entry.retrieval_mode,
+                        entry.fallback_reason,
+                        entry.vector_hit_count,
+                        entry.fts_hit_count,
+                        entry.fused_hit_count,
+                        Jsonb(entry.top_recall_numbers),
+                        Jsonb(entry.timings_ms),
+                        Jsonb(entry.request),
+                        Jsonb(entry.response_metadata),
+                        entry.error_type,
+                        entry.error_message,
+                    ],
+                )
+                row = cur.fetchone()
+        if row is None:
+            raise RuntimeError("hybrid_search_log insert did not return an id")
         return int(row[0])
 
 
