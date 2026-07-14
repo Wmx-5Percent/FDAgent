@@ -420,7 +420,10 @@ _UNSUPPORTED_TEMPORAL_FILTER_RE = re.compile(
 )
 _UNHANDLED_SUBJECT_FILTER_RE = re.compile(
     r"\b(?:for|about|involving|related\s+to|made\s+by|manufactured\s+by)\s+"
-    r"(?!the\s+most\b)(?!most\b)(?!fda\b)(?!drug\b)(?!recalls?\b)(?!class\b)(?!\d{4}\b)",
+    r"(?!the\s+most\b)(?!most\b)(?!fda\b)(?!drug\b)(?!recalls?\b)(?!class\b)(?!\d{4}\b)|"
+    r"\brecalls?\s+of\s+(?!class\b)(?!fda\b)(?!drug\b)(?!\d{4}\b)|"
+    r"\bwith\s+(?:product|brand|drug|medication)\b|"
+    r"\b(?:product|brand)\s+(?:named|called|containing)\b",
     re.IGNORECASE,
 )
 _OUT_OF_SCOPE_PRODUCT_HINT_RE = re.compile(
