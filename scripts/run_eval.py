@@ -21,7 +21,14 @@ import psycopg  # noqa: E402
 import llm  # noqa: E402
 import retrieval  # noqa: E402
 from api import serialize_answer  # noqa: E402
-from nl_query import MODEL, NLEngine  # noqa: E402
+from nl_query import (  # noqa: E402
+    MODEL,
+    NLEngine,
+    _class_filter_label,
+    _maybe_raw_firm_exposure_spec,
+    _maybe_simple_class_count_spec,
+    _safe_hard_filter_specs_or_defer,
+)
 
 DEFAULT_DSN = os.environ.get("DATABASE_URL", "postgresql://localhost:5432/fda")
 DEFAULT_GOLDEN = REPO_ROOT / "evals" / "golden" / "v1.json"
@@ -153,6 +160,14 @@ def _assert_item_matches(actual: Mapping[str, Any], expected: Mapping[str, Any],
                 str(expected_value).casefold() in str(actual_value).casefold(),
                 f"{context}.{actual_key} expected to contain {expected_value!r}, got {actual_value!r}",
             )
+        elif key == "firm_equals":
+            actual_value = actual.get("recalling_firm", actual.get("value"))
+            _require(actual_value == expected_value,
+                     f"{context}.firm expected {expected_value!r}, got {actual_value!r}")
+        elif key == "recall_count_equals":
+            actual_value = actual.get("total_recalls", actual.get("count"))
+            _require(actual_value == expected_value,
+                     f"{context}.recall_count expected {expected_value!r}, got {actual_value!r}")
         else:
             actual_value = actual.get(key)
             _require(actual_value == expected_value,
@@ -216,6 +231,30 @@ def _assert_sections(assertions: Mapping[str, Any], data: Mapping[str, Any]) -> 
             )
 
 
+def _assert_filters(assertions: Mapping[str, Any], spec: Mapping[str, Any]) -> None:
+    expected_filters = assertions.get("filters_include") or []
+    if not expected_filters:
+        return
+    filters = _spec_filters(spec)
+    for expected in expected_filters:
+        _require(isinstance(expected, Mapping), "filters_include entries must be objects")
+        expected_column = expected.get("column")
+        expected_op = expected.get("op")
+        expected_values = [str(v).casefold() for v in expected.get("values", [])]
+        matched = False
+        for actual in filters:
+            if expected_column and actual.get("column") != expected_column:
+                continue
+            if expected_op and _plain(actual.get("op")) != expected_op:
+                continue
+            actual_values = [str(v).casefold() for v in (actual.get("values") or [])]
+            if expected_values and not all(v in actual_values for v in expected_values):
+                continue
+            matched = True
+            break
+        _require(matched, f"expected filter {dict(expected)!r}, got {filters!r}")
+
+
 def _assert_ask_case(case: Mapping[str, Any], answer: Mapping[str, Any]) -> EvalResult:
     assertions = case.get("assert") or {}
     _require(isinstance(assertions, Mapping), "ask case assert must be an object")
@@ -244,6 +283,7 @@ def _assert_ask_case(case: Mapping[str, Any], answer: Mapping[str, Any]) -> Eval
         _assert_no_ilike(spec)
     if assertions.get("spec_empty"):
         _require(not spec, f"expected empty spec for guarded response, got {spec!r}")
+    _assert_filters(assertions, spec)
     if data_kind in {"semantic_count", "semantic_distribution"}:
         _assert_semantic_count(assertions, data)
     _assert_highlights(assertions, answer)
@@ -253,11 +293,20 @@ def _assert_ask_case(case: Mapping[str, Any], answer: Mapping[str, Any]) -> Eval
         actual_node = spec.get("taxonomy_node_id") or data.get("node_id")
         _require(actual_node == expected_node,
                  f"expected taxonomy_node_id {expected_node!r}, got {actual_node!r}")
+    for key, expected_value in (assertions.get("data_fields") or {}).items():
+        actual_value = data.get(key)
+        _require(actual_value == expected_value,
+                 f"data.{key} expected {expected_value!r}, got {actual_value!r}")
     summary_needles = [str(v).lower() for v in assertions.get("summary_contains_any", [])]
     if summary_needles:
         summary = str(answer.get("summary") or "").lower()
         _require(any(n in summary for n in summary_needles),
                  f"summary did not contain any of {summary_needles}: {summary!r}")
+    summary_banned = [str(v).lower() for v in assertions.get("summary_not_contains_any", [])]
+    if summary_banned:
+        summary = str(answer.get("summary") or "").lower()
+        _require(not any(n in summary for n in summary_banned),
+                 f"summary unexpectedly contained one of {summary_banned}: {summary!r}")
 
     if "value_equals" in assertions:
         _require(data_kind == "scalar",
@@ -280,7 +329,7 @@ def _assert_ask_case(case: Mapping[str, Any], answer: Mapping[str, Any]) -> Eval
                  f"semantic_query={semantic_query!r} unexpectedly contained one of {banned_needles}")
     if route == "sql":
         _require(not semantic_query, f"numeric/SQL case unexpectedly used semantic_query={semantic_query!r}")
-        _require(data_kind in {"scalar", "distribution", "series", "rows", "multi_section"},
+        _require(data_kind in {"scalar", "distribution", "series", "rows", "multi_section", "raw_firm_exposure"},
                  f"SQL-backed case returned non-SQL data.kind={data_kind!r}")
     elif route == "explanation":
         _require(not semantic_query,
@@ -303,6 +352,64 @@ def _assert_ask_case(case: Mapping[str, Any], answer: Mapping[str, Any]) -> Eval
                  f"guarded case returned unexpected data.kind={data_kind!r}")
     return EvalResult(str(case["id"]), True,
                       f"intent={intent} data.kind={data_kind} route={route or '-'}")
+
+
+def _assert_deterministic_helper_case(case: Mapping[str, Any]) -> EvalResult:
+    assertions = case.get("assert") or {}
+    _require(isinstance(assertions, Mapping),
+             "deterministic_helper case assert must be an object")
+    question = str(case["question"])
+    simple_spec = _maybe_simple_class_count_spec(question)
+    raw_spec = _maybe_raw_firm_exposure_spec(question)
+    specs = {
+        "simple_class_count": simple_spec,
+        "raw_firm_exposure": raw_spec,
+    }
+    if assertions.get("simple_class_count_spec_empty"):
+        _require(
+            simple_spec is None,
+            "expected simple Class-count fast path to defer, got "
+            f"{simple_spec.model_dump(mode='json', exclude_none=True) if simple_spec else None}",
+        )
+    if assertions.get("raw_firm_exposure_spec_empty"):
+        _require(
+            raw_spec is None,
+            "expected raw firm exposure fast path to defer, got "
+            f"{raw_spec.model_dump(mode='json', exclude_none=True) if raw_spec else None}",
+        )
+    for helper_name, spec in specs.items():
+        expected_filters = assertions.get(f"{helper_name}_filters_include") or []
+        if expected_filters:
+            _require(spec is not None, f"expected {helper_name} fast path to match")
+            _assert_filters(
+                {"filters_include": expected_filters},
+                spec.model_dump(mode="json", exclude_none=True),
+            )
+    if assertions.get("helper_filter_invariant"):
+        hard_filters, defer = _safe_hard_filter_specs_or_defer(question)
+        class_label = _class_filter_label(question)
+        expected = [
+            {"column": f.column, "op": f.op.value, "values": f.values}
+            for f in hard_filters
+        ]
+        if class_label:
+            expected.insert(0, {"column": "classification", "op": "eq", "values": [class_label]})
+        for helper_name, spec in specs.items():
+            if spec is None:
+                continue
+            _require(not defer, f"{helper_name} matched although hard-filter parser requested deferral")
+            _assert_filters(
+                {"filters_include": expected},
+                spec.model_dump(mode="json", exclude_none=True),
+            )
+    return EvalResult(
+        str(case["id"]),
+        True,
+        "simple_class_count="
+        f"{'deferred' if simple_spec is None else 'matched'} "
+        "raw_firm_exposure="
+        f"{'deferred' if raw_spec is None else 'matched'}",
+    )
 
 
 def _run_retrieval_case(case: Mapping[str, Any], *, dsn: str) -> EvalResult:
@@ -399,6 +506,8 @@ def main() -> int:
                 judge_result = _maybe_judge(case, answer, enabled=args.llm_judge)
                 if judge_result:
                     results.append(judge_result)
+            elif kind == "deterministic_helper":
+                results.append(_assert_deterministic_helper_case(case))
             elif kind == "retrieval_recall":
                 results.append(_run_retrieval_case(case, dsn=args.dsn))
             else:

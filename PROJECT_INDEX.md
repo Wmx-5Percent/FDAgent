@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-07-14T16:22Z · 74 files · 2 missing description
+> Last generated: 2026-07-14T16:32Z · 74 files · 2 missing description
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -73,7 +73,7 @@
 - [`src/agent_control.py`](src/agent_control.py) — Guard /ask prompts before they enter the FDA recall query pipeline.
   - symbols: `AgentControlDecision`, `AgentControlResult`, `LLMIntentDecision`, `classify_llm`, `clarification`, `result_from_decision`, `broad_fts_queries`
 - [`src/analytics.py`](src/analytics.py) — Deterministic frequency/aggregation query engine over drug_enforcement.
-  - symbols: `Kind`, `Filter`, `Group`, `RecallAnalytics`
+  - symbols: `Kind`, `Filter`, `Group`, `FirmExposure`, `RawFirmExposureLeaderboard`, `RecallAnalytics`
 - [`src/api.py`](src/api.py) — FastAPI service exposing the deterministic NL->SQL analytics engine (Path 1, serving half).
   - symbols: `lifespan`, `AskRequest`, `TitleRequest`, `TitleResponse`, `HybridSearchRequest`, `recall_verification_url`, `recall_detail_url`, `serialize_answer`, `health`, `hybrid_search_page`, `hybrid_search_endpoint`, `title_endpoint`
 - [`src/classify/__init__.py`](src/classify/__init__.py) — Offline recall taxonomy induction, labeling, and discovery utilities.
@@ -103,7 +103,7 @@
 - [`src/llm.py`](src/llm.py) — OpenAI-compatible chat and embedding provider gateway for serving paths.
   - symbols: `ProviderError`, `ProviderConfigError`, `ProviderMissingKeyError`, `ProviderUnsupportedConfigError`, `ProviderAuthError`, `ProviderQuotaError`, `ProviderRateLimitError`, `ProviderConnectionError`, `ProviderCapabilityError`, `StructuredOutputError`, `ChatConfig`, `EmbeddingConfig`
 - [`src/nl_query.py`](src/nl_query.py) — Natural-language front-end for the deterministic analytics engine.
-  - symbols: `Intent`, `Op`, `FilterSpec`, `QuerySpec`, `Answer`, `TaxonomyNodeInfo`, `TaxonomyExplanation`, `ResultSection`, `MultiSectionResult`, `build_schema_context`, `load_taxonomy_nodes`, `build_taxonomy_context`
+  - symbols: `Intent`, `Op`, `ExposureMetric`, `FilterSpec`, `QuerySpec`, `Answer`, `TaxonomyNodeInfo`, `TaxonomyExplanation`, `ResultSection`, `MultiSectionResult`, `build_schema_context`, `load_taxonomy_nodes`
 - [`src/observability.py`](src/observability.py) — Postgres-backed query logging for the /ask API.
   - symbols: `QueryLogEntry`, `HybridSearchLogEntry`, `QueryLogger`, `HybridSearchLogger`, `response_metadata`
 - [`src/retrieval.py`](src/retrieval.py) — Hybrid retrieval over the `embeddings` table — Path 2 / slice 2.2.

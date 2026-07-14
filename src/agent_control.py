@@ -78,18 +78,26 @@ Routes:
   recall reasons, and concepts such as sterility or non-sterile conditions, contamination,
   bacterial/microbial issues, particulates or glass particles, impurities (e.g. NDMA /
   nitrosamine), mislabeling, subpotent (too weak) and superpotent (too strong / potency above
-  specification). This also INCLUDES plain-language explanation questions about FDA recall
+  specification). This also INCLUDES hard filters over FDA fields such as country/location
+  even when the country is outside the U.S.; e.g. "How many Class I drug recalls in Canada?"
+  means FDA drug-enforcement rows whose `country` field is Canada, not Canadian regulator data.
+  It also INCLUDES FDA recall status/date filters such as pending/ongoing/terminated recalls
+  or recalls reported in a particular year.
+  This also INCLUDES plain-language explanation questions about FDA recall
   taxonomy categories or recall terms, such as "what does cGMP deviation mean in drug recalls?"
   or "CGMP Deviations Reason for recall 这到底是什么". When the message plausibly refers to drug
   recalls, PREFER "in_domain".
   Examples that ARE in_domain: "How many Class I recalls?", "sterility recalls by firm",
-  "有多少药品因为药效太强被召回", "有多少个关于细菌感染的 recall", "召回最多的公司是哪几家".
+  "How many Class I drug recalls in Canada?", "How many pending Class I recalls are there?",
+  "有多少药品因为药效太强被召回",
+  "有多少个关于细菌感染的 recall", "召回最多的公司是哪几家".
 - "chitchat_meta": greetings, or questions about the assistant itself -- its identity,
   capabilities, purpose, or scope. Examples: "who are you", "what can you do", "hi",
   "你是谁", "你可以做什么".
 - "out_of_domain": clearly unrelated to FDA drug recalls. Examples: weather, sports, jokes,
-  stock prices, recipes, flights, personal medical advice ("what should I take for a
-  headache"), shopping advice ("what product should I buy").
+  stock prices, recipes, flights, vehicle/car/automotive recalls (e.g. Toyota cars), personal
+  medical advice ("what should I take for a headache"), shopping advice ("what product should
+  I buy").
 - "ambiguous": about drug recalls in general but too vague to run a query (no concept, firm,
   filter, dimension, or timeframe). Examples: "recalls", "show me recalls", "tell me about
   drugs".

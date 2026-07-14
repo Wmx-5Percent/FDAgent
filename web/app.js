@@ -578,6 +578,8 @@
       renderScalar(data, card);
     } else if (kind === "multi_section") {
       renderMultiSection(data, card);
+    } else if (kind === "raw_firm_exposure") {
+      renderRawFirmExposure(data, card);
     } else if (kind === "distribution" || kind === "bar") {
       renderDistribution(data, card);
     } else if (kind === "series" || kind === "line") {
@@ -885,6 +887,94 @@
     }
   }
 
+  function renderRawFirmExposure(data, card) {
+    const meta = document.createElement("div");
+    meta.className = "muted";
+    meta.textContent = [
+      data.metric_label ? `Ranked by: ${data.metric_label}` : null,
+      data.formula ? `Formula: ${data.formula}` : null,
+      data.formula_version ? `version: ${data.formula_version}` : null,
+    ].filter(Boolean).join(" | ");
+    if (meta.textContent) card.appendChild(meta);
+
+    const caveats = Array.isArray(data.caveats) ? data.caveats : [];
+    if (caveats.length) {
+      const note = document.createElement("div");
+      note.className = "exposure-caveats";
+      note.setAttribute("role", "note");
+      for (const caveat of caveats) {
+        const line = document.createElement("div");
+        line.textContent = caveat;
+        note.appendChild(line);
+      }
+      card.appendChild(note);
+    }
+
+    const items = Array.isArray(data.items) ? data.items : [];
+    if (!items.length) {
+      const empty = document.createElement("div");
+      empty.className = "muted";
+      empty.textContent = "No raw recalling_firm exposure rows returned.";
+      card.appendChild(empty);
+      return;
+    }
+
+    const wrap = document.createElement("div");
+    wrap.className = "table-wrap exposure-table-wrap";
+    const table = document.createElement("table");
+    table.className = "exposure-table";
+
+    const columns = [
+      ["rank", "Rank"],
+      ["recalling_firm", "Recalling firm (raw FDA name)"],
+      ["exposure_score", "Exposure score"],
+      ["total_recalls", "Total recalls"],
+      ["class_i_recalls", "Class I"],
+      ["class_ii_recalls", "Class II"],
+      ["class_iii_recalls", "Class III"],
+      ["top_reason_category", "Top reason category"],
+      ["evidence", "Evidence"],
+    ];
+
+    const thead = document.createElement("thead");
+    const headerRow = document.createElement("tr");
+    for (const [, label] of columns) {
+      const th = document.createElement("th");
+      th.textContent = label;
+      headerRow.appendChild(th);
+    }
+    thead.appendChild(headerRow);
+
+    const tbody = document.createElement("tbody");
+    for (const item of items) {
+      const tr = document.createElement("tr");
+      for (const [key] of columns) {
+        const td = document.createElement("td");
+        if (key === "evidence") {
+          const evidence = Array.isArray(item.evidence_links) && item.evidence_links.length
+            ? item.evidence_links
+            : Array.isArray(item.evidence) ? item.evidence : [];
+          td.appendChild(renderBadges(evidence.slice(0, 6)));
+        } else if (key === "top_reason_category") {
+          const label = item.top_reason_category || "-";
+          const count = Number(item.top_reason_count);
+          td.textContent = Number.isFinite(count) ? `${label} (${count.toLocaleString()})` : label;
+        } else if (key === "recalling_firm") {
+          td.className = "firm-name-cell";
+          td.textContent = String(item[key] ?? "-");
+        } else {
+          td.textContent = formatNumberCell(item[key]);
+        }
+        tr.appendChild(td);
+      }
+      tbody.appendChild(tr);
+    }
+
+    table.append(thead, tbody);
+    wrap.appendChild(table);
+    card.appendChild(wrap);
+  }
+
   function renderDistribution(data, card) {
     const items = Array.isArray(data.items) ? data.items.slice(0, 15) : [];
     if (!items.length) {
@@ -1104,6 +1194,12 @@
     if (value === null || value === undefined) return "";
     if (typeof value === "object") return JSON.stringify(value);
     return String(value);
+  }
+
+  function formatNumberCell(value) {
+    const number = Number(value);
+    if (Number.isFinite(number)) return number.toLocaleString();
+    return stringifyCell(value) || "-";
   }
 
   function startEdit(conversationId, messageId) {

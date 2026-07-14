@@ -32,7 +32,15 @@ import llm  # noqa: E402  (OpenAI-compatible provider gateway)
 import agent_control  # noqa: E402  (/ask guard before the query pipeline)
 import retrieval  # noqa: E402  (semantic search for concept queries)
 import validation  # noqa: E402  (LLM validation for semantic counting)
-from analytics import CATALOG, GRAINS, OPS, Filter, Kind, RecallAnalytics  # noqa: E402
+from analytics import (  # noqa: E402
+    CATALOG,
+    GRAINS,
+    OPS,
+    Filter,
+    Kind,
+    RawFirmExposureLeaderboard,
+    RecallAnalytics,
+)
 
 load_dotenv()
 DEFAULT_DSN = os.environ.get("DATABASE_URL", "postgresql://localhost:5432/fda")
@@ -53,12 +61,18 @@ class Intent(str, Enum):
     count_by = "count_by"         # distribution across a dimension
     count_by_taxonomy = "count_by_taxonomy"  # distribution across recall-reason taxonomy categories
     explain_taxonomy_node = "explain_taxonomy_node"  # plain-language definition of a taxonomy category
+    raw_firm_exposure = "raw_firm_exposure"  # raw recalling_firm leaderboard + severity exposure score
     trend = "trend"               # counts over time
     sample = "sample"             # a few example rows
 
 
 class Op(str, Enum):
     eq = "eq"; ne = "ne"; in_ = "in"; gte = "gte"; lte = "lte"; between = "between"; ilike = "ilike"
+
+
+class ExposureMetric(str, Enum):
+    severity_weighted = "severity_weighted"
+    recall_count = "recall_count"
 
 
 class FilterSpec(BaseModel):
@@ -75,6 +89,7 @@ class QuerySpec(BaseModel):
     filters: list[FilterSpec] = Field(default_factory=list)
     group_by: Optional[str] = None      # count_by: a dimension column
     taxonomy_node_id: Optional[str] = None  # exact recall-reason category filter (recall_label)
+    exposure_metric: Optional[ExposureMetric] = None  # raw_firm_exposure ranking metric
     grain: Optional[str] = None         # trend: year/quarter/month/week/day
     date_column: Optional[str] = None   # trend: a date column
     limit: int = 20
@@ -136,6 +151,7 @@ Rules:
 - Choose intent: count_total (one number), count_by (distribution across a dimension -> set group_by),
   count_by_taxonomy (distribution across recall-reason categories from the TAXONOMY list),
   explain_taxonomy_node (plain-language definition/explanation of one TAXONOMY category),
+  raw_firm_exposure (rank raw FDA recalling_firm values with count + severity score),
   trend (counts over time -> set grain and date_column), sample (a few example rows).
 - Use explain_taxonomy_node when the user asks what a recall-reason category or FDA recall term MEANS,
   asks for a definition, or uses phrasing such as "what is", "what does X mean", "define X",
@@ -152,6 +168,17 @@ Rules:
   recalls by firm"), or with intent=explain_taxonomy_node when the user asks what the category means.
   For "most common recall reasons / reason distribution", use intent=count_by_taxonomy (no node_id).
   When you set taxonomy_node_id or use count_by_taxonomy, do NOT set semantic_query.
+- raw_firm_exposure: use when the user asks which firms/companies/厂商/公司 have the most FDA drug
+  recalls, the highest recall exposure, or a severity-weighted raw company exposure leaderboard.
+  This ranks raw FDA `recalling_firm` strings only. Set exposure_metric="recall_count" for recall-count
+  wording ("most recalls", "top companies by recall count", "哪些公司召回最多"). Set
+  exposure_metric="severity_weighted" for exposure/risk-exposure/severity-weighted wording
+  ("recall exposure", "severity-weighted recalls", "风险暴露"). Do NOT use this intent for a
+  class-specific distribution such as "Which firms had the most Class I recalls?", or for a
+  concept-specific distribution such as "Which firms had the most sterility recalls?" -- use
+  intent=count_by, group_by="recalling_firm", plus the classification/taxonomy/semantic concept
+  filter instead. When raw_firm_exposure is appropriate and the user adds HARD constraints
+  (state/country/status/date), preserve those constraints in filters; never drop them.
 - semantic_query: when the question asks about a fuzzy CONCEPT/topic in free text (e.g.
   "sterility problems", "cancer-causing impurity", "pills that are too strong", "glass fragments",
   or the same idea in another language such as "药效太强" or "细菌感染"), put the CORE concept here
@@ -241,11 +268,251 @@ _COUNT_OR_CHART_EN_RE = re.compile(
     r"by\s+(?:firm|company|state|classification|class|year|month|category|reason))\b",
     re.IGNORECASE,
 )
+_SAMPLE_REQUEST_EN_RE = re.compile(
+    r"\b(show|find|list|sample|examples?|where|give me)\b",
+    re.IGNORECASE,
+)
 _EXPLAIN_ZH_HINTS = ("是什么", "什么意思", "是什么意思", "这到底是什么", "解释", "定义", "概念", "意味着")
 _COUNT_OR_CHART_ZH_HINTS = (
     "多少", "几个", "几次", "总数", "计数", "统计", "分布", "最多", "最常见",
     "排名", "排行", "趋势", "按公司", "按厂商", "按州", "按分类", "哪几家", "哪些公司",
 )
+_SAMPLE_REQUEST_ZH_HINTS = ("给我看", "看几个", "找", "查找", "列出", "示例", "例子", "样本")
+_CLASS_SPECIFIC_RE = re.compile(r"\bclass\s*(?P<class>i{1,3}|1|2|3)\b", re.IGNORECASE)
+_SIMPLE_CLASS_COUNT_RE = re.compile(
+    r"\bhow\s+many\b.*\bclass\s*(?P<class>i{1,3}|1|2|3)\b.*\brecalls?\b",
+    re.IGNORECASE,
+)
+_RAW_EXPOSURE_CONTEXT_RE = re.compile(
+    r"\b(?:recall|recalls|recalling|exposure|severity[-\s]?weighted)\b",
+    re.IGNORECASE,
+)
+_RAW_EXPOSURE_EN_PATTERNS = (
+    re.compile(r"\bwhich\s+(?:raw\s+)?(?:recalling\s+)?(?:firms|companies)\b.*\bmost\b", re.I),
+    re.compile(r"\btop\s*\d*\s+(?:raw\s+)?(?:recalling\s+)?(?:firms|companies)\b", re.I),
+    re.compile(r"\brank(?:ing)?\s+(?:raw\s+)?(?:recalling\s+)?(?:firms|companies)\b", re.I),
+    re.compile(r"\b(?:firms|companies)\b.*\bby\s+(?:recall\s+count|severity-weighted|exposure)\b", re.I),
+    re.compile(r"\b(?:recall\s+exposure|risk\s+exposure)\b.*\b(?:firms|companies)\b", re.I),
+)
+_RAW_EXPOSURE_ZH_HINTS = (
+    "哪些公司召回最多",
+    "哪家公司召回最多",
+    "哪个公司召回最多",
+    "哪些厂商召回最多",
+    "哪个厂商召回最多",
+    "召回最多的公司",
+    "召回最多的厂商",
+    "公司召回排名",
+    "厂商召回排名",
+    "公司召回排行",
+    "厂商召回排行",
+    "哪个公司风险暴露最高",
+    "哪家公司风险暴露最高",
+    "哪个公司暴露最高",
+    "哪家公司暴露最高",
+)
+_RAW_EXPOSURE_WEIGHTED_HINTS = (
+    "severity-weighted",
+    "severity weighted",
+    "weighted",
+    "exposure",
+    "risk exposure",
+    "暴露",
+    "风险暴露",
+    "严重度",
+    "加权",
+)
+_US_STATE_NAMES = (
+    "alabama", "alaska", "arizona", "arkansas", "california", "colorado", "connecticut",
+    "delaware", "florida", "georgia", "hawaii", "idaho", "illinois", "indiana", "iowa",
+    "kansas", "kentucky", "louisiana", "maine", "maryland", "massachusetts", "michigan",
+    "minnesota", "mississippi", "missouri", "montana", "nebraska", "nevada",
+    "new hampshire", "new jersey", "new mexico", "new york", "north carolina",
+    "north dakota", "ohio", "oklahoma", "oregon", "pennsylvania", "rhode island",
+    "south carolina", "south dakota", "tennessee", "texas", "utah", "vermont",
+    "virginia", "washington", "west virginia", "wisconsin", "wyoming",
+)
+_US_STATE_CODES = (
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL", "IN",
+    "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV",
+    "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN",
+    "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
+)
+_US_STATE_NAME_TO_CODE = dict(zip(_US_STATE_NAMES, _US_STATE_CODES, strict=True))
+_COUNTRY_ALIASES = {
+    "canada": "Canada",
+    "united states": "United States",
+    "usa": "United States",
+    "u.s.": "United States",
+    "u.s": "United States",
+    "us": "United States",
+    "india": "India",
+    "china": "China",
+    "mexico": "Mexico",
+    "jordan": "Jordan",
+    "germany": "Germany",
+    "spain": "Spain",
+    "guyana": "Guyana",
+    "turkey": "Turkey",
+    "guatemala": "Guatemala",
+    "japan": "Japan",
+    "korea": "Korea (the Republic of)",
+    "south korea": "Korea (the Republic of)",
+    "united arab emirates": "United Arab Emirates",
+    "uae": "United Arab Emirates",
+    "switzerland": "Switzerland",
+    "aruba": "Aruba",
+    "australia": "Australia",
+    "croatia": "Croatia",
+    "ireland": "Ireland",
+    "israel": "Israel",
+    "taiwan": "Taiwan",
+    "united kingdom": "United Kingdom",
+    "uk": "United Kingdom",
+    "dominican republic": "Dominican Republic (the)",
+}
+_COUNTRY_ALIAS_RE = re.compile(
+    r"(?<![a-z0-9.])(?:the\s+)?("
+    + "|".join(re.escape(name) for name in sorted(_COUNTRY_ALIASES, key=len, reverse=True))
+    + r")(?![a-z0-9.])",
+    re.IGNORECASE,
+)
+_STATE_NAME_RE = re.compile(
+    r"\b(" + "|".join(re.escape(name) for name in _US_STATE_NAMES) + r")\b",
+    re.IGNORECASE,
+)
+_STATE_CODE_RE = re.compile(r"\b(" + "|".join(_US_STATE_CODES) + r")\b")
+_LOCATION_PHRASE_RE = re.compile(
+    r"\b(?:in|from|country(?:\s+of)?|located\s+in)\s+(?P<phrase>[^?.!;:]+)",
+    re.IGNORECASE,
+)
+_LOCATION_PHRASE_STOP_RE = re.compile(
+    r"\b(?:have|has|had|were|are|is|there|with|by|for|about|rank|ranking|top|most|"
+    r"highest|lowest|recalls?|drug|fda|companies?|firms?)\b",
+    re.IGNORECASE,
+)
+_STATUS_ALIASES = {
+    "completed": "Completed",
+    "ongoing": "Ongoing",
+    "terminated": "Terminated",
+    "pending": "Pending",
+}
+_STATUS_FILTER_RE = re.compile(
+    r"\b(" + "|".join(re.escape(name) for name in _STATUS_ALIASES) + r")\b",
+    re.IGNORECASE,
+)
+_NEGATED_STATUS_FILTER_RE = re.compile(
+    r"\b(?:not|except|excluding|without)\s+("
+    + "|".join(re.escape(name) for name in _STATUS_ALIASES)
+    + r")\b|\bnon[-\s]?("
+    + "|".join(re.escape(name) for name in _STATUS_ALIASES)
+    + r")\b",
+    re.IGNORECASE,
+)
+_BARE_YEAR_RE = re.compile(r"(?<![\d/-])((?:19|20)\d{2})(?![\d/-])")
+_UNSUPPORTED_TEMPORAL_FILTER_RE = re.compile(
+    r"\b(?:since|after|before|between|during|last|past|recent|current|today|yesterday|"
+    r"this\s+(?:year|quarter|month|week)|"
+    r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*|"
+    r"q[1-4]|quarter|month|week|day)\b|"
+    r"\b\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?\b",
+    re.IGNORECASE,
+)
+_UNHANDLED_SUBJECT_FILTER_RE = re.compile(
+    r"\b(?:for|about|involving|related\s+to|made\s+by|manufactured\s+by)\s+"
+    r"(?!the\s+most\b)(?!most\b)(?!fda\b)(?!drug\b)(?!recalls?\b)(?!class\b)(?!\d{4}\b)|"
+    r"\b(?:containing|contains|including|includes)\s+\w+|"
+    r"\brecalls?\s+of\s+(?!class\b)(?!fda\b)(?!drug\b)(?!\d{4}\b)|"
+    r"\bwith\s+(?:product|brand|drug|medication)\b|"
+    r"\b(?:product|brand)\s+(?:named|called|containing)\b",
+    re.IGNORECASE,
+)
+_OUT_OF_SCOPE_PRODUCT_HINT_RE = re.compile(
+    r"\b(?:cars?|vehicles?|automobiles?|toyota|honda|ford|tesla)\b",
+    re.IGNORECASE,
+)
+_RAW_EXPOSURE_TOPIC_EXCLUSIONS = (
+    "sterility",
+    "sterile",
+    "cgmp",
+    "gmp",
+    "contamination",
+    "microbial",
+    "glass",
+    "nitrosamine",
+    "subpotent",
+    "superpotent",
+    "labeling",
+    "deviation",
+    "recall reason",
+    "recall reasons",
+    "原因",
+)
+_SIMPLE_CLASS_COUNT_TOPIC_EXCLUSIONS = _RAW_EXPOSURE_TOPIC_EXCLUSIONS + (
+    "product",
+    "products",
+    "brand",
+    "brands",
+    "firm",
+    "firms",
+    "company",
+    "companies",
+    "厂商",
+    "公司",
+    "产品",
+    "品牌",
+)
+_HELPER_BOILERPLATE_TOKENS = {
+    "all",
+    "an",
+    "and",
+    "are",
+    "by",
+    "companies",
+    "company",
+    "count",
+    "drug",
+    "exposure",
+    "fda",
+    "five",
+    "firm",
+    "firms",
+    "from",
+    "had",
+    "has",
+    "have",
+    "been",
+    "highest",
+    "how",
+    "in",
+    "leaderboard",
+    "many",
+    "most",
+    "of",
+    "or",
+    "rank",
+    "ranked",
+    "ranking",
+    "raw",
+    "recall",
+    "recalling",
+    "recalls",
+    "risk",
+    "score",
+    "scores",
+    "severity",
+    "state",
+    "country",
+    "located",
+    "the",
+    "there",
+    "ten",
+    "to",
+    "top",
+    "weighted",
+    "were",
+    "which",
+}
 _TAXONOMY_EXPLANATION_ALIASES = {
     "cgmp_deviation": (
         "cgmp deviation",
@@ -271,6 +538,12 @@ def _looks_like_explanation_question(question: str) -> bool:
 def _asks_for_count_or_chart(question: str) -> bool:
     return bool(_COUNT_OR_CHART_EN_RE.search(question)) or any(
         hint in question for hint in _COUNT_OR_CHART_ZH_HINTS
+    )
+
+
+def _asks_for_sample(question: str) -> bool:
+    return bool(_SAMPLE_REQUEST_EN_RE.search(question)) or any(
+        hint in question for hint in _SAMPLE_REQUEST_ZH_HINTS
     )
 
 
@@ -302,6 +575,332 @@ def _maybe_taxonomy_explanation_spec(
     if best is None:
         return None
     return QuerySpec(intent=Intent.explain_taxonomy_node, taxonomy_node_id=best[1])
+
+
+def _extract_limit(question: str, default: int = 20) -> int:
+    q = question.casefold()
+    match = re.search(r"\btop\s*(\d{1,3})\b", q)
+    if match:
+        return max(1, min(int(match.group(1)), 100))
+    match = re.search(r"前\s*(\d{1,3})", question)
+    if match:
+        return max(1, min(int(match.group(1)), 100))
+    if "前十" in question or "top ten" in q:
+        return 10
+    if "前五" in question or "top five" in q:
+        return 5
+    return default
+
+
+def _unique_preserve_order(values: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        key = value.casefold()
+        if key not in seen:
+            seen.add(key)
+            out.append(value)
+    return out
+
+
+def _multi_value_filter(column: str, values: list[str]) -> FilterSpec | None:
+    values = _unique_preserve_order([value for value in values if value])
+    if not values:
+        return None
+    op = Op.eq if len(values) == 1 else Op.in_
+    return FilterSpec(column=column, op=op, values=values)
+
+
+def _status_filter_spec_or_defer(question: str) -> tuple[FilterSpec | None, bool]:
+    if _NEGATED_STATUS_FILTER_RE.search(question):
+        return None, True
+    values = [
+        _STATUS_ALIASES[match.group(1).casefold()]
+        for match in _STATUS_FILTER_RE.finditer(question)
+    ]
+    return _multi_value_filter("status", values), False
+
+
+def _date_filter_spec_or_defer(question: str) -> tuple[FilterSpec | None, bool]:
+    if _UNSUPPORTED_TEMPORAL_FILTER_RE.search(question):
+        return None, True
+    years = _unique_preserve_order(list(_BARE_YEAR_RE.findall(question)))
+    if len(years) > 1:
+        return None, True
+    if not years:
+        return None, False
+    year = years[0]
+    return FilterSpec(
+        column="report_date",
+        op=Op.between,
+        values=[f"{year}-01-01", f"{year}-12-31"],
+    ), False
+
+
+def _state_codes_in_text(text: str) -> list[str]:
+    values: list[str] = []
+    for match in _STATE_NAME_RE.finditer(text):
+        code = _US_STATE_NAME_TO_CODE.get(match.group(1).casefold())
+        if code:
+            values.append(code)
+    for match in _STATE_CODE_RE.finditer(text):
+        values.append(match.group(1).upper())
+    return _unique_preserve_order(values)
+
+
+def _country_values_in_text(text: str) -> list[str]:
+    values: list[str] = []
+    for match in _COUNTRY_ALIAS_RE.finditer(text):
+        value = _COUNTRY_ALIASES.get(match.group(1).casefold())
+        if value:
+            values.append(value)
+    return _unique_preserve_order(values)
+
+
+def _trim_location_phrase(phrase: str) -> str:
+    phrase = _LOCATION_PHRASE_STOP_RE.split(phrase, maxsplit=1)[0]
+    return phrase.strip(" \t\r\n,")
+
+
+def _location_remainder(phrase: str) -> str:
+    remainder = _COUNTRY_ALIAS_RE.sub(" ", phrase)
+    remainder = _STATE_NAME_RE.sub(" ", remainder)
+    remainder = _STATE_CODE_RE.sub(" ", remainder)
+    remainder = re.sub(r"\b(?:the|and|or)\b", " ", remainder, flags=re.IGNORECASE)
+    remainder = re.sub(r"[,/&()+-]", " ", remainder)
+    return " ".join(re.findall(r"[a-z]+", remainder.casefold()))
+
+
+def _location_filter_specs_or_defer(question: str) -> tuple[list[FilterSpec], bool]:
+    country_values: list[str] = []
+    state_codes: list[str] = []
+    saw_location_phrase = False
+    for match in _LOCATION_PHRASE_RE.finditer(question):
+        phrase = _trim_location_phrase(match.group("phrase"))
+        if not phrase:
+            continue
+        # "in 2024" is a temporal filter handled by _date_filter_spec_or_defer, not a
+        # location phrase. Do not treat numeric-only phrases as unknown locations.
+        if not re.search(r"[a-z]", phrase, re.IGNORECASE):
+            continue
+        saw_location_phrase = True
+        phrase_countries = _country_values_in_text(phrase)
+        phrase_states = _state_codes_in_text(phrase)
+        if _location_remainder(phrase):
+            return [], True
+        # Mixing state and country in one deterministic pre-route can mean either an AND
+        # ("California, United States") or an OR ("California and Canada"). Defer rather
+        # than risk changing the user's location semantics.
+        if phrase_countries and phrase_states:
+            return [], True
+        country_values.extend(phrase_countries)
+        state_codes.extend(phrase_states)
+
+    # Bare location adjectives before the recall noun are hard filters too:
+    # "Canada drug recalls", "California FDA drug recalls", "CA Class I recalls".
+    # Preserve them exactly instead of letting unmatched-token cleanup hide them.
+    country_values.extend(_country_values_in_text(question))
+    state_codes.extend(_state_codes_in_text(question))
+    country_values = _unique_preserve_order(country_values)
+    state_codes = _unique_preserve_order(state_codes)
+
+    # Mixed country+state can be an AND ("California, United States") or an OR/list
+    # ("California and Canada"). Deterministic helpers cannot infer that safely; defer.
+    if country_values and state_codes:
+        return [], True
+
+    filters: list[FilterSpec] = []
+    country_filter = _multi_value_filter("country", country_values)
+    if country_filter is not None:
+        filters.append(country_filter)
+    state_filter = _multi_value_filter("state", state_codes)
+    if state_filter is not None:
+        filters.append(state_filter)
+    if saw_location_phrase and not filters:
+        return [], True
+    return filters, False
+
+
+def _safe_hard_filter_specs_or_defer(question: str) -> tuple[list[FilterSpec], bool]:
+    """Parse hard filters the deterministic fast paths can represent exactly.
+
+    Any date/status/location wording outside this deliberately small grammar returns
+    ``defer=True`` so the LLM QuerySpec path can preserve it instead of a helper issuing
+    unfiltered or partially-filtered SQL.
+    """
+    filters: list[FilterSpec] = []
+    status_filter, defer = _status_filter_spec_or_defer(question)
+    if defer:
+        return [], True
+    if status_filter is not None:
+        filters.append(status_filter)
+    date_filter, defer = _date_filter_spec_or_defer(question)
+    if defer:
+        return [], True
+    if date_filter is not None:
+        filters.append(date_filter)
+    location_filters, defer = _location_filter_specs_or_defer(question)
+    if defer:
+        return [], True
+    filters.extend(location_filters)
+    return filters, False
+
+
+def _looks_like_unhandled_subject_filter(
+    question: str,
+    emitted_filters: list[FilterSpec] | None = None,
+) -> bool:
+    return bool(
+        _UNHANDLED_SUBJECT_FILTER_RE.search(question)
+        or _OUT_OF_SCOPE_PRODUCT_HINT_RE.search(question)
+        or _unmatched_subject_tokens(question, emitted_filters)
+    )
+
+
+def _filter_values(emitted_filters: list[FilterSpec] | None, column: str) -> list[str]:
+    values: list[str] = []
+    for filter_spec in emitted_filters or []:
+        if filter_spec.column == column:
+            values.extend(filter_spec.values)
+    return _unique_preserve_order(values)
+
+
+def _remove_words(text: str, words: list[str]) -> str:
+    for word in words:
+        if word:
+            text = re.sub(r"\b" + re.escape(word.casefold()) + r"\b", " ", text, flags=re.IGNORECASE)
+    return text
+
+
+def _unmatched_subject_tokens(
+    question: str,
+    emitted_filters: list[FilterSpec] | None = None,
+) -> list[str]:
+    """Return likely product/ingredient tokens left after known hard filters are removed.
+
+    Deterministic helpers do not represent product/ingredient constraints. If a prompt leaves
+    non-boilerplate tokens after removing the class/status/date/location filters that the helper
+    can preserve, the safe behavior is to defer to the LLM QuerySpec path rather than answering a
+    broader SQL question.
+    """
+    text = question.casefold()
+    if _filter_values(emitted_filters, "classification"):
+        text = _CLASS_SPECIFIC_RE.sub(" ", text)
+    text = _remove_words(text, [value.casefold() for value in _filter_values(emitted_filters, "status")])
+    for country in _filter_values(emitted_filters, "country"):
+        aliases = [alias for alias, value in _COUNTRY_ALIASES.items() if value == country]
+        text = _remove_words(text, aliases)
+    for state_code in _filter_values(emitted_filters, "state"):
+        state_names = [
+            name for name, code in _US_STATE_NAME_TO_CODE.items()
+            if code == state_code
+        ]
+        text = _remove_words(text, [state_code, *state_names])
+    for filter_spec in emitted_filters or []:
+        if filter_spec.column.endswith("_date") and filter_spec.values:
+            years = [value[:4] for value in filter_spec.values if re.match(r"^(?:19|20)\d{2}", value)]
+            text = _remove_words(text, years)
+    tokens = re.findall(r"[a-z][a-z0-9]*", text)
+    return [
+        token
+        for token in tokens
+        if token not in _HELPER_BOILERPLATE_TOKENS
+        and len(token) > 1
+    ]
+
+
+def _maybe_raw_firm_exposure_spec(question: str) -> QuerySpec | None:
+    """Deterministically catch the v0 raw-firm exposure wording before generic QuerySpec.
+
+    This avoids relying on the model to discover the new intent while preserving the older
+    filtered/class-specific ``count_by recalling_firm`` paths. The helper either preserves
+    every hard filter it recognizes exactly (status, one bare report year, country/countries,
+    state, classification) or returns ``None`` so the LLM-generated QuerySpec can handle the
+    prompt instead of this pre-router fabricating an unfiltered/global leaderboard.
+    """
+    q = question.casefold()
+    if not (_RAW_EXPOSURE_CONTEXT_RE.search(question) or any(hint in question for hint in _RAW_EXPOSURE_ZH_HINTS)):
+        return None
+    metric = (
+        ExposureMetric.severity_weighted
+        if any(hint in q or hint in question for hint in _RAW_EXPOSURE_WEIGHTED_HINTS)
+        else ExposureMetric.recall_count
+    )
+    filters: list[FilterSpec] = []
+    class_label = _class_filter_label(question)
+    if class_label:
+        # Preserve class-specific constraints only for explicit exposure/severity wording.
+        # Plain "Which firms had the most Class I recalls?" stays on the legacy count_by path.
+        if metric is not ExposureMetric.severity_weighted:
+            return None
+        filters.append(FilterSpec(column="classification", op=Op.eq, values=[class_label]))
+    hard_filters, defer = _safe_hard_filter_specs_or_defer(question)
+    if defer:
+        return None
+    filters.extend(hard_filters)
+    if _looks_like_unhandled_subject_filter(question, filters):
+        return None
+    if any(hint in q for hint in _RAW_EXPOSURE_TOPIC_EXCLUSIONS):
+        return None
+    matched = any(pattern.search(question) for pattern in _RAW_EXPOSURE_EN_PATTERNS)
+    matched = matched or any(hint in question for hint in _RAW_EXPOSURE_ZH_HINTS)
+    if not matched:
+        return None
+    return QuerySpec(
+        intent=Intent.raw_firm_exposure,
+        exposure_metric=metric,
+        filters=filters,
+        limit=_extract_limit(question),
+    )
+
+
+def _class_filter_label(question: str) -> str | None:
+    match = _CLASS_SPECIFIC_RE.search(question)
+    if not match:
+        return None
+    class_token = match.group("class").casefold()
+    labels = {
+        "i": "Class I",
+        "1": "Class I",
+        "ii": "Class II",
+        "2": "Class II",
+        "iii": "Class III",
+        "3": "Class III",
+    }
+    return labels.get(class_token)
+
+
+def _maybe_simple_class_count_spec(question: str) -> QuerySpec | None:
+    """Deterministic fast path for simple "How many Class X recalls" questions.
+
+    The LLM occasionally adds unrelated fields such as date grains or sample sizes to this
+    canonical count question. Keep the eval-stable, SQL-only interpretation explicit, but
+    only after the domain guard has accepted the prompt and only when every hard constraint
+    is exactly represented. Unknown subject/product/location/time qualifiers defer to the
+    LLM QuerySpec path.
+    """
+    match = _SIMPLE_CLASS_COUNT_RE.search(question)
+    if not match:
+        return None
+    q = question.casefold()
+    if any(word in q for word in (" by ", " trend", " distribution", "breakdown", "most", "top", "rank")):
+        return None
+    if any(hint in q for hint in _SIMPLE_CLASS_COUNT_TOPIC_EXCLUSIONS):
+        return None
+    label = _class_filter_label(question)
+    if label is None:
+        return None
+    filters = [FilterSpec(column="classification", op=Op.eq, values=[label])]
+    hard_filters, defer = _safe_hard_filter_specs_or_defer(question)
+    if defer:
+        return None
+    filters.extend(hard_filters)
+    if _looks_like_unhandled_subject_filter(question, filters):
+        return None
+    return QuerySpec(
+        intent=Intent.count_total,
+        filters=filters,
+    )
 
 
 def _valid_taxonomy_ids(a: RecallAnalytics, version: str = TAXONOMY_VERSION) -> set[str]:
@@ -469,15 +1068,18 @@ def generate_spec(client: Any, config: llm.ChatConfig, question: str,
         QuerySpec,
         temperature=0,
     )
-    return refine_spec(spec)
+    return refine_spec(spec, question=question)
 
 
-def refine_spec(spec: QuerySpec) -> QuerySpec:
+def refine_spec(spec: QuerySpec, question: str = "") -> QuerySpec:
     """Light, general hygiene on the model's QuerySpec -- no hardcoded concept rules.
 
     The LLM judges intent and emits the canonical semantic_query plus keyword aliases; here we
     only normalize whitespace and de-duplicate aliases.
     """
+    spec.limit = max(1, min(spec.limit or 20, 100))
+    if spec.intent is not Intent.raw_firm_exposure:
+        spec.exposure_metric = None
     # Exact taxonomy path (category filter or category distribution) is deterministic and wins
     # over semantic estimation -- never mix it with a semantic_query.
     if spec.taxonomy_node_id is not None:
@@ -490,6 +1092,15 @@ def refine_spec(spec: QuerySpec) -> QuerySpec:
         spec.grain = None
         spec.date_column = None
         return spec
+    if spec.intent is Intent.raw_firm_exposure:
+        spec.semantic_query = None
+        spec.semantic_aliases = []
+        spec.group_by = None
+        spec.taxonomy_node_id = None
+        spec.grain = None
+        spec.date_column = None
+        spec.exposure_metric = spec.exposure_metric or ExposureMetric.severity_weighted
+        return spec
     if spec.taxonomy_node_id or spec.intent is Intent.count_by_taxonomy:
         spec.semantic_query = None
         spec.semantic_aliases = []
@@ -499,6 +1110,14 @@ def refine_spec(spec: QuerySpec) -> QuerySpec:
     if not spec.semantic_query:
         spec.semantic_aliases = []
         return spec
+    if (
+        spec.intent in {Intent.count_total, Intent.count_by}
+        and question
+        and _asks_for_sample(question)
+        and not _asks_for_count_or_chart(question)
+    ):
+        spec.intent = Intent.sample
+        spec.group_by = None
     concept = spec.semantic_query.casefold()
     seen: set[str] = set()
     aliases: list[str] = []
@@ -562,7 +1181,7 @@ _TOPN_HINTS = (
 def _has_firm_filter(spec: QuerySpec) -> bool:
     return any(
         f.column == "recalling_firm"
-        and f.op in {Op.eq, Op.in_}
+        and f.op in {Op.eq, Op.in_, Op.ilike}
         and bool(f.values)
         for f in spec.filters
     )
@@ -820,6 +1439,17 @@ def run_spec(
     if spec.intent is Intent.explain_taxonomy_node:
         return _explain_taxonomy_node(a, spec, question, chat_client, chat_config)
     filters = _to_filters(spec)
+    if spec.intent is Intent.raw_firm_exposure:
+        rank_by = (
+            "recall_count"
+            if spec.exposure_metric is ExposureMetric.recall_count
+            else "severity_weighted_exposure"
+        )
+        return a.raw_firm_exposure_leaderboard(
+            filters,
+            limit=spec.limit or 20,
+            rank_by=rank_by,
+        )
     if spec.intent is Intent.count_by_taxonomy:  # exact distribution across recall-reason categories
         return a.count_by_taxonomy(filters, limit=spec.limit or 20, with_evidence=True)
     if spec.taxonomy_node_id:  # exact counts filtered to one recall-reason category
@@ -1179,6 +1809,40 @@ def summarize(spec: QuerySpec, result: Any) -> str:
         return f"Produced separate tables for the requested answer: {titles}."
     if isinstance(result, TaxonomyExplanation):
         return result.answer
+    if isinstance(result, RawFirmExposureLeaderboard):
+        metric_label = (
+            "severity-weighted exposure score"
+            if result.metric == "severity_weighted" else "raw recall count"
+        )
+        lines = [
+            f"Raw FDA `recalling_firm` exposure leaderboard (top {len(result.items)}, "
+            f"ranked by {metric_label}).",
+            f"Formula ({result.formula_version}): {result.formula}.",
+            *result.caveats,
+        ]
+        for item in result.items[:10]:
+            reason = (
+                f"; top reason category: {item.top_reason_category}"
+                f" ({item.top_reason_count:,})"
+                if item.top_reason_category and item.top_reason_count is not None else ""
+            )
+            evidence = f"; e.g. {', '.join(item.evidence)}" if item.evidence else ""
+            class_breakdown = (
+                f"Class I/II/III "
+                f"{item.class_i_recalls:,}/{item.class_ii_recalls:,}/{item.class_iii_recalls:,}"
+            )
+            if result.metric == "severity_weighted":
+                primary = (
+                    f"score {item.exposure_score:,}; total {item.total_recalls:,}; "
+                    f"{class_breakdown}"
+                )
+            else:
+                primary = (
+                    f"total {item.total_recalls:,}; severity score {item.exposure_score:,}; "
+                    f"{class_breakdown}"
+                )
+            lines.append(f"  {item.rank}. {item.recalling_firm}: {primary}{reason}{evidence}")
+        return "\n".join(lines)
     if isinstance(result, validation.SemanticCountResult):
         if result.retrieval_mode == "fts_only" and result.candidate_count == 0:
             reason = (
@@ -1301,13 +1965,7 @@ class NLEngine:
                 model=self.chat_config.model,
                 operation="chat",
             )
-        explanation_spec = _maybe_taxonomy_explanation_spec(question, self.taxonomy_nodes)
         control = agent_control.classify_llm(self.chat_client, self.chat_config, question)
-        if control.terminal and explanation_spec is not None:
-            control = agent_control.AgentControlDecision(
-                route="in_domain",
-                reason="taxonomy_explanation",
-            )
         if control.terminal:
             result = agent_control.result_from_decision(control)
             return Answer(
@@ -1318,7 +1976,10 @@ class NLEngine:
                 control=control,
                 metadata={"control_route": control.route, "control_reason": control.reason},
             )
-        spec = explanation_spec or generate_spec(
+        explanation_spec = _maybe_taxonomy_explanation_spec(question, self.taxonomy_nodes)
+        simple_class_count_spec = _maybe_simple_class_count_spec(question)
+        exposure_spec = _maybe_raw_firm_exposure_spec(question)
+        spec = explanation_spec or simple_class_count_spec or exposure_spec or generate_spec(
             self.chat_client, self.chat_config, question, self.schema_ctx, self.taxonomy_ctx)
         with RecallAnalytics(self.dsn) as a:
             try:
@@ -1378,6 +2039,14 @@ class NLEngine:
                 section.spec.model_dump(mode="json", exclude_none=True)
                 for section in result.sections
             ]
+        if isinstance(result, RawFirmExposureLeaderboard):
+            metadata.update({
+                "formula_version": result.formula_version,
+                "formula": result.formula,
+                "scope": result.scope,
+                "exposure_metric": result.metric,
+                "result_count": len(result.items),
+            })
         if (
             spec.semantic_query
             and spec.intent is Intent.sample

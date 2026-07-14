@@ -22,6 +22,26 @@
       }
     },
     {
+      "id": "control-out-of-domain-company-employees",
+      "kind": "ask",
+      "question": "Which companies have the most employees?",
+      "assert": {
+        "route": "out_of_domain",
+        "data_kinds": ["message"],
+        "spec_empty": true
+      }
+    },
+    {
+      "id": "control-out-of-domain-toyota-class-count",
+      "kind": "ask",
+      "question": "How many Class I recalls were there for Toyota cars?",
+      "assert": {
+        "route": "out_of_domain",
+        "data_kinds": ["message"],
+        "spec_empty": true
+      }
+    },
+    {
       "id": "control-zh-meta-ask",
       "kind": "ask",
       "question": "你可以做什么？",
@@ -70,6 +90,114 @@
       }
     },
     {
+      "id": "numeric-class-i-count-canada-preserves-country",
+      "kind": "ask",
+      "question": "How many Class I drug recalls in Canada?",
+      "assert": {
+        "route": "sql",
+        "intents": ["count_total"],
+        "data_kinds": ["scalar"],
+        "filters_include": [
+          {"column": "classification", "op": "eq", "values": ["Class I"]},
+          {"column": "country", "op": "eq", "values": ["Canada"]}
+        ],
+        "value_equals": 4,
+        "no_ilike": true
+      }
+    },
+    {
+      "id": "numeric-class-i-count-united-states-preserves-country",
+      "kind": "ask",
+      "question": "How many Class I drug recalls in the United States?",
+      "assert": {
+        "route": "sql",
+        "intents": ["count_total"],
+        "data_kinds": ["scalar"],
+        "filters_include": [
+          {"column": "classification", "op": "eq", "values": ["Class I"]},
+          {"column": "country", "op": "eq", "values": ["United States"]}
+        ],
+        "value_equals": 1671,
+        "no_ilike": true
+      }
+    },
+    {
+      "id": "numeric-class-i-count-us-preserves-country",
+      "kind": "ask",
+      "question": "How many Class I drug recalls in the US?",
+      "assert": {
+        "route": "sql",
+        "intents": ["count_total"],
+        "data_kinds": ["scalar"],
+        "filters_include": [
+          {"column": "classification", "op": "eq", "values": ["Class I"]},
+          {"column": "country", "op": "eq", "values": ["United States"]}
+        ],
+        "value_equals": 1671,
+        "no_ilike": true
+      }
+    },
+    {
+      "id": "numeric-pending-class-i-preserves-status",
+      "kind": "ask",
+      "question": "How many pending Class I recalls are there?",
+      "assert": {
+        "route": "sql",
+        "intents": ["count_total"],
+        "data_kinds": ["scalar"],
+        "filters_include": [
+          {"column": "classification", "op": "eq", "values": ["Class I"]},
+          {"column": "status", "op": "eq", "values": ["Pending"]}
+        ],
+        "value_equals": 0,
+        "no_ilike": true
+      }
+    },
+    {
+      "id": "helper-bare-country-class-count-preserves-country",
+      "kind": "deterministic_helper",
+      "question": "How many Class I Canada drug recalls are there?",
+      "assert": {
+        "simple_class_count_filters_include": [
+          {"column": "classification", "op": "eq", "values": ["Class I"]},
+          {"column": "country", "op": "eq", "values": ["Canada"]}
+        ],
+        "raw_firm_exposure_spec_empty": true,
+        "helper_filter_invariant": true
+      }
+    },
+    {
+      "id": "helper-bare-state-class-count-preserves-state",
+      "kind": "deterministic_helper",
+      "question": "How many Class I California drug recalls are there?",
+      "assert": {
+        "simple_class_count_filters_include": [
+          {"column": "classification", "op": "eq", "values": ["Class I"]},
+          {"column": "state", "op": "eq", "values": ["CA"]}
+        ],
+        "raw_firm_exposure_spec_empty": true,
+        "helper_filter_invariant": true
+      }
+    },
+    {
+      "id": "helper-product-qualified-class-count-containing-defers",
+      "kind": "deterministic_helper",
+      "question": "How many Class I recalls containing acetaminophen are there?",
+      "assert": {
+        "simple_class_count_spec_empty": true,
+        "raw_firm_exposure_spec_empty": true
+      }
+    },
+    {
+      "id": "helper-product-qualified-class-count-bare-ingredient-defers",
+      "kind": "deterministic_helper",
+      "question": "How many acetaminophen Class I recalls are there?",
+      "assert": {
+        "simple_class_count_spec_empty": true,
+        "raw_firm_exposure_spec_empty": true
+      }
+    },
+    {
       "id": "numeric-class-i-by-firm",
       "kind": "ask",
       "question": "Which firms had the most Class I recalls?",
@@ -79,6 +207,223 @@
         "data_kinds": ["distribution"],
         "top_items": [
           {"value": "King Bio Inc.", "count": 465}
+        ],
+        "no_ilike": true
+      }
+    },
+    {
+      "id": "exposure-raw-firm-count-leaderboard",
+      "kind": "ask",
+      "question": "Which recalling firms have the most FDA drug recalls?",
+      "assert": {
+        "route": "sql",
+        "intents": ["raw_firm_exposure"],
+        "data_kinds": ["raw_firm_exposure"],
+        "data_fields": {
+          "metric": "recall_count",
+          "formula_version": "raw_severity_v0",
+          "scope": "raw_fda_recalling_firm"
+        },
+        "top_items": [
+          {
+            "rank": 1,
+            "recalling_firm": "Aidapak Services, LLC",
+            "total_recalls": 538,
+            "class_i_recalls": 0,
+            "class_ii_recalls": 538,
+            "class_iii_recalls": 0,
+            "exposure_score": 1076
+          }
+        ],
+        "summary_contains_any": ["raw FDA `recalling_firm`", "not a safety verdict", "3 * Class I"],
+        "no_ilike": true
+      }
+    },
+    {
+      "id": "exposure-severity-weighted-leaderboard",
+      "kind": "ask",
+      "question": "Rank firms by severity-weighted recalls.",
+      "assert": {
+        "route": "sql",
+        "intents": ["raw_firm_exposure"],
+        "data_kinds": ["raw_firm_exposure"],
+        "data_fields": {
+          "metric": "severity_weighted",
+          "formula_version": "raw_severity_v0",
+          "scope": "raw_fda_recalling_firm"
+        },
+        "top_items": [
+          {
+            "rank": 1,
+            "recalling_firm": "King Bio Inc.",
+            "total_recalls": 465,
+            "class_i_recalls": 465,
+            "class_ii_recalls": 0,
+            "class_iii_recalls": 0,
+            "exposure_score": 1395
+          }
+        ],
+        "summary_contains_any": ["severity-weighted exposure score", "not a safety verdict", "raw FDA"],
+        "no_ilike": true
+      }
+    },
+    {
+      "id": "exposure-filtered-california-preserves-state",
+      "kind": "ask",
+      "question": "Which firms in California have the most FDA drug recalls?",
+      "assert": {
+        "route": "sql",
+        "intents": ["count_by", "raw_firm_exposure"],
+        "data_kinds": ["distribution", "raw_firm_exposure"],
+        "filters_include": [
+          {"column": "state", "op": "eq", "values": ["CA"]}
+        ],
+        "top_items": [
+          {"firm_equals": "Herbal Doctor Remedies", "recall_count_equals": 113}
+        ],
+        "no_ilike": true
+      }
+    },
+    {
+      "id": "exposure-filtered-canada-preserves-country",
+      "kind": "ask",
+      "question": "Which firms in Canada have the most FDA drug recalls?",
+      "assert": {
+        "route": "sql",
+        "intents": ["count_by", "raw_firm_exposure"],
+        "data_kinds": ["distribution", "raw_firm_exposure"],
+        "filters_include": [
+          {"column": "country", "op": "eq", "values": ["Canada"]}
+        ],
+        "top_items": [
+          {"firm_equals": "Attix Pharmaceuticals", "recall_count_equals": 470}
+        ],
+        "no_ilike": true
+      }
+    },
+    {
+      "id": "helper-bare-country-raw-exposure-preserves-country",
+      "kind": "deterministic_helper",
+      "question": "Which firms have the most Canada FDA drug recalls?",
+      "assert": {
+        "simple_class_count_spec_empty": true,
+        "raw_firm_exposure_filters_include": [
+          {"column": "country", "op": "eq", "values": ["Canada"]}
+        ],
+        "helper_filter_invariant": true
+      }
+    },
+    {
+      "id": "helper-bare-state-raw-exposure-preserves-state",
+      "kind": "deterministic_helper",
+      "question": "Which firms have the most California FDA drug recalls?",
+      "assert": {
+        "simple_class_count_spec_empty": true,
+        "raw_firm_exposure_filters_include": [
+          {"column": "state", "op": "eq", "values": ["CA"]}
+        ],
+        "helper_filter_invariant": true
+      }
+    },
+    {
+      "id": "exposure-filtered-us-and-canada-preserves-all-countries",
+      "kind": "ask",
+      "question": "Which firms in the US and Canada have the most FDA drug recalls?",
+      "assert": {
+        "route": "sql",
+        "intents": ["count_by", "raw_firm_exposure"],
+        "data_kinds": ["distribution", "raw_firm_exposure"],
+        "filters_include": [
+          {"column": "country", "op": "in", "values": ["United States", "Canada"]}
+        ],
+        "top_items": [
+          {"firm_equals": "Aidapak Services, LLC", "recall_count_equals": 538}
+        ],
+        "no_ilike": true
+      }
+    },
+    {
+      "id": "exposure-filtered-united-states-article-preserves-country",
+      "kind": "ask",
+      "question": "Which firms in the United States have the most FDA drug recalls?",
+      "assert": {
+        "route": "sql",
+        "intents": ["count_by", "raw_firm_exposure"],
+        "data_kinds": ["distribution", "raw_firm_exposure"],
+        "filters_include": [
+          {"column": "country", "op": "eq", "values": ["United States"]}
+        ],
+        "top_items": [
+          {"firm_equals": "Aidapak Services, LLC", "recall_count_equals": 538}
+        ],
+        "no_ilike": true
+      }
+    },
+    {
+      "id": "exposure-filtered-us-article-preserves-country",
+      "kind": "ask",
+      "question": "Which firms in the US have the most FDA drug recalls?",
+      "assert": {
+        "route": "sql",
+        "intents": ["count_by", "raw_firm_exposure"],
+        "data_kinds": ["distribution", "raw_firm_exposure"],
+        "filters_include": [
+          {"column": "country", "op": "eq", "values": ["United States"]}
+        ],
+        "top_items": [
+          {"firm_equals": "Aidapak Services, LLC", "recall_count_equals": 538}
+        ],
+        "no_ilike": true
+      }
+    },
+    {
+      "id": "exposure-filtered-bare-year-preserves-report-year",
+      "kind": "ask",
+      "question": "Which firms had the most FDA drug recalls 2024?",
+      "assert": {
+        "route": "sql",
+        "intents": ["count_by", "raw_firm_exposure"],
+        "data_kinds": ["distribution", "raw_firm_exposure"],
+        "filters_include": [
+          {"column": "report_date", "op": "between", "values": ["2024-01-01", "2024-12-31"]}
+        ],
+        "top_items": [
+          {"firm_equals": "CARDINAL HEALTHCARE", "recall_count_equals": 42}
+        ],
+        "no_ilike": true
+      }
+    },
+    {
+      "id": "helper-product-qualified-raw-exposure-containing-defers",
+      "kind": "deterministic_helper",
+      "question": "Which firms had the most FDA drug recalls containing acetaminophen?",
+      "assert": {
+        "simple_class_count_spec_empty": true,
+        "raw_firm_exposure_spec_empty": true
+      }
+    },
+    {
+      "id": "helper-product-qualified-raw-exposure-bare-ingredient-defers",
+      "kind": "deterministic_helper",
+      "question": "Which firms had the most acetaminophen FDA drug recalls?",
+      "assert": {
+        "simple_class_count_spec_empty": true,
+        "raw_firm_exposure_spec_empty": true
+      }
+    },
+    {
+      "id": "exposure-filtered-class-i-preserves-class",
+      "kind": "ask",
+      "question": "Rank firms by severity-weighted Class I recalls.",
+      "assert": {
+        "route": "sql",
+        "intents": ["count_by", "raw_firm_exposure"],
+        "data_kinds": ["distribution", "raw_firm_exposure"],
+        "filters_include": [
+          {"column": "classification", "op": "eq", "values": ["Class I"]}
+        ],
+        "top_items": [
+          {"firm_equals": "King Bio Inc.", "recall_count_equals": 465}
         ],
         "no_ilike": true
       }

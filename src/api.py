@@ -35,7 +35,7 @@ import llm  # noqa: E402
 import agent_control  # noqa: E402
 import retrieval  # noqa: E402
 import validation  # noqa: E402
-from analytics import CATALOG, OPS, Filter, Kind, RecallAnalytics  # noqa: E402
+from analytics import CATALOG, OPS, Filter, Kind, RawFirmExposureLeaderboard, RecallAnalytics  # noqa: E402
 from nl_query import Answer, Intent, MultiSectionResult, NLEngine, TaxonomyExplanation  # noqa: E402
 from observability import (  # noqa: E402
     HybridSearchLogEntry,
@@ -302,6 +302,40 @@ def _serialize_group(g: Any) -> dict[str, Any]:
     return item
 
 
+def _serialize_raw_firm_exposure(result: RawFirmExposureLeaderboard) -> dict[str, Any]:
+    items: list[dict[str, Any]] = []
+    for item in result.items:
+        row = {
+            "rank": item.rank,
+            "recalling_firm": item.recalling_firm,
+            "exposure_score": item.exposure_score,
+            "total_recalls": item.total_recalls,
+            "class_i_recalls": item.class_i_recalls,
+            "class_ii_recalls": item.class_ii_recalls,
+            "class_iii_recalls": item.class_iii_recalls,
+            "unclassified_recalls": item.unclassified_recalls,
+            "top_reason_category": item.top_reason_category,
+            "top_reason_node_id": item.top_reason_node_id,
+            "top_reason_count": item.top_reason_count,
+            "evidence": list(item.evidence),
+            "evidence_links": _recall_links(list(item.evidence)),
+        }
+        items.append({k: _json_safe(v) for k, v in row.items() if v is not None})
+    return {
+        "kind": "raw_firm_exposure",
+        "metric": result.metric,
+        "metric_label": (
+            "Severity-weighted exposure score"
+            if result.metric == "severity_weighted" else "Raw recall count"
+        ),
+        "formula_version": result.formula_version,
+        "formula": result.formula,
+        "scope": result.scope,
+        "caveats": list(result.caveats),
+        "items": items,
+    }
+
+
 def _serialize_multi_section(result: MultiSectionResult) -> dict[str, Any]:
     sections = []
     for section in result.sections:
@@ -377,6 +411,8 @@ def serialize_answer(ans: Answer) -> dict[str, Any]:
         }
     elif isinstance(ans.result, MultiSectionResult):
         payload["data"] = _serialize_multi_section(ans.result)
+    elif isinstance(ans.result, RawFirmExposureLeaderboard):
+        payload["data"] = _serialize_raw_firm_exposure(ans.result)
     elif isinstance(ans.result, validation.SemanticCountResult):
         result = ans.result
         accepted = [item for item in result.validations if item.accepted]
@@ -918,6 +954,8 @@ def _log_success(req: AskRequest, ans: Answer, payload: dict[str, Any],
         route = "explanation"
     elif isinstance(ans.result, MultiSectionResult):
         route = "sql"
+    elif isinstance(ans.result, RawFirmExposureLeaderboard):
+        route = "sql"
     elif ans.spec is not None and ans.spec.semantic_query:
         route = "semantic"
     else:
@@ -934,6 +972,13 @@ def _log_success(req: AskRequest, ans: Answer, payload: dict[str, Any],
         decision["sections"] = ans.metadata["sections"]
     if ans.metadata.get("sub_specs"):
         decision["sub_specs"] = ans.metadata["sub_specs"]
+    if isinstance(ans.result, RawFirmExposureLeaderboard):
+        decision.update({
+            "formula_version": ans.result.formula_version,
+            "formula": ans.result.formula,
+            "scope": ans.result.scope,
+            "exposure_metric": ans.result.metric,
+        })
     if route == "semantic" and _engine is not None:
         decision["embedding_provider"] = _engine.embed_config.provider
         decision["embedding_model"] = _engine.embed_config.model

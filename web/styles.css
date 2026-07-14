@@ -580,6 +580,17 @@ button:disabled {
   font-size: 13px;
 }
 
+.exposure-caveats {
+  display: grid;
+  gap: 5px;
+  padding: 10px 12px;
+  border: 1px solid rgb(255 209 102 / 0.26);
+  border-radius: 12px;
+  background: rgb(255 209 102 / 0.07);
+  color: var(--warning);
+  font-size: 13px;
+}
+
 .badge-row {
   display: flex;
   flex-wrap: wrap;
@@ -693,6 +704,10 @@ table {
   font-size: 13px;
 }
 
+.exposure-table {
+  min-width: 920px;
+}
+
 th,
 td {
   padding: 8px 10px;
@@ -708,6 +723,11 @@ th {
 
 tr:last-child td {
   border-bottom: 0;
+}
+
+.firm-name-cell {
+  max-width: 260px;
+  overflow-wrap: anywhere;
 }
 
 .hit {
