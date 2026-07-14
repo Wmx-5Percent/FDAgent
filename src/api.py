@@ -304,6 +304,8 @@ def serialize_answer(ans: Answer) -> dict[str, Any]:
         "spec": spec_payload,
         "summary": ans.summary,
     }
+    if ans.highlights:
+        payload["highlights"] = list(ans.highlights)
     if isinstance(ans.result, agent_control.AgentControlResult):
         payload["data"] = ans.result.as_data()
     elif isinstance(ans.result, TaxonomyExplanation):

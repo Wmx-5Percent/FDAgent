@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import Enum
@@ -87,6 +88,7 @@ class Answer:
     result: Any
     control: agent_control.AgentControlDecision | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    highlights: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -876,15 +878,305 @@ def run_spec(
     return a.sample(filters, n=spec.limit or 5)
 
 
+def _clean_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _short_text(value: Any, *, limit: int = 150) -> str:
+    text = _clean_text(value)
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit - 1].rstrip()}…"
+
+
+def _append_unique(out: list[str], bullet: str | None) -> None:
+    if bullet and bullet not in out:
+        out.append(bullet)
+
+
+def _final_highlights(bullets: list[str], *, limit: int = 6) -> list[str]:
+    return [b for b in bullets if b][:limit]
+
+
+def _mode_from_hits(result: Any, *, fallback: str = "hybrid") -> str:
+    return (
+        getattr(result, "retrieval_mode", None)
+        or (result[0].retrieval_mode if result else fallback)
+    )
+
+
+def _fallback_reason_from_hits(result: Any) -> str | None:
+    return (
+        getattr(result, "embedding_fallback_reason", None)
+        or (result[0].embedding_fallback_reason if result else None)
+    )
+
+
+def _degraded_highlight(mode: str, reason: str | None, *, empty: bool) -> str | None:
+    if mode != "fts_only":
+        return None
+    reason_note = f" ({reason})" if reason else ""
+    if empty:
+        return (
+            "Semantic vector retrieval is unavailable"
+            f"{reason_note}; keyword fallback returned no rows, so this is not evidence "
+            "that FDA has zero matching recalls."
+        )
+    return (
+        "Semantic vector retrieval is unavailable"
+        f"{reason_note}; these highlights summarize only the degraded keyword-fallback rows."
+    )
+
+
+def _counter_sentence(
+    label: str,
+    values: list[Any],
+    *,
+    scope: str,
+    require_repeat: bool = False,
+) -> str | None:
+    cleaned = [_clean_text(v) for v in values if _clean_text(v)]
+    counts = Counter(cleaned)
+    if not counts:
+        return None
+    data_total = sum(counts.values())
+    top = counts.most_common(3)
+    repeated = [(value, count) for value, count in top if count > 1]
+    if require_repeat and not repeated:
+        return None
+    if len(counts) == 1:
+        value, count = top[0]
+        return f"All {count} {scope} with {label} data show {label} = {value}."
+    shown = repeated if repeated else top
+    prefix = "Repeated" if repeated else "Most common"
+    parts = ", ".join(f"{value} ({count}/{data_total})" for value, count in shown)
+    return f"{prefix} {label} values in the {scope}: {parts}."
+
+
+def _date_range_sentence(values: list[Any], *, scope: str) -> str | None:
+    dates = sorted({_clean_text(v)[:10] for v in values if _clean_text(v)})
+    if not dates:
+        return None
+    if len(dates) == 1:
+        return f"All {scope} with date metadata share date {dates[0]}."
+    return f"{scope.capitalize()} with date metadata span {dates[0]} to {dates[-1]}."
+
+
+def _snippet_sentence(hits: list[Any], *, scope: str) -> str | None:
+    snippets = [_short_text(getattr(hit, "content", ""), limit=150) for hit in hits]
+    snippets = [snippet for snippet in snippets if snippet]
+    if not snippets:
+        return None
+    counts = Counter(snippets)
+    repeated = [(snippet, count) for snippet, count in counts.most_common(2) if count > 1]
+    if repeated:
+        parts = "; ".join(f"\"{snippet}\" ({count} rows)" for snippet, count in repeated)
+        return f"Repeated matched text in the {scope}: {parts}."
+    return f"Top matched evidence text starts with: \"{snippets[0]}\"."
+
+
+def _raw_evidence_note(kind: str) -> str:
+    if kind == "retrieval":
+        return "Review the raw retrieval rows below for exact recall numbers, scores, and detail links."
+    if kind == "semantic_count":
+        return "Review the validated evidence rows below for exact recall numbers, snippets, and confidence scores."
+    if kind == "multi_section":
+        return "Review the tables below for the raw counts, sample recall evidence, and drilldown links."
+    return "Review the raw rows below for exact recall numbers and source details."
+
+
+def _retrieval_highlights(spec: QuerySpec, result: Any) -> list[str]:
+    hits = list(result)
+    mode = _mode_from_hits(result)
+    fallback_reason = _fallback_reason_from_hits(result)
+    bullets: list[str] = []
+    _append_unique(bullets, _degraded_highlight(mode, fallback_reason, empty=not hits))
+    if not hits:
+        _append_unique(
+            bullets,
+            f"No raw retrieval rows were returned for '{spec.semantic_query}'.",
+        )
+        _append_unique(bullets, _raw_evidence_note("retrieval"))
+        return _final_highlights(bullets)
+
+    mode_label = "keyword fallback" if mode == "fts_only" else "hybrid vector+keyword retrieval"
+    _append_unique(
+        bullets,
+        (
+            f"For '{spec.semantic_query}', {mode_label} returned {len(hits)} ranked FDA recall "
+            "rows; the patterns below describe only this returned evidence set."
+        ),
+    )
+    _append_unique(
+        bullets,
+        _counter_sentence(
+            "classification",
+            [getattr(hit, "classification", None) for hit in hits],
+            scope="returned retrieval rows",
+        ),
+    )
+    _append_unique(
+        bullets,
+        _counter_sentence(
+            "recalling firm",
+            [getattr(hit, "recalling_firm", None) for hit in hits],
+            scope="returned retrieval rows",
+            require_repeat=True,
+        ),
+    )
+    _append_unique(
+        bullets,
+        _counter_sentence(
+            "matched field",
+            [getattr(hit, "field", None) for hit in hits],
+            scope="returned retrieval rows",
+        ),
+    )
+    _append_unique(bullets, _snippet_sentence(hits, scope="returned retrieval rows"))
+    _append_unique(bullets, _raw_evidence_note("retrieval"))
+    return _final_highlights(bullets)
+
+
+def _semantic_count_highlights(result: validation.SemanticCountResult) -> list[str]:
+    bullets: list[str] = []
+    _append_unique(
+        bullets,
+        _degraded_highlight(
+            result.retrieval_mode,
+            result.embedding_fallback_reason,
+            empty=result.candidate_count == 0,
+        ),
+    )
+    if result.candidate_count == 0:
+        _append_unique(
+            bullets,
+            f"No retrieval candidates were available for '{result.query}', so no validation sample was built.",
+        )
+        _append_unique(bullets, _raw_evidence_note("semantic_count"))
+        return _final_highlights(bullets)
+
+    estimate = (
+        f"Estimated {result.estimated_count:,} matching recalls for '{result.query}' "
+        f"from {result.candidate_count:,} retrieval candidates; "
+        f"{result.verified_count}/{result.validated_count} validated evidence rows were accepted."
+    )
+    _append_unique(bullets, estimate)
+    if result.group_by and result.groups:
+        top_groups = ", ".join(
+            f"{_clean_text(g.value) or '-'} (~{g.count:,})"
+            for g in result.groups[:3]
+        )
+        _append_unique(
+            bullets,
+            f"Top estimated {result.group_by} groups in the returned candidate pool: {top_groups}.",
+        )
+    accepted_hits = [item.hit for item in result.validations if item.accepted]
+    _append_unique(
+        bullets,
+        _counter_sentence(
+            "classification",
+            [getattr(hit, "classification", None) for hit in accepted_hits],
+            scope="accepted validation rows",
+        ),
+    )
+    _append_unique(
+        bullets,
+        _counter_sentence(
+            "recalling firm",
+            [getattr(hit, "recalling_firm", None) for hit in accepted_hits],
+            scope="accepted validation rows",
+            require_repeat=True,
+        ),
+    )
+    _append_unique(bullets, _snippet_sentence(accepted_hits, scope="accepted validation rows"))
+    _append_unique(bullets, _raw_evidence_note("semantic_count"))
+    return _final_highlights(bullets)
+
+
+def _multi_section_highlights(result: MultiSectionResult) -> list[str]:
+    bullets: list[str] = []
+    titles = ", ".join(section.title for section in result.sections[:3])
+    suffix = "…" if len(result.sections) > 3 else ""
+    _append_unique(
+        bullets,
+        f"Prepared {len(result.sections)} question-focused result section(s): {titles}{suffix}.",
+    )
+    for section in result.sections[:4]:
+        rows = list(section.result)
+        if not rows:
+            _append_unique(bullets, f"{section.title}: no rows were returned.")
+            continue
+        top = rows[0]
+        _append_unique(
+            bullets,
+            (
+                f"{section.title}: top returned {section.dimension} is "
+                f"{_short_text(top.value, limit=120) or '-'} ({int(top.count):,} recalls)."
+            ),
+        )
+    _append_unique(bullets, _raw_evidence_note("multi_section"))
+    return _final_highlights(bullets)
+
+
+def _sample_row_highlights(spec: QuerySpec, result: Any) -> list[str]:
+    rows = [row for row in result if isinstance(row, dict)]
+    if not rows:
+        return []
+    bullets: list[str] = [
+        f"Returned {len(rows)} example row(s) for the requested filters; highlights describe only these sample rows.",
+    ]
+    _append_unique(
+        bullets,
+        _counter_sentence(
+            "classification",
+            [row.get("classification") for row in rows],
+            scope="sample rows",
+        ),
+    )
+    _append_unique(
+        bullets,
+        _counter_sentence(
+            "recalling firm",
+            [row.get("recalling_firm") for row in rows],
+            scope="sample rows",
+            require_repeat=True,
+        ),
+    )
+    _append_unique(
+        bullets,
+        _date_range_sentence(
+            [row.get("recall_initiation_date") or row.get("report_date") for row in rows],
+            scope="sample rows",
+        ),
+    )
+    _append_unique(bullets, _raw_evidence_note("rows"))
+    return _final_highlights(bullets)
+
+
+def build_highlights(question: str, spec: QuerySpec | None, result: Any) -> list[str]:
+    """Build concise, evidence-grounded highlights before raw retrieval/result rows.
+
+    This intentionally summarizes only data already returned by the query/retrieval layer.
+    It does not ask the model to infer new facts, so degraded or empty retrieval states stay
+    conservative and raw rows remain the auditable evidence below the highlights.
+    """
+    if spec is None:
+        return []
+    if isinstance(result, MultiSectionResult):
+        return _multi_section_highlights(result)
+    if isinstance(result, validation.SemanticCountResult):
+        return _semantic_count_highlights(result)
+    if spec.semantic_query:
+        return _retrieval_highlights(spec, result)
+    if spec.intent is Intent.sample and isinstance(result, list):
+        return _sample_row_highlights(spec, result)
+    return []
+
+
 def summarize(spec: QuerySpec, result: Any) -> str:
     if isinstance(result, MultiSectionResult):
-        lines = ["Produced separate tables for the requested firm-scoped Top-N answer."]
-        for section in result.sections:
-            lines.append(f"{section.title}:")
-            for g in section.result[:10]:
-                evidence = f"   e.g. {', '.join(g.evidence)}" if g.evidence else ""
-                lines.append(f"  {g.value}: {g.count:,}{evidence}")
-        return "\n".join(lines)
+        titles = ", ".join(section.title for section in result.sections)
+        return f"Produced separate tables for the requested answer: {titles}."
     if isinstance(result, TaxonomyExplanation):
         return result.answer
     if isinstance(result, validation.SemanticCountResult):
@@ -909,7 +1201,7 @@ def summarize(spec: QuerySpec, result: Any) -> str:
                     f"(verified {result.verified_count}/{result.validated_count} validated, "
                     f"avg confidence {result.confidence['accepted_avg']:.2f}), grouped by {result.group_by}:")
             body = "\n".join(
-                f"  {g.value}: ~{g.count:,}   e.g. {', '.join(g.evidence)}"
+                f"  {g.value}: ~{g.count:,}"
                 for g in result.groups[:10]
             )
             return f"{head}\n{body}"
@@ -927,15 +1219,13 @@ def summarize(spec: QuerySpec, result: Any) -> str:
             if getattr(result, "retrieval_mode", None) == "fts_only"
             or (result and result[0].retrieval_mode == "fts_only") else ""
         )
-        head = f"Top {len(result)} recalls matching '{spec.semantic_query}'{mode_note}:"
-        body = "\n".join(
-            f"  [{h.recall_number}] sim={h.similarity:.2f}  {h.recalling_firm or '-'}: "
-            f"{(h.content or '')[:70]}" for h in result)
-        return f"{head}\n{body}"
+        return (
+            f"Found {len(result)} ranked FDA recall match(es) for '{spec.semantic_query}'"
+            f"{mode_note}. See Highlights first, then raw evidence rows below."
+        )
     if spec.intent is Intent.count_by_taxonomy:
         head = f"Recalls by recall-reason category (top {min(len(result), spec.limit or 20)}):"
-        body = "\n".join(f"  {g.value}: {g.count:,}   e.g. {', '.join(g.evidence)}"
-                         for g in result[:10])
+        body = "\n".join(f"  {g.value}: {g.count:,}" for g in result[:10])
         return f"{head}\n{body}"
     if spec.intent is Intent.count_total:
         if spec.taxonomy_node_id:
@@ -944,15 +1234,12 @@ def summarize(spec: QuerySpec, result: Any) -> str:
     if spec.intent is Intent.count_by:
         cat = f" (category '{spec.taxonomy_node_id}')" if spec.taxonomy_node_id else ""
         head = f"Recalls by {spec.group_by}{cat} (top {min(len(result), spec.limit or 20)}):"
-        body = "\n".join(f"  {g.value}: {g.count:,}   e.g. {', '.join(g.evidence)}"
-                         for g in result[:10])
+        body = "\n".join(f"  {g.value}: {g.count:,}" for g in result[:10])
         return f"{head}\n{body}"
     if spec.intent is Intent.trend:
         body = "\n".join(f"  {p}: {n:,}" for p, n in result)
         return f"Recalls over time (by {spec.grain or 'year'}):\n{body}"
-    body = "\n".join(f"  [{r.get('recall_number')}] {r.get('recalling_firm')}: "
-                     f"{(r.get('reason_for_recall') or '')[:60]}" for r in result)
-    return f"{len(result)} example rows:\n{body}"
+    return f"Returned {len(result)} example rows. See Highlights first, then raw rows below."
 
 
 class NLEngine:
@@ -1111,7 +1398,16 @@ class NLEngine:
                 summary = summarize(spec, result)
         else:
             summary = summarize(spec, result)
-        return Answer(question, spec, summary, result, control=control, metadata=metadata)
+        highlights = build_highlights(question, spec, result)
+        return Answer(
+            question,
+            spec,
+            summary,
+            result,
+            control=control,
+            metadata=metadata,
+            highlights=highlights,
+        )
 
 
 def ask(question: str, *, dsn: str = DEFAULT_DSN, model: str | None = None) -> Answer:

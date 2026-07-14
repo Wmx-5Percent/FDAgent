@@ -565,13 +565,14 @@
   function renderAskResult(result) {
     const card = document.createElement("div");
     card.className = "result-card";
+    const data = result.data || {};
 
     const summary = document.createElement("div");
     summary.className = "summary";
     summary.textContent = result.summary || "Answered.";
     card.appendChild(summary);
+    renderHighlights(result.highlights || data.highlights, card);
 
-    const data = result.data || {};
     const kind = data.kind;
     if (kind === "scalar") {
       renderScalar(data, card);
@@ -603,6 +604,32 @@
     spec.textContent = `intent=${result.intent || "-"} | spec=${JSON.stringify(result.spec || {})}`;
     card.appendChild(spec);
     return card;
+  }
+
+  function renderHighlights(highlights, card) {
+    const items = Array.isArray(highlights)
+      ? highlights.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 6)
+      : [];
+    if (!items.length) return;
+
+    const block = document.createElement("section");
+    block.className = "highlights";
+    block.setAttribute("aria-label", "Highlights");
+
+    const title = document.createElement("div");
+    title.className = "highlights-title";
+    title.textContent = "Highlights";
+
+    const list = document.createElement("ul");
+    list.className = "highlights-list";
+    for (const item of items) {
+      const bullet = document.createElement("li");
+      bullet.textContent = item;
+      list.appendChild(bullet);
+    }
+
+    block.append(title, list);
+    card.appendChild(block);
   }
 
   function normalizedRecallNumber(value) {
