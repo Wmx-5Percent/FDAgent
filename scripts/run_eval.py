@@ -112,6 +112,37 @@ def _assert_semantic_count(assertions: Mapping[str, Any], data: Mapping[str, Any
                  "expected non-empty data.evidence list")
 
 
+def _assert_highlights(assertions: Mapping[str, Any], answer: Mapping[str, Any]) -> None:
+    if not (
+        assertions.get("requires_highlights")
+        or "min_highlights" in assertions
+        or "max_highlights" in assertions
+        or assertions.get("highlights_contains_any")
+        or assertions.get("highlights_not_contains_any")
+    ):
+        return
+    highlights = answer.get("highlights")
+    _require(isinstance(highlights, list), "expected answer.highlights to be a list")
+    cleaned = [str(item).strip() for item in highlights if str(item).strip()]
+    if assertions.get("requires_highlights"):
+        _require(bool(cleaned), "expected non-empty answer.highlights")
+    if "min_highlights" in assertions:
+        _require(len(cleaned) >= int(assertions["min_highlights"]),
+                 f"expected at least {assertions['min_highlights']} highlights, got {len(cleaned)}")
+    if "max_highlights" in assertions:
+        _require(len(cleaned) <= int(assertions["max_highlights"]),
+                 f"expected at most {assertions['max_highlights']} highlights, got {len(cleaned)}")
+    haystack = "\n".join(cleaned).casefold()
+    needles = [str(v).casefold() for v in assertions.get("highlights_contains_any", [])]
+    if needles:
+        _require(any(needle in haystack for needle in needles),
+                 f"highlights did not contain any of {needles}: {cleaned!r}")
+    banned = [str(v).casefold() for v in assertions.get("highlights_not_contains_any", [])]
+    if banned:
+        _require(not any(needle in haystack for needle in banned),
+                 f"highlights unexpectedly contained one of {banned}: {cleaned!r}")
+
+
 def _assert_item_matches(actual: Mapping[str, Any], expected: Mapping[str, Any],
                          context: str) -> None:
     for key, expected_value in expected.items():
@@ -248,6 +279,7 @@ def _assert_ask_case(case: Mapping[str, Any], answer: Mapping[str, Any]) -> Eval
     _assert_filters(assertions, spec)
     if data_kind in {"semantic_count", "semantic_distribution"}:
         _assert_semantic_count(assertions, data)
+    _assert_highlights(assertions, answer)
     _assert_sections(assertions, data)
     if "taxonomy_node_id_equals" in assertions:
         expected_node = assertions["taxonomy_node_id_equals"]

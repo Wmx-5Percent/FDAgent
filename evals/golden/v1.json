@@ -60,7 +60,11 @@
         "intents": ["sample"],
         "data_kinds": ["retrieval"],
         "no_ilike": true,
-        "semantic_query_contains_any": ["superpotent", "strong", "potent", "assay"]
+        "semantic_query_contains_any": ["superpotent", "strong", "potent", "assay"],
+        "requires_highlights": true,
+        "min_highlights": 3,
+        "max_highlights": 6,
+        "highlights_contains_any": ["returned", "retrieval", "evidence"]
       }
     },
     {
@@ -188,7 +192,11 @@
         "intents": ["sample"],
         "data_kinds": ["retrieval"],
         "no_ilike": true,
-        "semantic_query_contains_any": ["sterility", "sterile"]
+        "semantic_query_contains_any": ["sterility", "sterile"],
+        "requires_highlights": true,
+        "min_highlights": 3,
+        "max_highlights": 6,
+        "highlights_contains_any": ["returned", "retrieval", "evidence"]
       }
     },
     {
@@ -200,7 +208,11 @@
         "intents": ["sample"],
         "data_kinds": ["retrieval"],
         "no_ilike": true,
-        "semantic_query_contains_any": ["strong", "superpotent", "potent"]
+        "semantic_query_contains_any": ["strong", "superpotent", "potent"],
+        "requires_highlights": true,
+        "min_highlights": 3,
+        "max_highlights": 6,
+        "highlights_contains_any": ["returned", "retrieval", "evidence"]
       }
     },
     {
@@ -239,6 +251,10 @@
         "data_kinds": ["multi_section"],
         "no_ilike": true,
         "section_count": 2,
+        "requires_highlights": true,
+        "min_highlights": 3,
+        "max_highlights": 6,
+        "highlights_contains_any": ["top returned", "tables", "evidence"],
         "sections": [
           {
             "id": "top_recall_reason_categories",
