@@ -10,6 +10,7 @@ Run from repo root:
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import sys
 from typing import Any
@@ -40,7 +41,13 @@ class _FakeHybridSearchLogger:
         return len(self.entries)
 
 
-def _assert_bad_filter(name: str, filters: dict[str, Any], expected_detail: str) -> None:
+def _assert_bad_filter(
+    name: str,
+    filters: dict[str, Any],
+    expected_detail: str,
+    *,
+    forbidden_log_fragment: str | None = None,
+) -> None:
     old_engine = api._engine
     old_logger = api._hybrid_search_logger
     fake_logger = _FakeHybridSearchLogger()
@@ -73,6 +80,20 @@ def _assert_bad_filter(name: str, filters: dict[str, Any], expected_detail: str)
             raise AssertionError(
                 f"{name}: expected ValueError log, got {fake_logger.entries[-1].error_type!r}"
             )
+        request_payload = fake_logger.entries[-1].request
+        if request_payload.get("filters", {}).get("omitted_raw") is not True:
+            raise AssertionError(f"{name}: expected raw filters to be omitted from log request")
+        if fake_logger.entries[-1].filters != {"items": []}:
+            raise AssertionError(f"{name}: expected normalized log filters to be empty")
+        if forbidden_log_fragment:
+            serialized_log = json.dumps({
+                "request": request_payload,
+                "filters": fake_logger.entries[-1].filters,
+            }, ensure_ascii=False)
+            if forbidden_log_fragment in serialized_log:
+                raise AssertionError(
+                    f"{name}: oversized raw filter fragment leaked into log payload"
+                )
     finally:
         api._engine = old_engine
         api._hybrid_search_logger = old_logger
@@ -88,6 +109,24 @@ def main() -> None:
         "invalid_date_ilike",
         {"report_date": {"ilike": "2024-01-01"}},
         "not allowed for date column 'report_date'",
+    )
+    _assert_bad_filter(
+        "too_long_filter_string",
+        {"classification": "x" * (api.HYBRID_FILTER_STRING_MAX_CHARS + 1)},
+        f"exceeds {api.HYBRID_FILTER_STRING_MAX_CHARS} characters",
+        forbidden_log_fragment="x" * (api.HYBRID_FILTER_STRING_MAX_CHARS + 1),
+    )
+    _assert_bad_filter(
+        "too_many_in_items",
+        {"classification": [f"Class {i}" for i in range(api.HYBRID_FILTER_IN_MAX_ITEMS + 1)]},
+        f"at most {api.HYBRID_FILTER_IN_MAX_ITEMS} items",
+    )
+    _assert_bad_filter(
+        "too_large_filter_payload",
+        {"classification": ["x" * api.HYBRID_FILTER_STRING_MAX_CHARS
+                            for _ in range(api.HYBRID_FILTER_IN_MAX_ITEMS)]},
+        f"exceeds {api.HYBRID_FILTER_MAX_SERIALIZED_BYTES} bytes",
+        forbidden_log_fragment="x" * api.HYBRID_FILTER_STRING_MAX_CHARS,
     )
     print("hybrid filter validation smoke checks passed")
 

@@ -155,6 +155,9 @@ HYBRID_FILTER_ALLOWED_OPS: dict[Kind, set[str]] = {
     # Date fields support chronological comparisons; ILIKE is intentionally rejected.
     Kind.DATE: {"eq", "ne", "in", "gte", "lte", "between"},
 }
+HYBRID_FILTER_STRING_MAX_CHARS = 200
+HYBRID_FILTER_IN_MAX_ITEMS = 25
+HYBRID_FILTER_MAX_SERIALIZED_BYTES = 4096
 
 
 @asynccontextmanager
@@ -533,6 +536,10 @@ def _coerce_filter_atom(column: str, value: Any) -> Any:
         if not isinstance(value, str):
             raise ValueError(f"date filter {column!r} must be a string")
         text = value.strip()
+        if len(text) > HYBRID_FILTER_STRING_MAX_CHARS:
+            raise ValueError(
+                f"filter {column!r} exceeds {HYBRID_FILTER_STRING_MAX_CHARS} characters"
+            )
         for fmt in ("%Y-%m-%d", "%Y%m%d", "%Y/%m/%d"):
             try:
                 return datetime.strptime(text, fmt).date()
@@ -544,6 +551,10 @@ def _coerce_filter_atom(column: str, value: Any) -> Any:
     text = value.strip()
     if not text:
         raise ValueError(f"filter {column!r} cannot be empty")
+    if len(text) > HYBRID_FILTER_STRING_MAX_CHARS:
+        raise ValueError(
+            f"filter {column!r} exceeds {HYBRID_FILTER_STRING_MAX_CHARS} characters"
+        )
     return text
 
 
@@ -564,12 +575,30 @@ def _clean_aliases(values: list[str]) -> list[str]:
 def _filters_for_request(raw_filters: dict[str, Any]) -> list[Filter]:
     if not isinstance(raw_filters, dict):
         raise ValueError("filters must be an object")
+    _validate_filter_payload_size(raw_filters)
     filters: list[Filter] = []
     for column, raw in raw_filters.items():
         if column not in CATALOG:
             raise ValueError(f"unknown filter column {column!r}")
         filters.extend(_filters_for_column(column, raw))
     return filters
+
+
+def _validate_filter_payload_size(raw_filters: dict[str, Any]) -> None:
+    try:
+        serialized = json.dumps(
+            raw_filters,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("filters must be JSON-serializable") from exc
+    size = len(serialized.encode("utf-8"))
+    if size > HYBRID_FILTER_MAX_SERIALIZED_BYTES:
+        raise ValueError(
+            f"filters payload exceeds {HYBRID_FILTER_MAX_SERIALIZED_BYTES} bytes"
+        )
 
 
 def _filters_for_column(column: str, raw: Any) -> list[Filter]:
@@ -606,6 +635,10 @@ def _make_filter(column: str, op: str, raw_value: Any) -> Filter:
     if op == "in":
         if not isinstance(raw_value, list) or not raw_value:
             raise ValueError(f"filter {column!r}.in needs a non-empty array")
+        if len(raw_value) > HYBRID_FILTER_IN_MAX_ITEMS:
+            raise ValueError(
+                f"filter {column!r}.in accepts at most {HYBRID_FILTER_IN_MAX_ITEMS} items"
+            )
         return Filter(column, op, [_coerce_filter_atom(column, item) for item in raw_value])
     if op == "between":
         if not isinstance(raw_value, list) or len(raw_value) != 2:
@@ -648,10 +681,22 @@ def _round_float(value: Any, digits: int = 4) -> float | None:
         return None
 
 
-def _hybrid_request_payload(req: HybridSearchRequest) -> dict[str, Any]:
-    payload = req.model_dump(mode="json")
-    payload["aliases"] = _clean_aliases(req.aliases)
-    return payload
+def _hybrid_request_payload(
+    req: HybridSearchRequest,
+    *,
+    normalized_filters: list[dict[str, Any]],
+    filters_valid: bool,
+) -> dict[str, Any]:
+    filters_payload: dict[str, Any] = {"items": normalized_filters}
+    if not filters_valid:
+        filters_payload.update({"valid": False, "omitted_raw": True})
+    return {
+        "query": req.query,
+        "field": req.field,
+        "k": req.k,
+        "aliases": _clean_aliases(req.aliases),
+        "filters": filters_payload,
+    }
 
 
 def _load_hybrid_hit_details(conn: Any, recall_numbers: list[str]) -> dict[str, dict[str, Any]]:
@@ -758,11 +803,13 @@ def _log_hybrid_search(
         if hits is not None else response_meta.get("fallback_reason")
     )
     top_recall_numbers = list(response_meta.get("top_recall_numbers") or [])
+    normalized_filters = _filter_debug_payload(filters)
+    filters_valid = not (error_type == "ValueError" and bool(req.filters) and not filters)
     return _require_hybrid_search_logger().write(HybridSearchLogEntry(
         query=req.query,
         field=req.field,
         k=req.k,
-        filters={"items": _filter_debug_payload(filters)},
+        filters={"items": normalized_filters},
         embedding_provider=engine.embed_config.provider,
         embedding_model=engine.embed_config.model,
         retrieval_mode=str(retrieval_mode),
@@ -772,7 +819,11 @@ def _log_hybrid_search(
         fused_hit_count=int(getattr(hits, "fused_hit_count", 0)) if hits is not None else 0,
         top_recall_numbers=top_recall_numbers,
         timings_ms=timings_ms,
-        request=_hybrid_request_payload(req),
+        request=_hybrid_request_payload(
+            req,
+            normalized_filters=normalized_filters,
+            filters_valid=filters_valid,
+        ),
         response_metadata=response_meta,
         error_type=error_type,
         error_message=error_message,
