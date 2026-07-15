@@ -17,7 +17,7 @@
   },
   "suites": {
     "core": {
-      "description": "Stable PR-blocking /ask and deterministic-helper contract cases.",
+      "description": "Stable PR-blocking /ask, deterministic-helper, and provider-configuration contract cases.",
       "blocking": true,
       "default_command": ".venv/bin/python scripts/run_eval.py --golden evals/golden/v1.json --suite core"
     },
@@ -1261,6 +1261,15 @@
     {
       "id": "provider-openrouter-query-embedding-config",
       "kind": "embedding_provider_config",
+      "suite": [
+        "core",
+        "rag",
+        "regression"
+      ],
+      "risk": "embedding_provider_config",
+      "requires_llm": false,
+      "requires_embedding": false,
+      "requires_db": false,
       "env": {
         "EMBED_PROVIDER": "openrouter",
         "EMBED_MODEL": "openai/text-embedding-3-small",

@@ -30,7 +30,7 @@ Runner 会在执行前校验这些字段，防止新 case 漏掉 suite 或前置
 
 ## Suite 标签
 
-- `core`：稳定、可作为 PR 阻塞的核心 `/ask` 与 deterministic helper 回归。
+- `core`：稳定、可作为 PR 阻塞的核心 `/ask`、deterministic helper 与 provider 配置回归。
 - `rag`：检索、embedding、recall@k 或语义路由质量；通常不应混入快速 PR gate。
 - `answer_quality`：最终答案诚实性、证据边界、措辞约束；由后续 answer-quality 工作扩展。
 - `firm_profile`：未来 Recall Profile / 公司画像行为；不得提前实现业务路由。
