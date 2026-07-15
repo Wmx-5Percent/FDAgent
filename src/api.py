@@ -802,6 +802,8 @@ def _hybrid_response_metadata(
     *,
     aliases: list[str],
     rows: list[dict[str, Any]],
+    embed_config: llm.EmbeddingConfig,
+    embedding_available: bool,
 ) -> dict[str, Any]:
     return {
         "query": req.query,
@@ -811,6 +813,9 @@ def _hybrid_response_metadata(
         "fts_queries": list(getattr(hits, "fts_queries", [])),
         "retrieval_mode": getattr(hits, "retrieval_mode", "hybrid"),
         "fallback_reason": getattr(hits, "embedding_fallback_reason", None),
+        "embedding_provider": embed_config.provider,
+        "embedding_model": embed_config.model,
+        "embedding_available": embedding_available,
         "vector_hit_count": int(getattr(hits, "vector_hit_count", 0)),
         "fts_hit_count": int(getattr(hits, "fts_hit_count", 0)),
         "fused_hit_count": int(getattr(hits, "fused_hit_count", len(hits))),
@@ -960,6 +965,12 @@ def _log_success(req: AskRequest, ans: Answer, payload: dict[str, Any],
         route = "semantic"
     else:
         route = "sql"
+    if route == "semantic" and _engine is not None:
+        metadata.update({
+            "embedding_provider": _engine.embed_config.provider,
+            "embedding_model": _engine.embed_config.model,
+            "embedding_available": _engine.embedding_error is None,
+        })
     decision: dict[str, Any] = {
         "route": route,
         "intent": answer_intent or route,
@@ -1252,7 +1263,14 @@ def hybrid_search_endpoint(req: HybridSearchRequest) -> dict[str, Any]:
             _serialize_hybrid_hit(hit, rank, details_by_recall.get(hit.recall_number, {}))
             for rank, hit in enumerate(hits, 1)
         ]
-        response_meta = _hybrid_response_metadata(req, hits, aliases=aliases, rows=rows)
+        response_meta = _hybrid_response_metadata(
+            req,
+            hits,
+            aliases=aliases,
+            rows=rows,
+            embed_config=engine.embed_config,
+            embedding_available=engine.embedding_error is None,
+        )
         timings_ms["api_total"] = _elapsed_ms(start)
         log_started = perf_counter()
         log_id = _log_hybrid_search(
@@ -1311,7 +1329,7 @@ def hybrid_search_endpoint(req: HybridSearchRequest) -> dict[str, Any]:
         response_meta = {
             **response_meta,
             "retrieval_mode": "error",
-            "fallback_reason": type(exc).__name__,
+            "fallback_reason": llm.provider_error_summary(exc),
             "top_recall_numbers": [],
         }
         _log_hybrid_search(
