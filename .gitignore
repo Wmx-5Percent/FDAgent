@@ -14,7 +14,9 @@ data/real/
 # Python
 __pycache__/
 *.pyc
-.venv/
+# Do not track .venv. No trailing slash means Git ignores both the real
+# directory and worktree .venv symlinks.
+.venv
 venv/
 /tmp/
 

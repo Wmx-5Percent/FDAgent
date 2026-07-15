@@ -113,9 +113,17 @@ single subagent's local next step; per-agent next steps belong in that PR's body
 - **Temporary handoff notes**: do not commit root-level `NOTES-*.md` or `SESSION-*.md`
   scratch files. Migrate durable project state into `PROGRESS.md`, stable design into
   `PLAN.md` / `docs/adr/` / `CONTEXT.md`, and personal learning into `learning-notes/`.
-- **Generated / rebuildable** (git-ignored): `.venv/`, `data/raw/`, `data/processed/`, vector-store files.
-- **Worktree handoff gotcha:** `.gitignore`'s `.venv/` pattern ignores a real directory, but
-  **does not ignore a `.venv` symlink**. If `git status` shows `?? .venv` and `ls -ld .venv`
-  confirms it is a symlink (e.g. to another checkout's venv), remove only the link with
-  `rm .venv` before handoff; do not remove the target venv.
+- **Generated / rebuildable** (git-ignored): `.venv` (real directory or worktree symlink),
+  `data/raw/`, `data/processed/`, vector-store files.
+- **Worktree venv sharing:** run `bash scripts/hooks/install.sh` once after creating the main
+  checkout `.venv`. The shared `post-checkout` hook links new worktrees' `.venv` to the
+  primary checkout's `.venv`; for existing worktrees run `python3 scripts/ensure_worktree_venv.py`.
+  Override the shared target with `FDAAGENT_SHARED_VENV` or `git config fdaagent.sharedVenv`.
+- **Coordinator worktree rule:** a main/coordinator agent that opens feature directories must
+  initialize hooks once in the main repo (`bash scripts/hooks/install.sh`), then create branch
+  directories with `git worktree add ../fdaAgent-issue-xx -b feature/issue-xx main`, **not**
+  `git clone`. Independent clones are outside the automatic worktree hook path; if a clone is
+  unavoidable, explicitly point it at the shared environment with
+  `FDAAGENT_SHARED_VENV=/Users/waywei/Desktop/developer/fdaAgent/.venv` or
+  `git config fdaagent.sharedVenv /Users/waywei/Desktop/developer/fdaAgent/.venv`.
 - **Secrets** live in `.env` (git-ignored); the template is [.env.example](.env.example).

@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Post-checkout hook: link new worktrees to the primary checkout's reusable Python virtualenv.
+set -euo pipefail
+
+root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "${root:-}" ]; then
+  exit 0
+fi
+
+source_path="${BASH_SOURCE[0]}"
+while [ -L "$source_path" ]; do
+  source_dir="$(cd -P "$(dirname "$source_path")" && pwd)"
+  source_target="$(readlink "$source_path")"
+  if [[ "$source_target" == /* ]]; then
+    source_path="$source_target"
+  else
+    source_path="$source_dir/$source_target"
+  fi
+done
+hook_dir="$(cd -P "$(dirname "$source_path")" && pwd)"
+helper="$hook_dir/../ensure_worktree_venv.py"
+
+if [ ! -f "$helper" ]; then
+  exit 0
+fi
+
+py="$(command -v python3 || command -v python || true)"
+if [ -z "${py:-}" ]; then
+  echo "post-checkout: no python interpreter found; skipping .venv link." >&2
+  exit 0
+fi
+
+if ! "$py" "$helper" --repo "$root" --quiet; then
+  echo "post-checkout: could not ensure shared .venv; run: python3 scripts/ensure_worktree_venv.py" >&2
+fi

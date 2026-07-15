@@ -138,6 +138,7 @@ columns (`classification`, `status`, `reason_for_recall`, `recalling_firm`, `sta
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+bash scripts/hooks/install.sh      # pre-commit check + auto-link .venv in new git worktrees
 cp .env.example .env            # add provider keys and DATABASE_URL
 # To route query embeddings through OpenRouter, keep:
 # EMBED_PROVIDER=openrouter and EMBED_MODEL=openai/text-embedding-3-small
@@ -156,6 +157,19 @@ psql -d fda -f sql/010_hybrid_search_log.sql
 .venv/bin/python -m uvicorn src.api:app --reload
 # retrieval lab/debug surface: http://127.0.0.1:8000/hybrid-search
 ```
+
+### Reuse `.venv` across git worktrees
+
+After the main checkout has `.venv` and `bash scripts/hooks/install.sh` has been run once,
+new `git worktree add ...` directories automatically get a local `.venv` symlink to the
+main checkout's virtualenv. For an existing worktree, run:
+
+```bash
+python3 scripts/ensure_worktree_venv.py
+```
+
+Set `FDAAGENT_SHARED_VENV=/path/to/.venv` or `git config fdaagent.sharedVenv /path/to/.venv`
+if you want to share a different virtualenv.
 
 ---
 
