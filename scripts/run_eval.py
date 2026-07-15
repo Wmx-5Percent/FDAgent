@@ -22,7 +22,6 @@ sys.path.insert(0, str(SRC_DIR))
 
 import psycopg  # noqa: E402
 
-import agent_control  # noqa: E402
 import llm  # noqa: E402
 import nl_query as nl_query_module  # noqa: E402
 import retrieval  # noqa: E402
@@ -934,24 +933,54 @@ def _ask_with_eval_overrides(
         engine.embed_client = None
         engine.embedding_error = _simulated_embedding_error(str(simulated_error), engine.embed_config)
 
-    old_classify = agent_control.classify_llm
+    old_structured_completion = llm.structured_completion
     old_generate_spec = nl_query_module.generate_spec
 
-    def fake_classify_llm(client: Any, config: Any, question_text: str) -> agent_control.AgentControlDecision:
-        return agent_control.AgentControlDecision(route="in_domain", reason="eval_forced_in_domain")
+    def fake_structured_completion(
+        client: Any,
+        config: Any,
+        messages: Any,
+        response_model: type[Any],
+        **kwargs: Any,
+    ) -> Any:
+        if response_model.__name__ == "LLMIntentDecision":
+            payload = {
+                "route": "in_domain",
+                "reason": "eval_forced_in_domain",
+                "message": "",
+                "suggestions": [],
+            }
+            return response_model.model_validate(payload)
+        return old_structured_completion(client, config, messages, response_model, **kwargs)
 
     def fake_generate_spec(*_: Any, **__: Any) -> QuerySpec:
         _require(spec is not None, "eval generate_spec override requires a QuerySpec")
         return spec
 
     try:
-        agent_control.classify_llm = fake_classify_llm
+        llm.structured_completion = fake_structured_completion
         if spec is not None:
             nl_query_module.generate_spec = fake_generate_spec
         return serialize_answer(engine.ask(question))
     finally:
-        agent_control.classify_llm = old_classify
+        llm.structured_completion = old_structured_completion
         nl_query_module.generate_spec = old_generate_spec
+
+
+def _assert_mocked_ask_case(case: Mapping[str, Any], *, args: argparse.Namespace) -> EvalResult:
+    control = case.get("mock_control")
+    _require(isinstance(control, Mapping), "mocked ask cases must include mock_control")
+    _require(str(control.get("route") or "") in {"chitchat_meta", "out_of_domain", "ambiguous"},
+             f"mock_control route must be terminal, got {control.get('route')!r}")
+    answer = _ask_with_eval_overrides(case, args=args, control=control)
+    eval_result = _assert_ask_case(case, answer)
+    return EvalResult(
+        eval_result.case_id,
+        eval_result.passed,
+        f"ask mock_control {eval_result.detail}",
+        skipped=eval_result.skipped,
+        metadata=eval_result.metadata,
+    )
 
 
 def _assert_ask_spec_case(case: Mapping[str, Any], *, args: argparse.Namespace) -> EvalResult:
