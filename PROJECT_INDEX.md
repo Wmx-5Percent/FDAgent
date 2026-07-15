@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-07-15T04:35Z · 81 files · 2 missing description
+> Last generated: 2026-07-15T05:16Z · 82 files · 2 missing description
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -48,6 +48,7 @@
 - [`docs/adr/0005-autonomy-boundary-reversible-vs-irreversible.md`](docs/adr/0005-autonomy-boundary-reversible-vs-irreversible.md) — 受托/自主 Agent 只可自主执行可逆动作；不可逆动作须人工确认 — Status: accepted
 
 ## evals/
+- [`evals/README.md`](evals/README.md) — FDAgent Evaluation Contract — 定义本仓库 eval case 的稳定元数据、suite 标签和本地运行命令。
 - [`evals/firm_resolution/golden_v1.json`](evals/firm_resolution/golden_v1.json) — {"description": "FDAgent firm-resolution threshold calibration pairs. Labels are for raw-name aliasing only: same means 
 - [`evals/golden/v1.json`](evals/golden/v1.json) — {"description": "FDAgent v1 golden eval set for /ask routing and retrieval recall@k.",
 
@@ -63,7 +64,7 @@
 - [`scripts/hooks/install.sh`](scripts/hooks/install.sh) — Install the version-controlled git hooks into the shared git hooks directory.
 - [`scripts/hooks/post-checkout`](scripts/hooks/post-checkout) — Post-checkout hook: link new worktrees to the primary checkout's reusable Python virtualenv.
 - [`scripts/hooks/pre-commit`](scripts/hooks/pre-commit) — Pre-commit hook: block the commit if PROJECT_INDEX.md is stale.
-- [`scripts/run_eval.py`](scripts/run_eval.py) — Run local golden evals for /ask routing and retrieval recall@k.
+- [`scripts/run_eval.py`](scripts/run_eval.py) — Run local contract-tagged eval suites for /ask and retrieval behavior.
   - symbols: `EvalResult`, `EvalFailure`, `parse_args`, `main`
 
 ## sql/

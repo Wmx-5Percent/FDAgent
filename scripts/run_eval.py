@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run local golden evals for /ask routing and retrieval recall@k."""
+"""Run local contract-tagged eval suites for /ask and retrieval behavior."""
 from __future__ import annotations
 
 import argparse
@@ -60,7 +60,86 @@ def _load_golden(path: Path) -> dict[str, Any]:
         golden = json.load(fh)
     _require("version" in golden and isinstance(golden.get("cases"), list),
              "golden set must include version and cases")
+    suites = golden.get("suites") or {}
+    _require(isinstance(suites, Mapping), "golden suites must be an object when provided")
+    known_suites = {str(name) for name in suites}
+    for case in golden["cases"]:
+        _validate_case_metadata(case, known_suites=known_suites)
     return golden
+
+
+def _case_suites(case: Mapping[str, Any]) -> set[str]:
+    raw = case.get("suite")
+    case_id = str(case.get("id", "<missing-id>"))
+    if isinstance(raw, str):
+        values = [raw]
+    elif isinstance(raw, list):
+        values = raw
+    else:
+        raise EvalFailure(f"{case_id}: suite must be a string or list of strings")
+    if not all(isinstance(value, str) for value in values):
+        raise EvalFailure(f"{case_id}: suite entries must be strings")
+    suites = {value.strip() for value in values if value.strip()}
+    _require(bool(suites), f"{case_id}: suite must not be empty")
+    return suites
+
+
+def _validate_case_metadata(case: Mapping[str, Any], *, known_suites: set[str]) -> None:
+    case_id = case.get("id")
+    _require(isinstance(case_id, str) and bool(case_id.strip()),
+             "every eval case must include a non-empty string id")
+    _require(isinstance(case.get("kind"), str) and bool(str(case.get("kind")).strip()),
+             f"{case_id}: kind must be a non-empty string")
+    suites = _case_suites(case)
+    if known_suites:
+        unknown = sorted(suites - known_suites)
+        _require(not unknown, f"{case_id}: unknown suite tag(s): {', '.join(unknown)}")
+    _require(isinstance(case.get("risk"), str) and bool(str(case.get("risk")).strip()),
+             f"{case_id}: risk must be a non-empty string")
+    for field in ("requires_llm", "requires_embedding", "requires_db"):
+        _require(isinstance(case.get(field), bool),
+                 f"{case_id}: {field} must be a boolean")
+    _require(isinstance(case.get("assert"), Mapping),
+             f"{case_id}: assert must be an object")
+
+
+def _csv_values(values: list[str] | None) -> set[str]:
+    selected: set[str] = set()
+    for raw in values or []:
+        for part in raw.split(","):
+            value = part.strip()
+            if value:
+                selected.add(value)
+    return selected
+
+
+def _select_cases(
+    golden: Mapping[str, Any],
+    *,
+    suite_filters: set[str],
+    case_filters: set[str],
+) -> list[Mapping[str, Any]]:
+    cases = golden["cases"]
+    known_case_ids = {str(case["id"]) for case in cases}
+    missing_cases = sorted(case_filters - known_case_ids)
+    _require(not missing_cases, f"unknown case id(s): {', '.join(missing_cases)}")
+
+    known_suites = set(golden.get("suites") or {})
+    if not known_suites:
+        known_suites = set().union(*(_case_suites(case) for case in cases))
+    missing_suites = sorted(suite_filters - known_suites)
+    _require(not missing_suites, f"unknown suite tag(s): {', '.join(missing_suites)}")
+
+    selected: list[Mapping[str, Any]] = []
+    for case in cases:
+        case_id = str(case["id"])
+        if suite_filters and _case_suites(case).isdisjoint(suite_filters):
+            continue
+        if case_filters and case_id not in case_filters:
+            continue
+        selected.append(case)
+    _require(bool(selected), "eval selection matched no cases")
+    return selected
 
 
 def _post_ask(base_url: str, question: str, timeout: float) -> dict[str, Any]:
@@ -413,13 +492,21 @@ def _assert_deterministic_helper_case(case: Mapping[str, Any]) -> EvalResult:
 
 
 def _run_retrieval_case(case: Mapping[str, Any], *, dsn: str) -> EvalResult:
-    expected = {str(v) for v in case.get("expected_recall_numbers", [])}
+    assertions = case.get("assert") or {}
+    _require(isinstance(assertions, Mapping),
+             "retrieval case assert must be an object")
+    expected = {
+        str(v) for v in assertions.get(
+            "expected_recall_numbers",
+            case.get("expected_recall_numbers", []),
+        )
+    }
     _require(bool(expected), "retrieval case needs expected_recall_numbers")
     query = str(case["query"])
     k = int(case.get("k", 10))
     field = str(case.get("field", "both"))
-    threshold = float(case.get("min_recall_at_k", 1.0))
-    expected_mode = case.get("retrieval_mode")
+    threshold = float(assertions.get("min_recall_at_k", case.get("min_recall_at_k", 1.0)))
+    expected_mode = assertions.get("retrieval_mode", case.get("retrieval_mode"))
 
     embed_config = llm.embedding_config()
     embedding_error: llm.ProviderError | None = None
@@ -436,8 +523,8 @@ def _run_retrieval_case(case: Mapping[str, Any], *, dsn: str) -> EvalResult:
     with psycopg.connect(dsn) as conn:
         hits = retrieval.search(conn, client, query, k=k, field=field,
                                 embed_config=embed_config, embedding_error=embedding_error)
+    modes = {h.retrieval_mode for h in hits}
     if expected_mode:
-        modes = {h.retrieval_mode for h in hits}
         _require(modes == {expected_mode},
                  f"expected retrieval_mode={expected_mode!r}, got {sorted(modes)!r}")
     returned = [h.recall_number for h in hits]
@@ -447,7 +534,7 @@ def _run_retrieval_case(case: Mapping[str, Any], *, dsn: str) -> EvalResult:
              f"recall@{k}={recall:.2f} below {threshold:.2f}; expected={sorted(expected)} got={returned}")
     return EvalResult(str(case["id"]), True,
                       f"provider={embed_config.provider} model={embed_config.model} "
-                      f"retrieval_mode={getattr(hits, 'retrieval_mode', '-')} "
+                      f"retrieval_mode={','.join(sorted(modes)) or '-'} "
                       f"recall@{k}={recall:.2f} matched={sorted(matched)}")
 
 
@@ -472,9 +559,15 @@ def _build_ask_fn(args: argparse.Namespace) -> Callable[[str], dict[str, Any]]:
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Run FDAgent golden evals.")
+    p = argparse.ArgumentParser(description="Run FDAgent contract-tagged golden eval suites.")
     p.add_argument("--golden", type=Path, default=DEFAULT_GOLDEN,
                    help=f"golden set path (default: {DEFAULT_GOLDEN})")
+    p.add_argument("--suite", action="append",
+                   help="run only cases tagged with this suite; repeat or comma-separate")
+    p.add_argument("--case", dest="case_ids", action="append",
+                   help="run only this case id; repeat or comma-separate")
+    p.add_argument("--list-cases", action="store_true",
+                   help="list selected cases with suite/risk metadata and exit")
     p.add_argument("--base-url",
                    help="optional running API base URL, e.g. http://127.0.0.1:8003")
     p.add_argument("--dsn", default=DEFAULT_DSN,
@@ -490,11 +583,35 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    golden = _load_golden(args.golden)
+    try:
+        golden = _load_golden(args.golden)
+        suite_filters = _csv_values(args.suite)
+        case_filters = _csv_values(args.case_ids)
+        cases = _select_cases(
+            golden,
+            suite_filters=suite_filters,
+            case_filters=case_filters,
+        )
+    except EvalFailure as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
+    if args.list_cases:
+        for case in cases:
+            suites = ",".join(sorted(_case_suites(case)))
+            print(f"{case['id']}\t{suites}\t{case['kind']}\t{case['risk']}")
+        return 0
+
     ask_fn: Callable[[str], dict[str, Any]] | None = None
     results: list[EvalResult] = []
 
-    for case in golden["cases"]:
+    selected_suites = ",".join(sorted(suite_filters)) if suite_filters else "all"
+    selected_cases = ",".join(sorted(case_filters)) if case_filters else "all"
+    print(
+        f"Running {len(cases)} eval case(s) from {args.golden} "
+        f"(suite={selected_suites}; case={selected_cases})"
+    )
+    for case in cases:
         case_id = str(case.get("id", "<missing-id>"))
         try:
             kind = case.get("kind")
