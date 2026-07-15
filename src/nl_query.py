@@ -36,7 +36,9 @@ from analytics import (  # noqa: E402
     CATALOG,
     GRAINS,
     OPS,
+    PARENT_GROUP_EXPOSURE_SCOPE,
     Filter,
+    Group,
     Kind,
     RawFirmExposureLeaderboard,
     RecallAnalytics,
@@ -62,6 +64,7 @@ class Intent(str, Enum):
     count_by_taxonomy = "count_by_taxonomy"  # distribution across recall-reason taxonomy categories
     explain_taxonomy_node = "explain_taxonomy_node"  # plain-language definition of a taxonomy category
     raw_firm_exposure = "raw_firm_exposure"  # raw recalling_firm leaderboard + severity exposure score
+    parent_group_exposure = "parent_group_exposure"  # normalized parent-group leaderboard from sidecar edges
     trend = "trend"               # counts over time
     sample = "sample"             # a few example rows
 
@@ -152,6 +155,7 @@ Rules:
   count_by_taxonomy (distribution across recall-reason categories from the TAXONOMY list),
   explain_taxonomy_node (plain-language definition/explanation of one TAXONOMY category),
   raw_firm_exposure (rank raw FDA recalling_firm values with count + severity score),
+  parent_group_exposure (rank normalized parent groups using confirmed sidecar firm→parent edges),
   trend (counts over time -> set grain and date_column), sample (a few example rows).
 - Use explain_taxonomy_node when the user asks what a recall-reason category or FDA recall term MEANS,
   asks for a definition, or uses phrasing such as "what is", "what does X mean", "define X",
@@ -179,6 +183,11 @@ Rules:
   intent=count_by, group_by="recalling_firm", plus the classification/taxonomy/semantic concept
   filter instead. When raw_firm_exposure is appropriate and the user adds HARD constraints
   (state/country/status/date), preserve those constraints in filters; never drop them.
+- parent_group_exposure: use only when the user explicitly asks for parent companies, parent groups,
+  company groups, normalized company rollups, 母公司, 公司集团, or 集团 exposure/rankings. This is not
+  the end-user Recall Profile/safety advisory. It uses only confirmed provenance-backed
+  firm→parent_group sidecar edges, excludes unknown/unconfirmed/LLM-only edges from the ranked total,
+  and keeps member firm breakdowns/evidence visible. Preserve HARD constraints in filters.
 - semantic_query: when the question asks about a fuzzy CONCEPT/topic in free text (e.g.
   "sterility problems", "cancer-causing impurity", "pills that are too strong", "glass fragments",
   or the same idea in another language such as "药效太强" or "细菌感染"), put the CORE concept here
@@ -310,6 +319,21 @@ _RAW_EXPOSURE_ZH_HINTS = (
     "哪家公司风险暴露最高",
     "哪个公司暴露最高",
     "哪家公司暴露最高",
+)
+_PARENT_GROUP_EXPOSURE_EN_PATTERNS = (
+    re.compile(r"\b(?:parent\s+(?:companies|company|groups?|organi[sz]ations?)|company\s+groups?)\b", re.I),
+    re.compile(r"\bnormalized\s+(?:company|firm|parent).*\b(?:exposure|recalls?|ranking|leaderboard)\b", re.I),
+    re.compile(r"\b(?:exposure|recalls?|ranking|leaderboard)\b.*\b(?:parent\s+(?:companies|company|groups?)|company\s+groups?)\b", re.I),
+)
+_PARENT_GROUP_EXPOSURE_ZH_HINTS = (
+    "母公司",
+    "公司集团",
+    "企业集团",
+    "集团召回",
+    "集团暴露",
+    "集团排名",
+    "归一化公司",
+    "公司归并",
 )
 _RAW_EXPOSURE_WEIGHTED_HINTS = (
     "severity-weighted",
@@ -478,6 +502,8 @@ _HELPER_BOILERPLATE_TOKENS = {
     "firm",
     "firms",
     "from",
+    "group",
+    "groups",
     "had",
     "has",
     "have",
@@ -488,8 +514,11 @@ _HELPER_BOILERPLATE_TOKENS = {
     "leaderboard",
     "many",
     "most",
+    "normalized",
     "of",
     "or",
+    "parent",
+    "parents",
     "rank",
     "ranked",
     "ranking",
@@ -497,6 +526,8 @@ _HELPER_BOILERPLATE_TOKENS = {
     "recall",
     "recalling",
     "recalls",
+    "rollup",
+    "rollups",
     "risk",
     "score",
     "scores",
@@ -511,6 +542,7 @@ _HELPER_BOILERPLATE_TOKENS = {
     "top",
     "weighted",
     "were",
+    "with",
     "which",
 }
 _TAXONOMY_EXPLANATION_ALIASES = {
@@ -809,6 +841,44 @@ def _unmatched_subject_tokens(
     ]
 
 
+def _maybe_parent_group_exposure_spec(question: str) -> QuerySpec | None:
+    """Deterministically catch explicit parent-group exposure wording.
+
+    Generic "which companies" questions stay on the transparent raw FDA-name view unless
+    the user asks for a parent company/group/normalized rollup.
+    """
+    has_parent_scope = any(pattern.search(question) for pattern in _PARENT_GROUP_EXPOSURE_EN_PATTERNS)
+    has_parent_scope = has_parent_scope or any(hint in question for hint in _PARENT_GROUP_EXPOSURE_ZH_HINTS)
+    if not has_parent_scope:
+        return None
+    if not (_RAW_EXPOSURE_CONTEXT_RE.search(question) or any(hint in question for hint in _RAW_EXPOSURE_ZH_HINTS)):
+        return None
+    q = question.casefold()
+    metric = (
+        ExposureMetric.severity_weighted
+        if any(hint in q or hint in question for hint in _RAW_EXPOSURE_WEIGHTED_HINTS)
+        else ExposureMetric.recall_count
+    )
+    filters: list[FilterSpec] = []
+    class_label = _class_filter_label(question)
+    if class_label:
+        filters.append(FilterSpec(column="classification", op=Op.eq, values=[class_label]))
+    hard_filters, defer = _safe_hard_filter_specs_or_defer(question)
+    if defer:
+        return None
+    filters.extend(hard_filters)
+    if _looks_like_unhandled_subject_filter(question, filters):
+        return None
+    if any(hint in q for hint in _RAW_EXPOSURE_TOPIC_EXCLUSIONS):
+        return None
+    return QuerySpec(
+        intent=Intent.parent_group_exposure,
+        exposure_metric=metric,
+        filters=filters,
+        limit=_extract_limit(question),
+    )
+
+
 def _maybe_raw_firm_exposure_spec(question: str) -> QuerySpec | None:
     """Deterministically catch the v0 raw-firm exposure wording before generic QuerySpec.
 
@@ -1078,7 +1148,7 @@ def refine_spec(spec: QuerySpec, question: str = "") -> QuerySpec:
     only normalize whitespace and de-duplicate aliases.
     """
     spec.limit = max(1, min(spec.limit or 20, 100))
-    if spec.intent is not Intent.raw_firm_exposure:
+    if spec.intent not in {Intent.raw_firm_exposure, Intent.parent_group_exposure}:
         spec.exposure_metric = None
     # Exact taxonomy path (category filter or category distribution) is deterministic and wins
     # over semantic estimation -- never mix it with a semantic_query.
@@ -1092,7 +1162,7 @@ def refine_spec(spec: QuerySpec, question: str = "") -> QuerySpec:
         spec.grain = None
         spec.date_column = None
         return spec
-    if spec.intent is Intent.raw_firm_exposure:
+    if spec.intent in {Intent.raw_firm_exposure, Intent.parent_group_exposure}:
         spec.semantic_query = None
         spec.semantic_aliases = []
         spec.group_by = None
@@ -1410,6 +1480,71 @@ def _run_firm_reason_product_topn(a: RecallAnalytics, spec: QuerySpec) -> MultiS
     )
 
 
+def _parent_group_exposure_result(
+    spec: QuerySpec,
+    leaderboard: RawFirmExposureLeaderboard,
+) -> MultiSectionResult:
+    metric_label = (
+        "severity-weighted exposure score"
+        if leaderboard.metric == "severity_weighted" else "recall count"
+    )
+    primary_count = (
+        (lambda item: item.exposure_score)
+        if leaderboard.metric == "severity_weighted"
+        else (lambda item: item.total_recalls)
+    )
+    groups = [
+        Group(
+            value=item.recalling_firm,
+            count=primary_count(item),
+            evidence=list(item.evidence),
+            label=item.recalling_firm,
+            metadata={
+                "rank": item.rank,
+                "parent_group_id": item.metadata.get("parent_group_id"),
+                "parent_group_name": item.metadata.get("parent_group_name", item.recalling_firm),
+                "primary_metric": leaderboard.metric,
+                "primary_value": primary_count(item),
+                "exposure_score": item.exposure_score,
+                "total_recalls": item.total_recalls,
+                "class_i_recalls": item.class_i_recalls,
+                "class_ii_recalls": item.class_ii_recalls,
+                "class_iii_recalls": item.class_iii_recalls,
+                "unclassified_recalls": item.unclassified_recalls,
+                "member_firm_count": item.metadata.get("member_firm_count", 0),
+                "member_breakdown": item.metadata.get("member_breakdown", []),
+                "top_reason_category": item.top_reason_category,
+                "top_reason_node_id": item.top_reason_node_id,
+                "top_reason_count": item.top_reason_count,
+            },
+        )
+        for item in leaderboard.items
+    ]
+    return MultiSectionResult(
+        intent=Intent.parent_group_exposure.value,
+        sections=[
+            ResultSection(
+                id="parent_group_exposure",
+                title=f"Parent-group exposure by {metric_label} (top {len(groups)})",
+                data_kind="distribution",
+                dimension="parent_group",
+                source="parent_group_exposure_v1",
+                spec=spec,
+                result=groups,
+                metadata={
+                    "metric": leaderboard.metric,
+                    "metric_label": metric_label,
+                    "formula_version": leaderboard.formula_version,
+                    "formula": leaderboard.formula,
+                    "scope": leaderboard.scope,
+                    "caveats": list(leaderboard.caveats),
+                    **leaderboard.metadata,
+                },
+            )
+        ],
+    )
+
+
 def _run_question_spec(
     a: RecallAnalytics,
     spec: QuerySpec,
@@ -1422,6 +1557,21 @@ def _run_question_spec(
 ) -> Any:
     if _asks_for_firm_reason_product_topn(question, spec):
         return _run_firm_reason_product_topn(a, spec)
+    if spec.intent is Intent.parent_group_exposure:
+        filters = _to_filters(spec)
+        rank_by = (
+            "recall_count"
+            if spec.exposure_metric is ExposureMetric.recall_count
+            else "severity_weighted_exposure"
+        )
+        return _parent_group_exposure_result(
+            spec,
+            a.parent_group_exposure_leaderboard(
+                filters,
+                limit=spec.limit or 20,
+                rank_by=rank_by,
+            ),
+        )
     return run_spec(
         a,
         spec,
@@ -1447,6 +1597,17 @@ def run_spec(
     if spec.intent is Intent.explain_taxonomy_node:
         return _explain_taxonomy_node(a, spec, question, chat_client, chat_config)
     filters = _to_filters(spec)
+    if spec.intent is Intent.parent_group_exposure:
+        rank_by = (
+            "recall_count"
+            if spec.exposure_metric is ExposureMetric.recall_count
+            else "severity_weighted_exposure"
+        )
+        return a.parent_group_exposure_leaderboard(
+            filters,
+            limit=spec.limit or 20,
+            rank_by=rank_by,
+        )
     if spec.intent is Intent.raw_firm_exposure:
         rank_by = (
             "recall_count"
@@ -1764,6 +1925,22 @@ def _multi_section_highlights(result: MultiSectionResult) -> list[str]:
             _append_unique(bullets, f"{section.title}: no rows were returned.")
             continue
         top = rows[0]
+        if result.intent == Intent.parent_group_exposure.value and section.id == "parent_group_exposure":
+            metric = section.metadata.get("metric", "severity_weighted")
+            metric_label = section.metadata.get(
+                "metric_label",
+                "severity-weighted exposure score" if metric == "severity_weighted" else "recall count",
+            )
+            total_recalls = int(top.metadata.get("total_recalls") or top.count)
+            _append_unique(
+                bullets,
+                (
+                    f"{section.title}: top returned {section.dimension} is "
+                    f"{_short_text(top.value, limit=120) or '-'} "
+                    f"({metric_label}: {int(top.count):,}; total recalls: {total_recalls:,})."
+                ),
+            )
+            continue
         _append_unique(
             bullets,
             (
@@ -1832,6 +2009,61 @@ def build_highlights(question: str, spec: QuerySpec | None, result: Any) -> list
 
 def summarize(spec: QuerySpec, result: Any) -> str:
     if isinstance(result, MultiSectionResult):
+        if result.intent == Intent.parent_group_exposure.value and result.sections:
+            section = result.sections[0]
+            metadata = section.metadata
+            metric = metadata.get("metric", "severity_weighted")
+            metric_label = metadata.get(
+                "metric_label",
+                "severity-weighted exposure score" if metric == "severity_weighted" else "recall count",
+            )
+            lines = [
+                f"Provenance-backed parent-group exposure leaderboard (top {len(section.result)}, "
+                f"ranked by {metric_label}).",
+                f"Formula ({metadata.get('formula_version')}): {metadata.get('formula')}.",
+                *list(metadata.get("caveats") or []),
+            ]
+            if not section.result:
+                lines.append("No confirmed provenance-backed parent edges are available for this query yet.")
+                return "\n".join(lines)
+            excluded = metadata.get("excluded_recall_count")
+            if excluded:
+                lines.append(
+                    f"Excluded {excluded:,} recalls with unmapped, unknown, unconfirmed, or LLM-only parent edges."
+                )
+            for item in section.result[:10]:
+                item_meta = item.metadata
+                members = item_meta.get("member_breakdown") or []
+                member_names = [
+                    str(member.get("firm_name"))
+                    for member in members[:3]
+                    if isinstance(member, dict) and member.get("firm_name")
+                ]
+                member_text = f"; members: {', '.join(member_names)}" if member_names else ""
+                if len(members) > 3:
+                    member_text += f" +{len(members) - 3} more"
+                reason = (
+                    f"; top reason category: {item_meta.get('top_reason_category')}"
+                    f" ({item_meta.get('top_reason_count'):,})"
+                    if item_meta.get("top_reason_category") and item_meta.get("top_reason_count") is not None else ""
+                )
+                evidence = f"; e.g. {', '.join(item.evidence)}" if item.evidence else ""
+                class_breakdown = (
+                    f"Class I/II/III "
+                    f"{int(item_meta.get('class_i_recalls') or 0):,}/"
+                    f"{int(item_meta.get('class_ii_recalls') or 0):,}/"
+                    f"{int(item_meta.get('class_iii_recalls') or 0):,}"
+                )
+                exposure_score = int(item_meta.get("exposure_score") or 0)
+                total_recalls = int(item_meta.get("total_recalls") or item.count)
+                if metric == "severity_weighted":
+                    primary = f"score {item.count:,}; total {total_recalls:,}; {class_breakdown}"
+                else:
+                    primary = f"total {total_recalls:,}; severity score {exposure_score:,}; {class_breakdown}"
+                rank = item_meta.get("rank")
+                rank_text = f"{rank}. " if rank else ""
+                lines.append(f"  {rank_text}{item.value}: {primary}{member_text}{reason}{evidence}")
+            return "\n".join(lines)
         titles = ", ".join(section.title for section in result.sections)
         return f"Produced separate tables for the requested answer: {titles}."
     if isinstance(result, TaxonomyExplanation):
@@ -1841,6 +2073,53 @@ def summarize(spec: QuerySpec, result: Any) -> str:
             "severity-weighted exposure score"
             if result.metric == "severity_weighted" else "raw recall count"
         )
+        if result.scope == PARENT_GROUP_EXPOSURE_SCOPE:
+            lines = [
+                f"Provenance-backed parent-group exposure leaderboard (top {len(result.items)}, "
+                f"ranked by {metric_label}).",
+                f"Formula ({result.formula_version}): {result.formula}.",
+                *result.caveats,
+            ]
+            if not result.items:
+                lines.append("No confirmed provenance-backed parent edges are available for this query yet.")
+                return "\n".join(lines)
+            excluded = result.metadata.get("excluded_recall_count")
+            if excluded:
+                lines.append(
+                    f"Excluded {excluded:,} recalls with unmapped, unknown, unconfirmed, or LLM-only parent edges."
+                )
+            for item in result.items[:10]:
+                members = item.metadata.get("member_breakdown") or []
+                member_names = [
+                    str(member.get("firm_name"))
+                    for member in members[:3]
+                    if isinstance(member, dict) and member.get("firm_name")
+                ]
+                member_text = f"; members: {', '.join(member_names)}" if member_names else ""
+                if len(members) > 3:
+                    member_text += f" +{len(members) - 3} more"
+                reason = (
+                    f"; top reason category: {item.top_reason_category}"
+                    f" ({item.top_reason_count:,})"
+                    if item.top_reason_category and item.top_reason_count is not None else ""
+                )
+                evidence = f"; e.g. {', '.join(item.evidence)}" if item.evidence else ""
+                class_breakdown = (
+                    f"Class I/II/III "
+                    f"{item.class_i_recalls:,}/{item.class_ii_recalls:,}/{item.class_iii_recalls:,}"
+                )
+                if result.metric == "severity_weighted":
+                    primary = (
+                        f"score {item.exposure_score:,}; total {item.total_recalls:,}; "
+                        f"{class_breakdown}"
+                    )
+                else:
+                    primary = (
+                        f"total {item.total_recalls:,}; severity score {item.exposure_score:,}; "
+                        f"{class_breakdown}"
+                    )
+                lines.append(f"  {item.rank}. {item.recalling_firm}: {primary}{member_text}{reason}{evidence}")
+            return "\n".join(lines)
         lines = [
             f"Raw FDA `recalling_firm` exposure leaderboard (top {len(result.items)}, "
             f"ranked by {metric_label}).",
@@ -2005,7 +2284,7 @@ class NLEngine:
             )
         explanation_spec = _maybe_taxonomy_explanation_spec(question, self.taxonomy_nodes)
         simple_class_count_spec = _maybe_simple_class_count_spec(question)
-        exposure_spec = _maybe_raw_firm_exposure_spec(question)
+        exposure_spec = _maybe_parent_group_exposure_spec(question) or _maybe_raw_firm_exposure_spec(question)
         spec = explanation_spec or simple_class_count_spec or exposure_spec or generate_spec(
             self.chat_client, self.chat_config, question, self.schema_ctx, self.taxonomy_ctx)
         with RecallAnalytics(self.dsn) as a:
@@ -2078,6 +2357,7 @@ class NLEngine:
                 "exposure_metric": result.metric,
                 "result_count": len(result.items),
             })
+            metadata.update(result.metadata)
         if (
             spec.semantic_query
             and spec.intent is Intent.sample

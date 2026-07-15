@@ -599,6 +599,43 @@
       }
     },
     {
+      "id": "exposure-parent-group-leaderboard-caveated",
+      "kind": "ask",
+      "question": "Which parent companies have the highest FDA recall exposure?",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "parent_group_exposure",
+      "requires_llm": true,
+      "requires_embedding": false,
+      "requires_db": true,
+      "assert": {
+        "route": "sql",
+        "intents": [
+          "parent_group_exposure"
+        ],
+        "data_kinds": [
+          "multi_section"
+        ],
+        "section_count": 1,
+        "sections": [
+          {
+            "id": "parent_group_exposure",
+            "kind": "distribution",
+            "dimension": "parent_group",
+            "source": "parent_group_exposure_v1"
+          }
+        ],
+        "summary_contains_any": [
+          "parent-group exposure",
+          "provenance-backed",
+          "not a safety verdict"
+        ],
+        "no_ilike": true
+      }
+    },
+    {
       "id": "exposure-filtered-california-preserves-state",
       "kind": "ask",
       "question": "Which firms in California have the most FDA drug recalls?",
