@@ -55,10 +55,12 @@ issue 承担。
 
 - baseline：`evals/baselines/drug_enforcement_fingerprint.json`
 - 算法：`scripts/dataset_fingerprint.py` 读取稳定字段 `id`、`source`、`report_date`
-  和完整 `raw` JSONB，排除易变的 `fetched_at`，按 `id` 排序后计算 SHA-256；
+  和完整 `raw` JSONB，排除易变的 `fetched_at`，将日期固定为 `YYYY-MM-DD`，
+  按 `id` 排序后计算 SHA-256；
   同时记录 row count、`report_date` 范围、taxonomy label 覆盖、embedding 覆盖、
   以及当前 `drug_enforcement` schema/index 签名。
 - 默认检查：`.venv/bin/python scripts/dataset_fingerprint.py --check`
+- DateStyle 回归检查：`PGDATESTYLE='SQL, MDY' .venv/bin/python scripts/dataset_fingerprint.py --check`
 - 查看当前指纹：`.venv/bin/python scripts/dataset_fingerprint.py`
 
 如果 preflight 失败（`run_eval.py` 返回 3 / `DATASET DRIFT`），先确认本地 fixture 是否

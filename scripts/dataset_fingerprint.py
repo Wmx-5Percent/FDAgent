@@ -196,8 +196,8 @@ def compute_fingerprint(*, dsn: str = DEFAULT_DSN, table: str = DEFAULT_TABLE) -
                     f"""
                     SELECT
                         count(*)::bigint,
-                        min(report_date)::text,
-                        max(report_date)::text,
+                        to_char(min(report_date), 'YYYY-MM-DD'),
+                        to_char(max(report_date), 'YYYY-MM-DD'),
                         count(DISTINCT raw->>'recall_number')::bigint,
                         count(DISTINCT raw->>'event_id')::bigint
                     FROM {qualified_table}
@@ -209,7 +209,7 @@ def compute_fingerprint(*, dsn: str = DEFAULT_DSN, table: str = DEFAULT_TABLE) -
 
                 cur.execute(
                     f"""
-                    SELECT id, source, report_date::text, raw
+                    SELECT id, source, to_char(report_date, 'YYYY-MM-DD'), raw
                     FROM {qualified_table}
                     ORDER BY id
                     """
