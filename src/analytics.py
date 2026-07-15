@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from enum import Enum
 from typing import Any, Iterable, Sequence
 
@@ -125,6 +126,43 @@ class RawFirmExposureLeaderboard:
     caveats: list[str] = field(default_factory=lambda: list(RAW_FIRM_EXPOSURE_CAVEATS))
 
 
+def _json_safe_debug_value(value: Any) -> Any:
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    if isinstance(value, tuple):
+        return [_json_safe_debug_value(item) for item in value]
+    if isinstance(value, list):
+        return [_json_safe_debug_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _json_safe_debug_value(item) for key, item in value.items()}
+    return value
+
+
+@dataclass(frozen=True)
+class SQLDebugQuery:
+    """Display-safe record of one parameterized SQL statement executed by analytics."""
+    id: str
+    title: str
+    sql: str
+    params: list[Any]
+    source: str
+    representation: str = "parameterized_sql_with_bound_params"
+    rendered_sql: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "id": self.id,
+            "title": self.title,
+            "sql": self.sql,
+            "params": [_json_safe_debug_value(item) for item in self.params],
+            "source": self.source,
+            "representation": self.representation,
+        }
+        if self.rendered_sql:
+            payload["rendered_sql"] = self.rendered_sql
+        return payload
+
+
 def _conditions(filters: Sequence[Filter]) -> tuple[list[sql.Composable], list[Any]]:
     """WHERE conditions (unprefixed) + bound params for a set of whitelisted filters."""
     conds: list[sql.Composable] = []
@@ -190,6 +228,7 @@ class RecallAnalytics:
     def __init__(self, dsn: str = DEFAULT_DSN) -> None:
         self.conn = psycopg.connect(dsn, autocommit=True)
         self.conn.read_only = True  # defense-in-depth: block any accidental write
+        self._debug_queries: list[SQLDebugQuery] = []
 
     def close(self) -> None:
         self.conn.close()
@@ -201,16 +240,64 @@ class RecallAnalytics:
         self.close()
 
     # -- low-level helpers --------------------------------------------------
-    def _rows(self, query: sql.Composable, params: Sequence[Any]) -> list[tuple]:
+    def sql_debug_queries(self) -> list[dict[str, Any]]:
+        """Return display-safe SQL debug records for statements executed by this instance."""
+        return [item.as_dict() for item in self._debug_queries]
+
+    def clear_sql_debug(self) -> None:
+        self._debug_queries.clear()
+
+    def _record_sql_debug(
+        self,
+        query: sql.Composable,
+        params: Sequence[Any],
+        *,
+        source: str,
+        title: str,
+        query_id: str,
+    ) -> None:
+        try:
+            sql_text = query.as_string(self.conn)
+        except Exception:  # pragma: no cover - best-effort debug display only
+            sql_text = str(query)
+        debug_id = f"{query_id}_{len(self._debug_queries) + 1}"
+        self._debug_queries.append(SQLDebugQuery(
+            id=debug_id,
+            title=title,
+            sql=sql_text,
+            params=list(params),
+            source=source,
+        ))
+
+    def _rows(
+        self,
+        query: sql.Composable,
+        params: Sequence[Any],
+        *,
+        source: str = "analytics.query",
+        title: str = "SQL query",
+        query_id: str = "query",
+    ) -> list[tuple]:
         with self.conn.cursor() as cur:
             cur.execute(query, params)
-            return cur.fetchall()
+            rows = cur.fetchall()
+        self._record_sql_debug(query, params, source=source, title=title, query_id=query_id)
+        return rows
 
-    def _scalar(self, query: sql.Composable, params: Sequence[Any]) -> Any:
+    def _scalar(
+        self,
+        query: sql.Composable,
+        params: Sequence[Any],
+        *,
+        source: str = "analytics.query",
+        title: str = "SQL query",
+        query_id: str = "query",
+    ) -> Any:
         with self.conn.cursor() as cur:
             cur.execute(query, params)
             row = cur.fetchone()
-            return row[0] if row else None
+        self._record_sql_debug(query, params, source=source, title=title, query_id=query_id)
+        return row[0] if row else None
 
     # -- public API ---------------------------------------------------------
     def count_total(
@@ -224,7 +311,13 @@ class RecallAnalytics:
             filters, taxonomy_node_id=taxonomy_node_id, taxonomy_version=taxonomy_version)
         q = sql.SQL("SELECT count(*) FROM {tbl}{where}").format(
             tbl=sql.Identifier(TABLE), where=where)
-        return int(self._scalar(q, params) or 0)
+        return int(self._scalar(
+            q,
+            params,
+            source="analytics.count_total",
+            title="Count total recalls",
+            query_id="count_total",
+        ) or 0)
 
     def count_by(
         self,
@@ -261,7 +354,13 @@ class RecallAnalytics:
         return [
             Group(value=r[0], count=r[1],
                   evidence=list(r[2]) if with_evidence and r[2] else [])
-            for r in self._rows(q, params)
+            for r in self._rows(
+                q,
+                params,
+                source="analytics.count_by",
+                title=f"Count by {dimension}",
+                query_id=f"count_by_{dimension}",
+            )
         ]
 
     def count_by_taxonomy(
@@ -319,7 +418,13 @@ class RecallAnalytics:
                     "source": "taxonomy",
                 },
             )
-            for r in self._rows(q, params)
+            for r in self._rows(
+                q,
+                params,
+                source="analytics.count_by_taxonomy",
+                title="Count by recall-reason taxonomy",
+                query_id="count_by_taxonomy",
+            )
         ]
 
     def raw_firm_exposure_leaderboard(
@@ -439,7 +544,13 @@ class RecallAnalytics:
             taxonomy_tbl=taxonomy_tbl,
             order_by=order_by,
         )
-        rows = self._rows(q, [*params, evidence_n, taxonomy_version, limit])
+        rows = self._rows(
+            q,
+            [*params, evidence_n, taxonomy_version, limit],
+            source="analytics.raw_firm_exposure",
+            title="Raw firm exposure leaderboard",
+            query_id="raw_firm_exposure",
+        )
         items = [
             FirmExposure(
                 rank=i,
@@ -483,7 +594,16 @@ class RecallAnalytics:
             "SELECT date_trunc(%s, {dcol})::date AS period, count(*) AS n "
             "FROM {tbl}{where} GROUP BY 1 ORDER BY 1"
         ).format(dcol=dcol, tbl=tbl, where=full_where)
-        return [(r[0], r[1]) for r in self._rows(q, [grain, *wparams])]
+        return [
+            (r[0], r[1])
+            for r in self._rows(
+                q,
+                [grain, *wparams],
+                source="analytics.trend",
+                title=f"Trend by {date_column} ({grain})",
+                query_id=f"trend_{date_column}",
+            )
+        ]
 
     def sample(
         self,
@@ -501,7 +621,16 @@ class RecallAnalytics:
         q = sql.SQL("SELECT {cols} FROM {tbl}{where} LIMIT %s").format(
             cols=sql.SQL(", ").join(sql.Identifier(c) for c in cols),
             tbl=sql.Identifier(TABLE), where=where)
-        return [dict(zip(cols, r)) for r in self._rows(q, [*wparams, n])]
+        return [
+            dict(zip(cols, r))
+            for r in self._rows(
+                q,
+                [*wparams, n],
+                source="analytics.sample",
+                title="Sample recall rows",
+                query_id="sample",
+            )
+        ]
 
 
 def _demo() -> None:

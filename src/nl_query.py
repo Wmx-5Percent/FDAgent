@@ -1508,6 +1508,24 @@ def run_spec(
     return a.sample(filters, n=spec.limit or 5)
 
 
+def _sql_debug_payload(queries: list[dict[str, Any]], result: Any) -> dict[str, Any]:
+    items = [dict(item) for item in queries]
+    if isinstance(result, MultiSectionResult) and len(items) == len(result.sections):
+        for item, section in zip(items, result.sections, strict=True):
+            item.update({
+                "id": section.id,
+                "title": section.title,
+                "source": section.source,
+            })
+    elif len(items) == 1:
+        items[0]["id"] = "main"
+    return {
+        "label": "Parameterized SQL + bound params",
+        "representation": "parameterized_sql_with_bound_params",
+        "queries": items,
+    }
+
+
 def _clean_text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
@@ -2005,6 +2023,7 @@ class NLEngine:
                         control=control,
                         metadata={"control_route": control.route, "control_reason": control.reason},
                     )
+                a.clear_sql_debug()
                 spec = generate_spec(
                     self.chat_client,
                     self.chat_config,
@@ -2022,7 +2041,10 @@ class NLEngine:
                     self.embedding_error,
                     question,
                 )
+            sql_debug_queries = a.sql_debug_queries()
         metadata: dict[str, Any] = {}
+        if sql_debug_queries:
+            metadata["sql_debug"] = _sql_debug_payload(sql_debug_queries, result)
         if isinstance(result, MultiSectionResult):
             metadata["intent"] = result.intent
             metadata["sections"] = [

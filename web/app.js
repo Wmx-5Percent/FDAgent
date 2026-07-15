@@ -601,11 +601,71 @@
       card.appendChild(unknown);
     }
 
-    const spec = document.createElement("div");
-    spec.className = "spec";
-    spec.textContent = `intent=${result.intent || "-"} | spec=${JSON.stringify(result.spec || {})}`;
-    card.appendChild(spec);
+    renderSqlDebug(result.sql_debug, card);
     return card;
+  }
+
+  function renderSqlDebug(sqlDebug, card) {
+    const queries = Array.isArray(sqlDebug?.queries)
+      ? sqlDebug.queries.filter((item) => item && (item.rendered_sql || item.sql))
+      : [];
+    if (!queries.length) return;
+
+    const details = document.createElement("details");
+    details.className = "sql-debug";
+
+    const summary = document.createElement("summary");
+    summary.className = "sql-debug-summary";
+    const title = document.createElement("span");
+    const label = sqlDebug.label || "SQL debug";
+    title.textContent = queries.length === 1 ? label : `${label} (${queries.length} queries)`;
+    const hint = document.createElement("span");
+    hint.className = "sql-debug-hint";
+    hint.textContent = "Click to expand";
+    summary.append(title, hint);
+    details.appendChild(summary);
+
+    const body = document.createElement("div");
+    body.className = "sql-debug-body";
+    for (const query of queries) {
+      const block = document.createElement("section");
+      block.className = "sql-debug-query";
+
+      const queryTitle = document.createElement("div");
+      queryTitle.className = "sql-debug-query-title";
+      queryTitle.textContent = query.title || query.id || "SQL query";
+      block.appendChild(queryTitle);
+
+      const sourceParts = [
+        query.source ? `source: ${query.source}` : null,
+        query.rendered_sql ? "rendered SQL" : "parameterized SQL + bound params",
+      ].filter(Boolean);
+      if (sourceParts.length) {
+        const source = document.createElement("div");
+        source.className = "sql-debug-source";
+        source.textContent = sourceParts.join(" | ");
+        block.appendChild(source);
+      }
+
+      const pre = document.createElement("pre");
+      const code = document.createElement("code");
+      code.textContent = query.rendered_sql || query.sql || "";
+      pre.appendChild(code);
+      block.appendChild(pre);
+
+      if (!query.rendered_sql && Array.isArray(query.params) && query.params.length) {
+        const params = document.createElement("pre");
+        params.className = "sql-debug-params";
+        const paramsCode = document.createElement("code");
+        paramsCode.textContent = `bound params = ${JSON.stringify(query.params, null, 2)}`;
+        params.appendChild(paramsCode);
+        block.appendChild(params);
+      }
+
+      body.appendChild(block);
+    }
+    details.appendChild(body);
+    card.appendChild(details);
   }
 
   function renderHighlights(highlights, card) {

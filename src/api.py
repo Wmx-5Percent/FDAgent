@@ -386,6 +386,9 @@ def serialize_answer(ans: Answer) -> dict[str, Any]:
     }
     if ans.highlights:
         payload["highlights"] = list(ans.highlights)
+    sql_debug = ans.metadata.get("sql_debug")
+    if isinstance(sql_debug, dict):
+        payload["sql_debug"] = sql_debug
     if isinstance(ans.result, agent_control.AgentControlResult):
         payload["data"] = ans.result.as_data()
     elif isinstance(ans.result, TaxonomyExplanation):

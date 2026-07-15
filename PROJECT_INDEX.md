@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-07-15T04:35Z · 81 files · 2 missing description
+> Last generated: 2026-07-15T05:17Z · 81 files · 2 missing description
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -82,7 +82,7 @@
 - [`src/agent_control.py`](src/agent_control.py) — Guard /ask prompts before they enter the FDA recall query pipeline.
   - symbols: `AgentControlDecision`, `AgentControlResult`, `LLMIntentDecision`, `classify_llm`, `clarification`, `result_from_decision`, `broad_fts_queries`
 - [`src/analytics.py`](src/analytics.py) — Deterministic frequency/aggregation query engine over drug_enforcement.
-  - symbols: `Kind`, `Filter`, `Group`, `FirmExposure`, `RawFirmExposureLeaderboard`, `RecallAnalytics`
+  - symbols: `Kind`, `Filter`, `Group`, `FirmExposure`, `RawFirmExposureLeaderboard`, `SQLDebugQuery`, `RecallAnalytics`
 - [`src/api.py`](src/api.py) — FastAPI service exposing the deterministic NL->SQL analytics engine (Path 1, serving half).
   - symbols: `lifespan`, `AskRequest`, `TitleRequest`, `TitleResponse`, `HybridSearchRequest`, `recall_verification_url`, `recall_detail_url`, `serialize_answer`, `health`, `hybrid_search_page`, `hybrid_search_endpoint`, `title_endpoint`
 - [`src/classify/__init__.py`](src/classify/__init__.py) — Offline recall taxonomy induction, labeling, and discovery utilities.
