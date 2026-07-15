@@ -16,7 +16,7 @@ import argparse
 import os
 from dataclasses import dataclass
 from time import perf_counter
-from typing import Any, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 import psycopg
 from dotenv import load_dotenv
@@ -133,8 +133,22 @@ def _rows_to_candidates(rows: Sequence[tuple[Any, ...]]) -> list[_Candidate]:
     return out
 
 
+def _record_debug_sql(
+    recorder: Callable[..., None] | None,
+    query: sql.Composable,
+    params: Sequence[Any],
+    *,
+    source: str,
+    title: str,
+    query_id: str,
+) -> None:
+    if recorder is not None:
+        recorder(query, params, source=source, title=title, query_id=query_id)
+
+
 def _vector_candidates(conn: psycopg.Connection, qvec: str, *, source: str, field: str,
-                       filters: Sequence[Filter], limit: int) -> list[_Candidate]:
+                       filters: Sequence[Filter], limit: int,
+                       sql_debug_recorder: Callable[..., None] | None = None) -> list[_Candidate]:
     fconds, fparams = _conditions(filters)  # conditions on the joined source table (d)
     if field == "both":
         # search every field, keep the best-matching row per record (exact scan; fine at ~35k).
@@ -173,11 +187,21 @@ def _vector_candidates(conn: psycopg.Connection, qvec: str, *, source: str, fiel
         params = [qvec, source, field, *fparams, qvec, limit]
     with conn.cursor() as cur:
         cur.execute(q, params)
-        return _rows_to_candidates(cur.fetchall())
+        rows = cur.fetchall()
+    _record_debug_sql(
+        sql_debug_recorder,
+        q,
+        params,
+        source="retrieval.vector_candidates",
+        title=f"Vector retrieval candidates ({field})",
+        query_id=f"retrieval_vector_{field}",
+    )
+    return _rows_to_candidates(rows)
 
 
 def _fts_candidates(conn: psycopg.Connection, query: str, qvec: str | None, *, source: str,
-                    field: str, filters: Sequence[Filter], limit: int) -> list[_Candidate]:
+                    field: str, filters: Sequence[Filter], limit: int,
+                    sql_debug_recorder: Callable[..., None] | None = None) -> list[_Candidate]:
     fconds, fparams = _conditions(filters)  # conditions on the joined source table (d)
     if field == "both":
         conds = [sql.SQL("e.source = %s"), *fconds]
@@ -251,7 +275,16 @@ def _fts_candidates(conn: psycopg.Connection, query: str, qvec: str | None, *, s
             params = [query, qvec, source, field, *fparams, limit]
     with conn.cursor() as cur:
         cur.execute(q, params)
-        return _rows_to_candidates(cur.fetchall())
+        rows = cur.fetchall()
+    _record_debug_sql(
+        sql_debug_recorder,
+        q,
+        params,
+        source="retrieval.fts_candidates",
+        title=f"FTS retrieval candidates ({field})",
+        query_id=f"retrieval_fts_{field}",
+    )
+    return _rows_to_candidates(rows)
 
 
 def _fusion_key(candidate: _Candidate, field: str) -> tuple[str, ...]:
@@ -351,7 +384,8 @@ def search(conn: psycopg.Connection, client: Any | None, query: str, *,
            filters: Sequence[Filter] = (), source: str = "drug_enforcement",
            embed_config: llm.EmbeddingConfig | None = None,
            embedding_error: BaseException | None = None,
-           fts_queries: Sequence[str] = ()) -> SearchResult:
+           fts_queries: Sequence[str] = (),
+           sql_debug_recorder: Callable[..., None] | None = None) -> SearchResult:
     """Hybrid records for ``query``, optionally pre-filtered by hard constraints.
 
     The vector and FTS halves both honor the same filters on the joined source table.
@@ -387,7 +421,8 @@ def search(conn: psycopg.Connection, client: Any | None, query: str, *,
         for fts_query in agent_control.broad_fts_queries(query, list(fts_queries)):
             used_fts_queries.append(fts_query)
             fts_hits.extend(_fts_candidates(conn, fts_query, None, source=source, field=field,
-                                            filters=filters, limit=limit))
+                                            filters=filters, limit=limit,
+                                            sql_debug_recorder=sql_debug_recorder))
             if fts_hits:
                 break
         timings_ms["fts"] = _elapsed_ms(fts_started)
@@ -408,14 +443,16 @@ def search(conn: psycopg.Connection, client: Any | None, query: str, *,
         return result
     vector_started = perf_counter()
     vector_hits = _vector_candidates(conn, qvec, source=source, field=field,
-                                     filters=filters, limit=limit)
+                                     filters=filters, limit=limit,
+                                     sql_debug_recorder=sql_debug_recorder)
     timings_ms["vector"] = _elapsed_ms(vector_started)
     fts_hits: list[_Candidate] = []
     fts_started = perf_counter()
     for fts_query in agent_control.broad_fts_queries(query, list(fts_queries)):
         used_fts_queries.append(fts_query)
         fts_hits.extend(_fts_candidates(conn, fts_query, qvec, source=source, field=field,
-                                        filters=filters, limit=limit))
+                                        filters=filters, limit=limit,
+                                        sql_debug_recorder=sql_debug_recorder))
     timings_ms["fts"] = _elapsed_ms(fts_started)
     fusion_started = perf_counter()
     result = _rrf_fuse(

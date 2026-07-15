@@ -749,12 +749,67 @@ tr:last-child td {
   white-space: pre-wrap;
 }
 
-.spec {
-  padding-top: 8px;
-  border-top: 1px solid var(--line);
+.sql-debug {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgb(12 19 29 / 0.42);
+  color: var(--muted);
+}
+
+.sql-debug-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.sql-debug-summary::marker {
   color: var(--muted-2);
-  font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
-  overflow-wrap: anywhere;
+}
+
+.sql-debug-hint,
+.sql-debug-source {
+  color: var(--muted-2);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.sql-debug-body {
+  display: grid;
+  gap: 10px;
+  padding: 0 12px 12px;
+}
+
+.sql-debug-query {
+  display: grid;
+  gap: 7px;
+}
+
+.sql-debug-query-title {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.sql-debug pre {
+  max-height: 260px;
+  margin: 0;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgb(4 10 18 / 0.72);
+  color: var(--text);
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre;
+}
+
+.sql-debug-params {
+  max-height: 160px;
+  color: var(--muted);
 }
 
 .composer {
