@@ -6,7 +6,8 @@
 
 - 默认全量：`.venv/bin/python scripts/run_eval.py --golden evals/golden/v1.json`
 - PR 阻塞核心集：`.venv/bin/python scripts/run_eval.py --golden evals/golden/v1.json --suite core`
-- RAG / embedding 质量集：`.venv/bin/python scripts/run_eval.py --golden evals/golden/v1.json --suite rag`
+- RAG / embedding 质量烟测：`.venv/bin/python scripts/run_eval.py --golden evals/golden/v1.json --suite rag`
+- RAG retrieval benchmark：`.venv/bin/python scripts/run_eval.py --golden evals/rag/v1.json --suite rag`
 - 精确 case 子集：`.venv/bin/python scripts/run_eval.py --golden evals/golden/v1.json --case numeric-class-i-count --case taxonomy-reason-breakdown`
 - 查看选择结果：`.venv/bin/python scripts/run_eval.py --golden evals/golden/v1.json --suite core --list-cases`
 
@@ -14,6 +15,23 @@
 `ask` case 需要本地 Postgres `fda` 数据库和 chat provider；`rag` case 还可能需要
 embedding provider。每个 case 用 `requires_llm` / `requires_embedding` /
 `requires_db` 显式声明这些前置条件。
+
+## RAG retrieval benchmark
+
+`evals/rag/v1.json` 是固定查询 + 固定 `recall_number` 证据集的检索基准。每个
+`retrieval_recall` case 输出 provider/model/dimension、`retrieval_mode`、fallback
+reason、vector/FTS/fused hit counts、`recall@k`、MRR、nDCG、matched recall numbers
+和 returned recall numbers。
+
+- `retrieval_mode=hybrid` case 需要可用 embedding provider；provider 不可用时必须
+  `SKIP` 并打印 provider/model/fallback metadata，不能当作 zero-recall 通过。
+- `retrieval_mode=fts_only` fallback case 使用 `simulate_embedding_fallback`，不需要
+  外部 embedding credentials，用来固定 degraded retrieval 行为和 fallback reason；
+  需要区分具体错误类型时可用 `simulate_embedding_error`（例如
+  `ProviderMissingKeyError`）。
+- 当前基准使用 per-case metric floors（如 `min_recall_at_k` / `min_mrr_at_k` /
+  `min_ndcg_at_k`）来捕捉召回率下降；跨分支 baseline snapshot/compare-to-main 报告由
+  后续 baseline issue 实现，避免在这里重复。
 
 ## Case 元数据契约
 
