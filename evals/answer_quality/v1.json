@@ -91,7 +91,7 @@
     },
     {
       "id": "aq-raw-firm-exposure-evidence-and-no-verdict",
-      "kind": "answer_quality_fixture",
+      "kind": "ask_spec",
       "question": "Which recalling firms have the most FDA drug recalls?",
       "suite": [
         "answer_quality",
@@ -100,7 +100,12 @@
       "risk": "evidence_backed_raw_firm_exposure_no_safety_verdict",
       "requires_llm": false,
       "requires_embedding": false,
-      "requires_db": false,
+      "requires_db": true,
+      "spec": {
+        "intent": "raw_firm_exposure",
+        "exposure_metric": "recall_count",
+        "limit": 10
+      },
       "assert": {
         "route": "sql",
         "intents": [
@@ -133,12 +138,11 @@
           "is unsafe"
         ],
         "no_ilike": true
-      },
-      "fixture": "raw_firm_exposure"
+      }
     },
     {
       "id": "aq-parent-group-exposure-provenance-caveat",
-      "kind": "answer_quality_fixture",
+      "kind": "ask_spec",
       "question": "Which parent companies have the highest FDA recall exposure?",
       "suite": [
         "answer_quality",
@@ -148,7 +152,12 @@
       "risk": "parent_group_claims_provenance_and_no_safety_verdict",
       "requires_llm": false,
       "requires_embedding": false,
-      "requires_db": false,
+      "requires_db": true,
+      "spec": {
+        "intent": "parent_group_exposure",
+        "exposure_metric": "severity_weighted",
+        "limit": 10
+      },
       "assert": {
         "route": "sql",
         "intents": [
@@ -173,7 +182,7 @@
         ],
         "text_contains_all": [
           "provenance-backed",
-          "not a safety verdict"
+          "not a legal, medical, or safety verdict"
         ],
         "text_not_contains_any": [
           "safety score",
@@ -183,16 +192,13 @@
           "is unsafe"
         ],
         "no_ilike": true
-      },
-      "fixture": "parent_group_exposure"
+      }
     },
     {
       "id": "aq-degraded-empty-retrieval-caveat",
-      "kind": "answer_quality_fixture",
-      "fixture": "degraded_empty_retrieval",
+      "kind": "ask_spec",
       "question": "Show me recalls about a concept while semantic retrieval is unavailable.",
-      "query": "xqz nonexistent semantic recall concept",
-      "embedding_fallback_reason": "openrouter/openai/text-embedding-3-small: missing API key",
+      "simulate_embedding_error": "ProviderMissingKeyError",
       "suite": [
         "answer_quality",
         "regression"
@@ -200,8 +206,17 @@
       "risk": "degraded_retrieval_empty_result_not_factual_zero",
       "requires_llm": false,
       "requires_embedding": false,
-      "requires_db": false,
+      "requires_db": true,
+      "spec": {
+        "intent": "sample",
+        "semantic_query": "xqznomatchzzzzzz",
+        "semantic_aliases": [
+          "xqznomatchzzzzzz"
+        ],
+        "limit": 10
+      },
       "assert": {
+        "simulate_embedding_error": "ProviderMissingKeyError",
         "route": "semantic",
         "intents": [
           "sample"
@@ -211,7 +226,8 @@
         ],
         "data_fields": {
           "retrieval_mode": "fts_only",
-          "degraded": true
+          "degraded": true,
+          "items": []
         },
         "requires_highlights": true,
         "text_contains_all": [

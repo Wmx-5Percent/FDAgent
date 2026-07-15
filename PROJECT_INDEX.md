@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-07-15T08:04Z · 89 files · 2 missing description
+> Last generated: 2026-07-15T08:07Z · 89 files · 2 missing description
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.

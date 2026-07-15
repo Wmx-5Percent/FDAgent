@@ -24,6 +24,7 @@ import psycopg  # noqa: E402
 
 import llm  # noqa: E402
 import retrieval  # noqa: E402
+from analytics import RecallAnalytics  # noqa: E402
 from dataset_fingerprint import (  # noqa: E402
     DATASET_DRIFT_EXIT_CODE,
     DEFAULT_BASELINE as DEFAULT_DATASET_FINGERPRINT_BASELINE,
@@ -42,8 +43,10 @@ from nl_query import (  # noqa: E402
     _class_filter_label,
     _maybe_raw_firm_exposure_spec,
     _maybe_simple_class_count_spec,
+    _run_question_spec,
     _safe_hard_filter_specs_or_defer,
     build_highlights,
+    summarize,
 )
 
 DEFAULT_DSN = os.environ.get("DATABASE_URL", "postgresql://localhost:5432/fda")
@@ -799,141 +802,6 @@ def _answer_quality_fixture_payload(case: Mapping[str, Any]) -> dict[str, Any]:
                 "message": "你可以问召回数量、趋势、原因分类、公司/firm 排名和样本证据。",
             },
         }
-    if fixture == "raw_firm_exposure":
-        recall_number = "D-0179-2026"
-        return {
-            "question": str(
-                case.get("question")
-                or "Which recalling firms have the most FDA drug recalls?"
-            ),
-            "intent": "raw_firm_exposure",
-            "spec": {
-                "intent": "raw_firm_exposure",
-                "exposure_metric": "recall_count",
-                "limit": 10,
-            },
-            "summary": (
-                "Raw FDA `recalling_firm` exposure leaderboard; this is not a safety verdict "
-                "and uses the raw_severity_v0 formula."
-            ),
-            "highlights": [
-                "Review the leaderboard rows for raw counts, class breakdowns, and sample recall evidence.",
-                "This score is a recall-data exposure signal, not a safety verdict.",
-            ],
-            "data": {
-                "kind": "raw_firm_exposure",
-                "metric": "recall_count",
-                "formula_version": "raw_severity_v0",
-                "formula": "3 * Class I + 2 * Class II + 1 * Class III",
-                "scope": "raw_fda_recalling_firm",
-                "caveats": [
-                    "This leaderboard uses raw FDA `recalling_firm` strings exactly as they appear in openFDA.",
-                    "The score is a recall-data exposure signal, not a legal, medical, or safety verdict.",
-                ],
-                "items": [
-                    {
-                        "rank": 1,
-                        "recalling_firm": "Aidapak Services, LLC",
-                        "exposure_score": 1076,
-                        "total_recalls": 538,
-                        "class_i_recalls": 0,
-                        "class_ii_recalls": 538,
-                        "class_iii_recalls": 0,
-                        "evidence": [recall_number],
-                        "evidence_links": [
-                            {
-                                "recall_number": recall_number,
-                                "url": f"/recalls/{recall_number}",
-                                "source_url": (
-                                    "https://api.fda.gov/drug/enforcement.json?"
-                                    f"search=recall_number%3A%22{recall_number}%22&limit=1"
-                                ),
-                                "source": "FDAgent recall detail (openFDA drug enforcement)",
-                            }
-                        ],
-                    }
-                ],
-            },
-        }
-    if fixture == "parent_group_exposure":
-        return {
-            "question": str(
-                case.get("question")
-                or "Which parent companies have the highest FDA recall exposure?"
-            ),
-            "intent": "parent_group_exposure",
-            "spec": {
-                "intent": "parent_group_exposure",
-                "exposure_metric": "severity_weighted",
-                "limit": 10,
-            },
-            "summary": (
-                "Parent-group exposure leaderboard using provenance-backed firm→parent edges; "
-                "this is not a safety verdict."
-            ),
-            "highlights": [
-                "Parent-group rows must be backed by allowed provenance metadata before they affect exact counts.",
-                "This answer is a recall-data profile, not a safe/unsafe recommendation.",
-            ],
-            "data": {
-                "kind": "multi_section",
-                "sections": [
-                    {
-                        "id": "parent_group_exposure",
-                        "title": "Parent-group exposure (provenance-backed)",
-                        "kind": "distribution",
-                        "dimension": "parent_group",
-                        "source": "parent_group_exposure_v1",
-                        "items": [
-                            {
-                                "value": "Example Parent Group",
-                                "count": 10,
-                                "evidence": ["D-0179-2026"],
-                                "provenance_tier": "fda_fact",
-                                "source": "audited firm_parent_group_edge",
-                            }
-                        ],
-                    }
-                ],
-            },
-        }
-    if fixture == "degraded_empty_retrieval":
-        query = str(case.get("query") or "unavailable semantic concept")
-        reason = str(
-            case.get("embedding_fallback_reason")
-            or "openrouter/openai/text-embedding-3-small: missing API key",
-        )
-        spec = QuerySpec(
-            intent=Intent.sample,
-            semantic_query=query,
-            semantic_aliases=[query],
-            limit=int(case.get("limit", 10)),
-        )
-        result = retrieval.SearchResult(
-            [],
-            retrieval_mode="fts_only",
-            embedding_fallback_reason=reason,
-            vector_hit_count=0,
-            fts_hit_count=0,
-            fused_hit_count=0,
-        )
-        summary = (
-            f"No keyword fallback matches for '{query}'. Semantic vector retrieval is "
-            "currently unavailable, so this empty result is not a full semantic conclusion."
-        )
-        answer = Answer(
-            str(case.get("question") or f"Show me recalls about {query}."),
-            spec,
-            summary,
-            result,
-            metadata={
-                "retrieval_mode": "fts_only",
-                "embedding_fallback_reason": reason,
-                "degraded": True,
-            },
-            highlights=build_highlights(str(case.get("question") or query), spec, result),
-        )
-        return serialize_answer(answer)
     raise EvalFailure(f"unknown answer_quality fixture {fixture!r}")
 
 
@@ -946,6 +814,76 @@ def _assert_answer_quality_fixture_case(case: Mapping[str, Any]) -> EvalResult:
         f"fixture={case.get('fixture')} {result.detail}",
         skipped=result.skipped,
         metadata=result.metadata,
+    )
+
+
+def _assert_ask_spec_case(case: Mapping[str, Any], *, args: argparse.Namespace) -> EvalResult:
+    spec_payload = case.get("spec")
+    _require(isinstance(spec_payload, Mapping), "ask_spec cases must include a spec object")
+    question = str(case.get("question") or "").strip()
+    _require(bool(question), "ask_spec cases must include a non-empty question")
+    spec = QuerySpec.model_validate(spec_payload)
+    engine = NLEngine(dsn=args.dsn, model=args.model)
+
+    embed_client = engine.embed_client
+    embedding_error: BaseException | None = engine.embedding_error
+    simulated_error = (
+        case.get("simulate_embedding_error")
+        or (case.get("assert") or {}).get("simulate_embedding_error")
+    )
+    if simulated_error:
+        embed_client = None
+        embedding_error = _simulated_embedding_error(str(simulated_error), engine.embed_config)
+
+    with RecallAnalytics(args.dsn) as analytics:
+        result = _run_question_spec(
+            analytics,
+            spec,
+            engine.chat_client,
+            engine.chat_config,
+            embed_client,
+            engine.embed_config,
+            embedding_error,
+            question,
+        )
+
+    metadata: dict[str, Any] = {}
+    if (
+        spec.semantic_query
+        and spec.intent is Intent.sample
+        and getattr(result, "retrieval_mode", None) == "fts_only"
+        and getattr(result, "embedding_fallback_reason", None)
+    ):
+        metadata.update({
+            "retrieval_mode": "fts_only",
+            "embedding_fallback_reason": getattr(result, "embedding_fallback_reason", None),
+            "degraded": True,
+        })
+        if not result:
+            summary = (
+                f"No keyword fallback matches for '{spec.semantic_query}'. Semantic vector retrieval "
+                "is currently unavailable, so this empty result is not a full semantic conclusion."
+            )
+        else:
+            summary = summarize(spec, result)
+    else:
+        summary = summarize(spec, result)
+
+    answer = serialize_answer(Answer(
+        question,
+        spec,
+        summary,
+        result,
+        metadata=metadata,
+        highlights=build_highlights(question, spec, result),
+    ))
+    eval_result = _assert_ask_case(case, answer)
+    return EvalResult(
+        eval_result.case_id,
+        eval_result.passed,
+        f"ask_spec {eval_result.detail}",
+        skipped=eval_result.skipped,
+        metadata=eval_result.metadata,
     )
 
 
@@ -1673,6 +1611,8 @@ def main() -> int:
                 case_results.append(_assert_deterministic_helper_case(case))
             elif kind == "embedding_provider_config":
                 case_results.append(_assert_embedding_provider_config_case(case))
+            elif kind == "ask_spec":
+                case_results.append(_assert_ask_spec_case(case, args=args))
             elif kind == "answer_quality_fixture":
                 case_results.append(_assert_answer_quality_fixture_case(case))
             elif kind == "expected_future":
