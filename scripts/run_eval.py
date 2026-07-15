@@ -10,6 +10,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Mapping
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -412,6 +413,97 @@ def _assert_deterministic_helper_case(case: Mapping[str, Any]) -> EvalResult:
     )
 
 
+def _assert_embedding_provider_config_case(case: Mapping[str, Any]) -> EvalResult:
+    assertions = case.get("assert") or {}
+    _require(isinstance(assertions, Mapping),
+             "embedding_provider_config case assert must be an object")
+    env = {str(k): str(v) for k, v in (case.get("env") or {}).items()}
+    unset_env = [str(v) for v in (case.get("unset_env") or [])]
+    managed_env = set(env) | set(unset_env)
+    old_env = {key: os.environ.get(key) for key in managed_env}
+    old_openai = llm.OpenAI
+    client_kwargs: dict[str, Any] = {}
+    request_kwargs: dict[str, Any] = {}
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs: Any) -> None:
+            client_kwargs.update(kwargs)
+
+    class FakeEmbeddings:
+        def create(self, **kwargs: Any) -> Any:
+            request_kwargs.update(kwargs)
+            return SimpleNamespace(
+                data=[SimpleNamespace(embedding=[0.0] * int(config.dimension or 0))]
+            )
+
+    try:
+        for key in unset_env:
+            os.environ.pop(key, None)
+        for key, value in env.items():
+            os.environ[key] = value
+
+        config = llm.embedding_config(model=case.get("model"))
+        _require(config.provider == assertions.get("provider"),
+                 f"provider expected {assertions.get('provider')!r}, got {config.provider!r}")
+        _require(config.model == assertions.get("model"),
+                 f"model expected {assertions.get('model')!r}, got {config.model!r}")
+        if "base_url" in assertions:
+            _require(config.base_url == assertions["base_url"],
+                     f"base_url expected {assertions['base_url']!r}, got {config.base_url!r}")
+        if "dimension" in assertions:
+            _require(config.dimension == int(assertions["dimension"]),
+                     f"dimension expected {assertions['dimension']!r}, got {config.dimension!r}")
+        if "configured" in assertions:
+            _require(config.configured is bool(assertions["configured"]),
+                     f"configured expected {assertions['configured']!r}, got {config.configured!r}")
+
+        llm.OpenAI = FakeOpenAI  # type: ignore[assignment]
+        llm.create_embedding_client(config)
+        if "client_api_key" in assertions:
+            _require(client_kwargs.get("api_key") == assertions["client_api_key"],
+                     "embedding client used the wrong API key")
+        if "client_not_api_key" in assertions:
+            _require(client_kwargs.get("api_key") != assertions["client_not_api_key"],
+                     "embedding client fell back to a forbidden API key")
+        if "client_base_url" in assertions:
+            _require(str(client_kwargs.get("base_url")) == str(assertions["client_base_url"]),
+                     f"client base_url expected {assertions['client_base_url']!r}, "
+                     f"got {client_kwargs.get('base_url')!r}")
+        default_headers = client_kwargs.get("default_headers") or {}
+        for header in assertions.get("client_default_headers_include") or []:
+            _require(header in default_headers,
+                     f"client default_headers missing {header!r}: {default_headers!r}")
+
+        fake_client = SimpleNamespace(embeddings=FakeEmbeddings())
+        llm.embed_text(fake_client, config, str(case.get("query", "superpotent")))
+        if "request_model" in assertions:
+            _require(request_kwargs.get("model") == assertions["request_model"],
+                     f"embedding request model expected {assertions['request_model']!r}, "
+                     f"got {request_kwargs.get('model')!r}")
+        if "request_encoding_format" in assertions:
+            _require(request_kwargs.get("encoding_format") == assertions["request_encoding_format"],
+                     f"embedding request encoding_format expected "
+                     f"{assertions['request_encoding_format']!r}, "
+                     f"got {request_kwargs.get('encoding_format')!r}")
+        extra_headers = request_kwargs.get("extra_headers") or {}
+        for header in assertions.get("request_extra_headers_include") or []:
+            _require(header in extra_headers,
+                     f"embedding request extra_headers missing {header!r}: {extra_headers!r}")
+    finally:
+        llm.OpenAI = old_openai  # type: ignore[assignment]
+        for key, old_value in old_env.items():
+            if old_value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = old_value
+
+    return EvalResult(
+        str(case["id"]),
+        True,
+        f"provider={config.provider} model={config.model} base_url={config.base_url}",
+    )
+
+
 def _run_retrieval_case(case: Mapping[str, Any], *, dsn: str) -> EvalResult:
     expected = {str(v) for v in case.get("expected_recall_numbers", [])}
     _require(bool(expected), "retrieval case needs expected_recall_numbers")
@@ -508,6 +600,8 @@ def main() -> int:
                     results.append(judge_result)
             elif kind == "deterministic_helper":
                 results.append(_assert_deterministic_helper_case(case))
+            elif kind == "embedding_provider_config":
+                results.append(_assert_embedding_provider_config_case(case))
             elif kind == "retrieval_recall":
                 results.append(_run_retrieval_case(case, dsn=args.dsn))
             else:
