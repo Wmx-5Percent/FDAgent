@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-07-15T06:08Z · 83 files · 2 missing description
+> Last generated: 2026-07-15T06:31Z · 85 files · 2 missing description
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -79,6 +79,7 @@
 - [`sql/008_firm_resolution.sql`](sql/008_firm_resolution.sql) — Create firm-resolution sidecar tables for offline FDA recalling-firm resolution.
 - [`sql/009_firm_resolution_runs.sql`](sql/009_firm_resolution_runs.sql) — Create firm-resolution run/pair audit tables for incremental company normalization.
 - [`sql/010_hybrid_search_log.sql`](sql/010_hybrid_search_log.sql) — Create hybrid_search_log: versioned retrieval-lab traces for /hybrid-search.
+- [`sql/011_parent_group_rollup.sql`](sql/011_parent_group_rollup.sql) — Create provenance-backed parent-group rollup prerequisites for firm exposure.
 
 ## src/
 - [`src/agent_control.py`](src/agent_control.py) — Guard /ask prompts before they enter the FDA recall query pipeline.
@@ -109,6 +110,8 @@
 - [`src/firm/__init__.py`](src/firm/__init__.py) — Offline firm and brand resolution helpers for FDA recall sidecar tables.
 - [`src/firm/brand.py`](src/firm/brand.py) — Resolve brand/product names to firm or parent candidates with provenance tiers.
   - symbols: `BrandCandidate`, `BrandInference`, `collect_candidates`, `apply_candidates`, `print_candidates`, `run`, `parse_args`
+- [`src/firm/parent_group.py`](src/firm/parent_group.py) — Maintain auditable firm→parent_group edges for normalized exposure rollups.
+  - symbols: `FirmMatch`, `EdgeSeed`, `ApplyStats`, `load_seed_file`, `apply_seeds`, `apply_unknown_self_parents`, `run`, `parse_args`
 - [`src/firm/resolve.py`](src/firm/resolve.py) — Resolve FDA recalling_firm strings into conservative sidecar firm aliases.
   - symbols: `SourceConfig`, `FirmName`, `CandidatePair`, `Cluster`, `LoadedNames`, `FirmPairVerification`, `UnionFind`, `deterministic_reject_reason`, `normalize_name`, `load_firm_names`, `pg_trgm_pairs`, `pair_signals`
 - [`src/llm.py`](src/llm.py) — OpenAI-compatible chat and embedding provider gateway for serving paths.
