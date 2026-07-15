@@ -20,12 +20,15 @@ embedding provider。每个 case 用 `requires_llm` / `requires_embedding` /
 
 `evals/rag/v1.json` 是固定查询 + 固定 `recall_number` 证据集的检索基准。每个
 `retrieval_recall` case 输出 provider/model/dimension、`retrieval_mode`、fallback
-reason、vector/FTS/fused hit counts、`recall@k`、MRR 和 nDCG。
+reason、vector/FTS/fused hit counts、`recall@k`、MRR、nDCG、matched recall numbers
+和 returned recall numbers。
 
 - `retrieval_mode=hybrid` case 需要可用 embedding provider；provider 不可用时必须
   `SKIP` 并打印 provider/model/fallback metadata，不能当作 zero-recall 通过。
 - `retrieval_mode=fts_only` fallback case 使用 `simulate_embedding_fallback`，不需要
-  外部 embedding credentials，用来固定 degraded retrieval 行为和 fallback reason。
+  外部 embedding credentials，用来固定 degraded retrieval 行为和 fallback reason；
+  需要区分具体错误类型时可用 `simulate_embedding_error`（例如
+  `ProviderMissingKeyError`）。
 - 当前基准使用 per-case metric floors（如 `min_recall_at_k` / `min_mrr_at_k` /
   `min_ndcg_at_k`）来捕捉召回率下降；跨分支 baseline snapshot/compare-to-main 报告由
   后续 baseline issue 实现，避免在这里重复。
