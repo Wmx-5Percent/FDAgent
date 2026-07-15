@@ -967,22 +967,6 @@ def _ask_with_eval_overrides(
         nl_query_module.generate_spec = old_generate_spec
 
 
-def _assert_mocked_ask_case(case: Mapping[str, Any], *, args: argparse.Namespace) -> EvalResult:
-    control = case.get("mock_control")
-    _require(isinstance(control, Mapping), "mocked ask cases must include mock_control")
-    _require(str(control.get("route") or "") in {"chitchat_meta", "out_of_domain", "ambiguous"},
-             f"mock_control route must be terminal, got {control.get('route')!r}")
-    answer = _ask_with_eval_overrides(case, args=args, control=control)
-    eval_result = _assert_ask_case(case, answer)
-    return EvalResult(
-        eval_result.case_id,
-        eval_result.passed,
-        f"ask mock_control {eval_result.detail}",
-        skipped=eval_result.skipped,
-        metadata=eval_result.metadata,
-    )
-
-
 def _assert_ask_spec_case(case: Mapping[str, Any], *, args: argparse.Namespace) -> EvalResult:
     spec_payload = case.get("spec")
     _require(isinstance(spec_payload, Mapping), "ask_spec cases must include a spec object")
