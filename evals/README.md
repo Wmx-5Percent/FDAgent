@@ -88,10 +88,9 @@ caveat、degraded retrieval 的「不能当作事实零结果」提示、meta/ou
 
 可执行的数据路径 case 优先用 `kind: ask_spec`：直接给定 `QuerySpec`，通过
 `NLEngine.ask` 跑真实 analytics/retrieval/summarize/serialize 路径，避免 LLM 路由不稳定，
-但仍能抓住最终答案结构和措辞回归。Terminal guard 边界用 `kind: ask_spec` + `mock_control`
-给 classifier 一个受控结构化输出，然后调用真实 `NLEngine.ask` 终止路径；这避免外部
-provider 不稳定，也避免用 hard-coded payload 冒充通过。不要用 hard-coded fixture 替代会声明
-证据或 caveat 的数据路径。
+但仍能抓住最终答案结构和措辞回归。Terminal guard 边界用 `kind: ask` 调真实
+`NLEngine.ask` / classifier；本地 provider 不可用时会显式 SKIP，而不是用 hard-coded
+payload 冒充通过。不要用 hard-coded fixture 替代会声明证据或 caveat 的数据路径。
 
 该 suite 的零容忍边界必须用 deterministic assertions（文本、结构、evidence fields）
 表达；LLM-as-judge 只能作为额外审计信息，不能作为唯一断言。尚未实现的 Recall Profile
