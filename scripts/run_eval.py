@@ -1160,10 +1160,12 @@ def _compare_case(
     rank = {"fail": 0, "skip": 1, "pass": 2}
     before = str(baseline.get("status"))
     after = str(current.get("status"))
+    regressions: list[str] = []
+    improvements: list[str] = []
     if rank.get(after, 0) < rank.get(before, 0):
-        return "regressed", f"status {before} -> {after}: {current.get('detail')}"
-    if rank.get(after, 0) > rank.get(before, 0):
-        return "improved", f"status {before} -> {after}"
+        regressions.append(f"status {before} -> {after}: {current.get('detail')}")
+    elif rank.get(after, 0) > rank.get(before, 0):
+        improvements.append(f"status {before} -> {after}")
 
     suites = [str(suite) for suite in current.get("suite") or baseline.get("suite") or []]
     latency_tolerance = _suite_threshold_value(
@@ -1176,13 +1178,11 @@ def _compare_case(
     if isinstance(before_ms, (int, float)) and isinstance(after_ms, (int, float)):
         delta = float(after_ms) - float(before_ms)
         if delta > latency_tolerance:
-            return (
-                "regressed",
+            regressions.append(
                 f"latency +{delta:.1f}ms exceeds tolerance {latency_tolerance:.1f}ms",
             )
-        if delta < -latency_tolerance:
-            return (
-                "improved",
+        elif delta < -latency_tolerance:
+            improvements.append(
                 f"latency {delta:.1f}ms beats tolerance {latency_tolerance:.1f}ms",
             )
 
@@ -1196,16 +1196,18 @@ def _compare_case(
     if before_recall is not None and after_recall is not None:
         delta = after_recall - before_recall
         if delta < -recall_tolerance:
-            return (
-                "regressed",
+            regressions.append(
                 f"recall_at_k {before_recall:.3f} -> {after_recall:.3f}",
             )
-        if delta > recall_tolerance:
-            return (
-                "improved",
+        elif delta > recall_tolerance:
+            improvements.append(
                 f"recall_at_k {before_recall:.3f} -> {after_recall:.3f}",
             )
 
+    if regressions:
+        return "regressed", "; ".join(regressions)
+    if improvements:
+        return "improved", "; ".join(improvements)
     return "unchanged", "within configured thresholds"
 
 

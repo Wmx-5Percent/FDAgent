@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-07-15T07:46Z · 87 files · 2 missing description
+> Last generated: 2026-07-15T07:54Z · 88 files · 2 missing description
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -55,6 +55,8 @@
 - [`evals/rag/v1.json`](evals/rag/v1.json) — {"description": "FDAgent RAG retrieval benchmark suite v1: fixed queries, recall@k, ranking quality, and provider fallba
 
 ## scripts/
+- [`scripts/check_baseline_compare_regression.py`](scripts/check_baseline_compare_regression.py) — Smoke-check that baseline comparison reports recall regressions before improvements.
+  - symbols: `main`
 - [`scripts/check_hybrid_filter_validation.py`](scripts/check_hybrid_filter_validation.py) — Focused smoke checks for /hybrid-search bad-filter handling.
   - symbols: `main`
 - [`scripts/check_wave_gate.py`](scripts/check_wave_gate.py) — Check whether a parallel child-agent wave gate is READY or BLOCKED.
