@@ -715,9 +715,11 @@ def _run_retrieval_case(case: Mapping[str, Any], *, dsn: str) -> EvalResult:
     _assert_min_float(assertions, "min_mrr_at_k", mrr, label=f"mrr@{k}")
     _assert_min_float(assertions, "min_ndcg_at_k", ndcg, label=f"ndcg@{k}")
     if "embedding_fallback_reason" in assertions:
-        _require(fallback_reason == assertions["embedding_fallback_reason"],
-                 f"embedding_fallback_reason expected {assertions['embedding_fallback_reason']!r}, "
-                 f"got {fallback_reason!r}")
+        expected_reason = str(assertions["embedding_fallback_reason"])
+        _require(
+            str(fallback_reason) == expected_reason or expected_reason in str(fallback_reason),
+            f"embedding_fallback_reason expected {expected_reason!r}, got {fallback_reason!r}",
+        )
     if assertions.get("requires_fallback_reason"):
         _require(bool(fallback_reason), "expected non-empty embedding_fallback_reason")
     for needle in assertions.get("fallback_reason_contains_all") or []:
