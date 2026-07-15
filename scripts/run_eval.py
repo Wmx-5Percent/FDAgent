@@ -1246,8 +1246,14 @@ def _build_ask_fn(args: argparse.Namespace) -> Callable[[str], dict[str, Any]]:
 def _provider_unavailable_skip_result(
     case: Mapping[str, Any],
     exc: BaseException,
+    *,
+    explicit_only: bool,
 ) -> EvalResult | None:
-    if not case.get("allow_provider_unavailable_skip") or not _is_provider_unavailable(exc):
+    requires_provider = bool(case.get("requires_llm") or case.get("requires_embedding"))
+    allows_skip = bool(case.get("allow_provider_unavailable_skip")) or (
+        requires_provider and not explicit_only
+    )
+    if not allows_skip or not _is_provider_unavailable(exc):
         return None
     provider = getattr(exc, "provider", None)
     model = getattr(exc, "model", None)
@@ -1770,7 +1776,11 @@ def main() -> int:
             else:
                 raise EvalFailure(f"unknown case kind {kind!r}")
         except Exception as exc:  # noqa: BLE001 - eval runner must report every case failure
-            skipped = _provider_unavailable_skip_result(case, exc)
+            skipped = _provider_unavailable_skip_result(
+                case,
+                exc,
+                explicit_only=args.core_pr_gate,
+            )
             if skipped is not None:
                 case_results.append(skipped)
             else:
