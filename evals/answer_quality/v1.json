@@ -45,6 +45,7 @@
       "requires_llm": true,
       "requires_embedding": false,
       "requires_db": true,
+      "allow_provider_unavailable_skip": true,
       "assert": {
         "route": "out_of_domain",
         "data_kinds": [
@@ -72,6 +73,7 @@
       "requires_llm": true,
       "requires_embedding": false,
       "requires_db": true,
+      "allow_provider_unavailable_skip": true,
       "assert": {
         "route": "chitchat_meta",
         "data_kinds": [
