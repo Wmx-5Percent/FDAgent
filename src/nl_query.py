@@ -1227,6 +1227,13 @@ def _semantic_groups(
     with a.conn.cursor() as cur:
         cur.execute(q, [recall_numbers])
         values = {r[0]: r[1] for r in cur.fetchall()}
+    a.record_sql_debug(
+        q,
+        [recall_numbers],
+        source="analytics.semantic_count_group_lookup",
+        title=f"Semantic-count group lookup by {group_by}",
+        query_id=f"semantic_count_group_{group_by}",
+    )
 
     pool_counts: dict[Any, int] = {}
     evidence: dict[Any, list[str]] = {}
@@ -1295,6 +1302,7 @@ def _run_semantic_count(
         embed_config=embed_config,
         embedding_error=embedding_error,
         fts_queries=spec.semantic_aliases,
+        sql_debug_recorder=a.record_sql_debug,
     )
     fallback_reason = getattr(hits, "embedding_fallback_reason", None) or (
         hits[0].embedding_fallback_reason
@@ -1477,6 +1485,7 @@ def run_spec(
             embed_config=embed_config,
             embedding_error=embedding_error,
             fts_queries=spec.semantic_aliases,
+            sql_debug_recorder=a.record_sql_debug,
         )
     if spec.semantic_query and spec.intent in {Intent.count_total, Intent.count_by}:
         return _run_semantic_count(
@@ -1506,6 +1515,24 @@ def run_spec(
     if spec.intent is Intent.sample and not filters:
         raise ValueError("sample needs filters or semantic_query")
     return a.sample(filters, n=spec.limit or 5)
+
+
+def _sql_debug_payload(queries: list[dict[str, Any]], result: Any) -> dict[str, Any]:
+    items = [dict(item) for item in queries]
+    if isinstance(result, MultiSectionResult) and len(items) == len(result.sections):
+        for item, section in zip(items, result.sections, strict=True):
+            item.update({
+                "id": section.id,
+                "title": section.title,
+                "source": section.source,
+            })
+    elif len(items) == 1:
+        items[0]["id"] = "main"
+    return {
+        "label": "Parameterized SQL + bound params",
+        "representation": "parameterized_sql_with_bound_params",
+        "queries": items,
+    }
 
 
 def _clean_text(value: Any) -> str:
@@ -2005,6 +2032,7 @@ class NLEngine:
                         control=control,
                         metadata={"control_route": control.route, "control_reason": control.reason},
                     )
+                a.clear_sql_debug()
                 spec = generate_spec(
                     self.chat_client,
                     self.chat_config,
@@ -2022,7 +2050,10 @@ class NLEngine:
                     self.embedding_error,
                     question,
                 )
+            sql_debug_queries = a.sql_debug_queries()
         metadata: dict[str, Any] = {}
+        if sql_debug_queries:
+            metadata["sql_debug"] = _sql_debug_payload(sql_debug_queries, result)
         if isinstance(result, MultiSectionResult):
             metadata["intent"] = result.intent
             metadata["sections"] = [
