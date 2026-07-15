@@ -1,0 +1,30 @@
+{"description": "Pinned stable fixture fingerprint for FDAgent eval preflight.",
+  "dataset": "openFDA drug/enforcement",
+  "source_table": "drug_enforcement",
+  "fingerprint_version": "drug_enforcement_raw_v1",
+  "stable_fields": [
+    "id",
+    "source",
+    "report_date",
+    "raw"
+  ],
+  "excluded_fields": [
+    "fetched_at"
+  ],
+  "row_count": 17723,
+  "report_date_min": "2012-06-20",
+  "report_date_max": "2026-06-17",
+  "distinct_recall_numbers": 17723,
+  "distinct_event_ids": 4582,
+  "taxonomy_label_rows": 21909,
+  "taxonomy_covered_records": 17723,
+  "taxonomy_versions": 1,
+  "taxonomy_labelers": 1,
+  "embedding_rows": 35446,
+  "embedding_covered_records": 17723,
+  "embedding_fields": 2,
+  "source_column_count": 28,
+  "source_index_count": 9,
+  "source_schema_sha256": "739ae9306d972fda8722e6d51831f33d07ff3853773860023fd41e46a40548df",
+  "sha256": "bdea42974e52abda0c68d343ea2cfb57b8e6b49f3c401df785c08f9c53d65a49"
+}

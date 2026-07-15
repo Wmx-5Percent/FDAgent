@@ -44,5 +44,25 @@ Runner 会在执行前校验这些字段，防止新 case 漏掉 suite 或前置
 4. `risk` 写清楚防守面；如果关联 issue/PR，可在 `notes` 中记录。
 5. 用 `--case <id>` 先跑新增 case，再跑相关 `--suite`。
 
-本合同只定义 suite / metadata / selection 规则。数据指纹、baseline 对比、PR gate、
-RAG benchmark 和 answer-quality 细分实现分别由后续 issue 承担。
+本合同只定义 suite / metadata / selection 规则。下方数据集指纹只负责 stable fixture
+preflight；baseline 对比、PR gate、RAG benchmark 和 answer-quality 细分实现分别由后续
+issue 承担。
+
+## 数据集指纹 preflight
+
+`scripts/run_eval.py` 在执行任何 `requires_db: true` 的 case 前，会先检查本地
+`drug_enforcement` fixture 是否等于已审查的稳定数据集指纹：
+
+- baseline：`evals/baselines/drug_enforcement_fingerprint.json`
+- 算法：`scripts/dataset_fingerprint.py` 读取稳定字段 `id`、`source`、`report_date`
+  和完整 `raw` JSONB，排除易变的 `fetched_at`，按 `id` 排序后计算 SHA-256；
+  同时记录 row count、`report_date` 范围、taxonomy label 覆盖、embedding 覆盖、
+  以及当前 `drug_enforcement` schema/index 签名。
+- 默认检查：`.venv/bin/python scripts/dataset_fingerprint.py --check`
+- 查看当前指纹：`.venv/bin/python scripts/dataset_fingerprint.py`
+
+如果 preflight 失败（`run_eval.py` 返回 3 / `DATASET DRIFT`），先确认本地 fixture 是否
+误跑了 ingest 或连接到错误 DB。确实要接受新 fixture 时，必须在单独可审查的变更中显式运行
+`.venv/bin/python scripts/dataset_fingerprint.py --write-baseline` 并说明原因；
+`run_eval.py` 不会静默刷新或 bless 新 baseline。临时调试可用
+`--skip-dataset-fingerprint`，但不能把它当作 PR 验证结果。
