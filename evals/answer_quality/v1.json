@@ -35,17 +35,16 @@
   "cases": [
     {
       "id": "aq-control-out-of-domain-english-no-sql-rag",
-      "kind": "ask",
+      "kind": "ask_spec",
       "question": "Tell me a joke.",
       "suite": [
         "answer_quality",
         "regression"
       ],
       "risk": "agent_control_no_sql_rag_for_out_of_domain",
-      "requires_llm": true,
+      "requires_llm": false,
       "requires_embedding": false,
       "requires_db": true,
-      "allow_provider_unavailable_skip": true,
       "assert": {
         "route": "out_of_domain",
         "data_kinds": [
@@ -59,21 +58,28 @@
           "semantic vector",
           "SQL"
         ]
+      },
+      "mock_control": {
+        "route": "out_of_domain",
+        "reason": "eval_out_of_domain",
+        "message": "I can answer questions about FDA drug recall enforcement reports, not unrelated topics.",
+        "suggestions": [
+          "How many Class I drug recalls have there been?"
+        ]
       }
     },
     {
       "id": "aq-control-meta-chinese-no-sql-rag",
-      "kind": "ask",
+      "kind": "ask_spec",
       "question": "你可以做什么？",
       "suite": [
         "answer_quality",
         "regression"
       ],
       "risk": "agent_control_no_sql_rag_for_meta",
-      "requires_llm": true,
+      "requires_llm": false,
       "requires_embedding": false,
       "requires_db": true,
-      "allow_provider_unavailable_skip": true,
       "assert": {
         "route": "chitchat_meta",
         "data_kinds": [
@@ -86,6 +92,14 @@
           "estimated",
           "semantic vector",
           "SQL"
+        ]
+      },
+      "mock_control": {
+        "route": "chitchat_meta",
+        "reason": "eval_capability_question",
+        "message": "我可以回答 FDA 药品召回数据的问题，并给出可核查的召回证据。",
+        "suggestions": [
+          "有多少 Class I 药品召回？"
         ]
       }
     },
