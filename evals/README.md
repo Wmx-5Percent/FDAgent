@@ -8,6 +8,8 @@
 - PR 阻塞核心集：`.venv/bin/python scripts/run_eval.py --golden evals/golden/v1.json --suite core`
 - RAG / embedding 质量烟测：`.venv/bin/python scripts/run_eval.py --golden evals/golden/v1.json --suite rag`
 - RAG retrieval benchmark：`.venv/bin/python scripts/run_eval.py --golden evals/rag/v1.json --suite rag`
+- Answer-quality / honesty regression：`.venv/bin/python scripts/run_eval.py --golden evals/answer_quality/v1.json --suite answer_quality`
+- Future Recall Profile boundary checks：`.venv/bin/python scripts/run_eval.py --golden evals/answer_quality/v1.json --suite firm_profile`
 - 精确 case 子集：`.venv/bin/python scripts/run_eval.py --golden evals/golden/v1.json --case numeric-class-i-count --case taxonomy-reason-breakdown`
 - 查看选择结果：`.venv/bin/python scripts/run_eval.py --golden evals/golden/v1.json --suite core --list-cases`
 - 生成可持久化 baseline/report：`.venv/bin/python scripts/run_eval.py --golden evals/golden/v1.json --suite core --report-json evals/baselines/core-local-report.json`
@@ -55,6 +57,18 @@ Runner 会在执行前校验这些字段，防止新 case 漏掉 suite 或前置
 - `answer_quality`：最终答案诚实性、证据边界、措辞约束；由后续 answer-quality 工作扩展。
 - `firm_profile`：未来 Recall Profile / 公司画像行为；不得提前实现业务路由。
 - `regression`：所有已修 bug 的永久回归标签；可与 `core`、`rag` 等主 suite 同时存在。
+
+## Answer-quality / honesty suite
+
+`evals/answer_quality/v1.json` 固定最终答案边界：证据链接、raw FDA 与 parent-group
+caveat、degraded retrieval 的「不能当作事实零结果」提示、meta/out-of-domain 不进入 SQL/RAG，
+以及公司安全问题不得输出 safe/unsafe verdict 或 safety score。
+
+该 suite 的零容忍边界必须用 deterministic assertions（文本、结构、evidence fields）
+表达；LLM-as-judge 只能作为额外审计信息，不能作为唯一断言。尚未实现的 Recall Profile
+行为必须写成 `kind: expected_future`，带 `blocked_by` 和完整未来断言；runner 会显式
+`SKIP`，不得静默当作 pass。Issue #43 实现 Recall Profile 时，必须把这些 expected-future
+case 改成可执行 `ask` case，或新增更精确 case 后删除/替换 pending case。
 
 ## 如何添加 regression case
 

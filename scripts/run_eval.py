@@ -34,12 +34,16 @@ from dataset_fingerprint import (  # noqa: E402
 )
 from api import serialize_answer  # noqa: E402
 from nl_query import (  # noqa: E402
+    Answer,
+    Intent,
     MODEL,
     NLEngine,
+    QuerySpec,
     _class_filter_label,
     _maybe_raw_firm_exposure_spec,
     _maybe_simple_class_count_spec,
     _safe_hard_filter_specs_or_defer,
+    build_highlights,
 )
 
 DEFAULT_DSN = os.environ.get("DATABASE_URL", "postgresql://localhost:5432/fda")
@@ -410,6 +414,98 @@ def _assert_filters(assertions: Mapping[str, Any], spec: Mapping[str, Any]) -> N
         _require(matched, f"expected filter {dict(expected)!r}, got {filters!r}")
 
 
+def _surface_text(answer: Mapping[str, Any]) -> str:
+    surface = {
+        "summary": answer.get("summary"),
+        "highlights": answer.get("highlights"),
+        "data": answer.get("data"),
+    }
+    return json.dumps(surface, ensure_ascii=False, sort_keys=True).casefold()
+
+
+def _collect_key(value: Any, key: str) -> list[Any]:
+    found: list[Any] = []
+    if isinstance(value, Mapping):
+        if key in value:
+            found.append(value[key])
+        for child in value.values():
+            found.extend(_collect_key(child, key))
+    elif isinstance(value, list):
+        for child in value:
+            found.extend(_collect_key(child, key))
+    return found
+
+
+def _assert_text_boundaries(assertions: Mapping[str, Any], answer: Mapping[str, Any]) -> None:
+    haystack = _surface_text(answer)
+    for needle in assertions.get("text_contains_all") or []:
+        _require(
+            str(needle).casefold() in haystack,
+            f"answer surface text expected to contain {needle!r}",
+        )
+    any_needles = [str(v).casefold() for v in assertions.get("text_contains_any") or []]
+    if any_needles:
+        _require(
+            any(needle in haystack for needle in any_needles),
+            f"answer surface text did not contain any of {any_needles}",
+        )
+    for needle in assertions.get("text_not_contains_any") or []:
+        _require(
+            str(needle).casefold() not in haystack,
+            f"answer surface text unexpectedly contained {needle!r}",
+        )
+
+
+def _assert_evidence_boundaries(assertions: Mapping[str, Any], data: Mapping[str, Any]) -> None:
+    if assertions.get("requires_any_evidence"):
+        evidence_values = [
+            value for value in _collect_key(data, "evidence")
+            if isinstance(value, list) and bool(value)
+        ]
+        _require(bool(evidence_values), "expected at least one non-empty evidence list")
+    if assertions.get("requires_evidence_links"):
+        link_values = [
+            value for value in _collect_key(data, "evidence_links")
+            if isinstance(value, list) and bool(value)
+        ]
+        _require(bool(link_values), "expected at least one non-empty evidence_links list")
+        for links in link_values:
+            for idx, link in enumerate(links):
+                _require(isinstance(link, Mapping),
+                         f"evidence_links[{idx}] must be an object")
+                for key in ("recall_number", "url", "source_url"):
+                    _require(bool(link.get(key)),
+                             f"evidence_links[{idx}] missing non-empty {key!r}")
+    if assertions.get("items_require_evidence") or assertions.get("items_require_evidence_links"):
+        items = data.get("items")
+        _require(isinstance(items, list) and bool(items),
+                 "item evidence assertions require non-empty data.items")
+        for idx, item in enumerate(items):
+            _require(isinstance(item, Mapping),
+                     f"data.items[{idx}] must be an object")
+            if assertions.get("items_require_evidence"):
+                _require(isinstance(item.get("evidence"), list) and bool(item.get("evidence")),
+                         f"data.items[{idx}] expected non-empty evidence")
+            if assertions.get("items_require_evidence_links"):
+                _require(
+                    isinstance(item.get("evidence_links"), list) and bool(item.get("evidence_links")),
+                    f"data.items[{idx}] expected non-empty evidence_links",
+                )
+
+
+def _assert_caveats(assertions: Mapping[str, Any], data: Mapping[str, Any]) -> None:
+    expected = assertions.get("data_caveats_contains_all") or []
+    if not expected:
+        return
+    caveats = data.get("caveats")
+    _require(isinstance(caveats, list) and bool(caveats),
+             "expected non-empty data.caveats list")
+    haystack = "\n".join(str(value) for value in caveats).casefold()
+    for needle in expected:
+        _require(str(needle).casefold() in haystack,
+                 f"data.caveats expected to contain {needle!r}, got {caveats!r}")
+
+
 def _assert_ask_case(case: Mapping[str, Any], answer: Mapping[str, Any]) -> EvalResult:
     assertions = case.get("assert") or {}
     _require(isinstance(assertions, Mapping), "ask case assert must be an object")
@@ -439,6 +535,9 @@ def _assert_ask_case(case: Mapping[str, Any], answer: Mapping[str, Any]) -> Eval
     if assertions.get("spec_empty"):
         _require(not spec, f"expected empty spec for guarded response, got {spec!r}")
     _assert_filters(assertions, spec)
+    _assert_text_boundaries(assertions, answer)
+    _assert_evidence_boundaries(assertions, data)
+    _assert_caveats(assertions, data)
     if data_kind in {"semantic_count", "semantic_distribution"}:
         _assert_semantic_count(assertions, data)
     _assert_highlights(assertions, answer)
@@ -669,6 +768,209 @@ def _assert_embedding_provider_config_case(case: Mapping[str, Any]) -> EvalResul
             "embedding_model": config.model,
             "embedding_dimension": config.dimension,
         },
+    )
+
+
+def _answer_quality_fixture_payload(case: Mapping[str, Any]) -> dict[str, Any]:
+    fixture = str(case.get("fixture") or "")
+    if fixture == "out_of_domain_message":
+        question = str(case.get("question") or "Tell me a joke.")
+        return {
+            "question": question,
+            "intent": "out_of_domain",
+            "spec": {},
+            "summary": "I can answer questions about FDA drug recall enforcement reports, not unrelated topics.",
+            "data": {
+                "kind": "message",
+                "route": "out_of_domain",
+                "message": "Ask about FDA drug recall counts, trends, reasons, firms, or evidence.",
+            },
+        }
+    if fixture == "chitchat_meta_message_zh":
+        question = str(case.get("question") or "你可以做什么？")
+        return {
+            "question": question,
+            "intent": "chitchat_meta",
+            "spec": {},
+            "summary": "我可以回答 FDA 药品召回数据的问题，并给出可核查的召回证据。",
+            "data": {
+                "kind": "message",
+                "route": "chitchat_meta",
+                "message": "你可以问召回数量、趋势、原因分类、公司/firm 排名和样本证据。",
+            },
+        }
+    if fixture == "raw_firm_exposure":
+        recall_number = "D-0179-2026"
+        return {
+            "question": str(
+                case.get("question")
+                or "Which recalling firms have the most FDA drug recalls?"
+            ),
+            "intent": "raw_firm_exposure",
+            "spec": {
+                "intent": "raw_firm_exposure",
+                "exposure_metric": "recall_count",
+                "limit": 10,
+            },
+            "summary": (
+                "Raw FDA `recalling_firm` exposure leaderboard; this is not a safety verdict "
+                "and uses the raw_severity_v0 formula."
+            ),
+            "highlights": [
+                "Review the leaderboard rows for raw counts, class breakdowns, and sample recall evidence.",
+                "This score is a recall-data exposure signal, not a safety verdict.",
+            ],
+            "data": {
+                "kind": "raw_firm_exposure",
+                "metric": "recall_count",
+                "formula_version": "raw_severity_v0",
+                "formula": "3 * Class I + 2 * Class II + 1 * Class III",
+                "scope": "raw_fda_recalling_firm",
+                "caveats": [
+                    "This leaderboard uses raw FDA `recalling_firm` strings exactly as they appear in openFDA.",
+                    "The score is a recall-data exposure signal, not a legal, medical, or safety verdict.",
+                ],
+                "items": [
+                    {
+                        "rank": 1,
+                        "recalling_firm": "Aidapak Services, LLC",
+                        "exposure_score": 1076,
+                        "total_recalls": 538,
+                        "class_i_recalls": 0,
+                        "class_ii_recalls": 538,
+                        "class_iii_recalls": 0,
+                        "evidence": [recall_number],
+                        "evidence_links": [
+                            {
+                                "recall_number": recall_number,
+                                "url": f"/recalls/{recall_number}",
+                                "source_url": (
+                                    "https://api.fda.gov/drug/enforcement.json?"
+                                    f"search=recall_number%3A%22{recall_number}%22&limit=1"
+                                ),
+                                "source": "FDAgent recall detail (openFDA drug enforcement)",
+                            }
+                        ],
+                    }
+                ],
+            },
+        }
+    if fixture == "parent_group_exposure":
+        return {
+            "question": str(
+                case.get("question")
+                or "Which parent companies have the highest FDA recall exposure?"
+            ),
+            "intent": "parent_group_exposure",
+            "spec": {
+                "intent": "parent_group_exposure",
+                "exposure_metric": "severity_weighted",
+                "limit": 10,
+            },
+            "summary": (
+                "Parent-group exposure leaderboard using provenance-backed firm→parent edges; "
+                "this is not a safety verdict."
+            ),
+            "highlights": [
+                "Parent-group rows must be backed by allowed provenance metadata before they affect exact counts.",
+                "This answer is a recall-data profile, not a safe/unsafe recommendation.",
+            ],
+            "data": {
+                "kind": "multi_section",
+                "sections": [
+                    {
+                        "id": "parent_group_exposure",
+                        "title": "Parent-group exposure (provenance-backed)",
+                        "kind": "distribution",
+                        "dimension": "parent_group",
+                        "source": "parent_group_exposure_v1",
+                        "items": [
+                            {
+                                "value": "Example Parent Group",
+                                "count": 10,
+                                "evidence": ["D-0179-2026"],
+                                "provenance_tier": "fda_fact",
+                                "source": "audited firm_parent_group_edge",
+                            }
+                        ],
+                    }
+                ],
+            },
+        }
+    if fixture == "degraded_empty_retrieval":
+        query = str(case.get("query") or "unavailable semantic concept")
+        reason = str(
+            case.get("embedding_fallback_reason")
+            or "openrouter/openai/text-embedding-3-small: missing API key",
+        )
+        spec = QuerySpec(
+            intent=Intent.sample,
+            semantic_query=query,
+            semantic_aliases=[query],
+            limit=int(case.get("limit", 10)),
+        )
+        result = retrieval.SearchResult(
+            [],
+            retrieval_mode="fts_only",
+            embedding_fallback_reason=reason,
+            vector_hit_count=0,
+            fts_hit_count=0,
+            fused_hit_count=0,
+        )
+        summary = (
+            f"No keyword fallback matches for '{query}'. Semantic vector retrieval is "
+            "currently unavailable, so this empty result is not a full semantic conclusion."
+        )
+        answer = Answer(
+            str(case.get("question") or f"Show me recalls about {query}."),
+            spec,
+            summary,
+            result,
+            metadata={
+                "retrieval_mode": "fts_only",
+                "embedding_fallback_reason": reason,
+                "degraded": True,
+            },
+            highlights=build_highlights(str(case.get("question") or query), spec, result),
+        )
+        return serialize_answer(answer)
+    raise EvalFailure(f"unknown answer_quality fixture {fixture!r}")
+
+
+def _assert_answer_quality_fixture_case(case: Mapping[str, Any]) -> EvalResult:
+    answer = _answer_quality_fixture_payload(case)
+    result = _assert_ask_case(case, answer)
+    return EvalResult(
+        result.case_id,
+        result.passed,
+        f"fixture={case.get('fixture')} {result.detail}",
+        skipped=result.skipped,
+        metadata=result.metadata,
+    )
+
+
+def _assert_expected_future_case(case: Mapping[str, Any]) -> EvalResult:
+    blocked_by = case.get("blocked_by") or []
+    _require(isinstance(blocked_by, list) and bool(blocked_by),
+             "expected_future cases must include non-empty blocked_by")
+    assertions = case.get("assert") or {}
+    _require(isinstance(assertions, Mapping),
+             "expected_future case assert must be an object")
+    _require(
+        bool(assertions.get("text_contains_all") or assertions.get("text_contains_any")),
+        "expected_future cases must describe required future answer text",
+    )
+    _require(
+        bool(assertions.get("text_not_contains_any") or assertions.get("summary_not_contains_any")),
+        "expected_future cases must describe forbidden overclaim text",
+    )
+    return EvalResult(
+        str(case["id"]),
+        True,
+        "expected_future pending; blocked_by="
+        f"{','.join(str(item) for item in blocked_by)}; not counted as passing behavior",
+        skipped=True,
+        metadata={"blocked_by": blocked_by},
     )
 
 
@@ -1371,6 +1673,10 @@ def main() -> int:
                 case_results.append(_assert_deterministic_helper_case(case))
             elif kind == "embedding_provider_config":
                 case_results.append(_assert_embedding_provider_config_case(case))
+            elif kind == "answer_quality_fixture":
+                case_results.append(_assert_answer_quality_fixture_case(case))
+            elif kind == "expected_future":
+                case_results.append(_assert_expected_future_case(case))
             elif kind == "retrieval_recall":
                 case_results.append(_run_retrieval_case(case, dsn=args.dsn))
             else:

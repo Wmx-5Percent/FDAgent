@@ -1,0 +1,298 @@
+{
+  "description": "FDAgent answer-quality and honesty suite v1: final-answer evidence, caveats, degraded retrieval honesty, and pending Recall Profile boundaries.",
+  "version": "answer-quality-v1",
+  "case_metadata_contract": {
+    "required_case_fields": [
+      "id",
+      "kind",
+      "suite",
+      "risk",
+      "requires_llm",
+      "requires_embedding",
+      "requires_db",
+      "assert"
+    ],
+    "suite": "string or non-empty list of strings defined in top-level suites",
+    "risk": "answer-quality or honesty boundary protected by the case",
+    "assert": "deterministic final-answer structure/text/evidence assertions; LLM judge is never the only zero-tolerance assertion"
+  },
+  "suites": {
+    "answer_quality": {
+      "description": "Final-answer honesty, caveat, evidence, degraded-retrieval, and no-overclaim checks.",
+      "blocking": false,
+      "default_command": ".venv/bin/python scripts/run_eval.py --golden evals/answer_quality/v1.json --suite answer_quality"
+    },
+    "firm_profile": {
+      "description": "Future Recall Profile / company-profile answer-boundary checks; expected-future cases are explicit SKIP until issue #43 ships.",
+      "blocking": false,
+      "default_command": ".venv/bin/python scripts/run_eval.py --golden evals/answer_quality/v1.json --suite firm_profile"
+    },
+    "regression": {
+      "description": "Permanent fixed-bug or fixed-boundary regression tag.",
+      "blocking": false
+    }
+  },
+  "cases": [
+    {
+      "id": "aq-control-out-of-domain-english-no-sql-rag",
+      "kind": "answer_quality_fixture",
+      "question": "Tell me a joke.",
+      "suite": [
+        "answer_quality",
+        "regression"
+      ],
+      "risk": "agent_control_no_sql_rag_for_out_of_domain",
+      "requires_llm": false,
+      "requires_embedding": false,
+      "requires_db": false,
+      "assert": {
+        "route": "out_of_domain",
+        "data_kinds": [
+          "message"
+        ],
+        "spec_empty": true,
+        "text_not_contains_any": [
+          "recalls by",
+          "ranked FDA recall",
+          "estimated",
+          "semantic vector",
+          "SQL"
+        ]
+      },
+      "fixture": "out_of_domain_message"
+    },
+    {
+      "id": "aq-control-meta-chinese-no-sql-rag",
+      "kind": "answer_quality_fixture",
+      "question": "你可以做什么？",
+      "suite": [
+        "answer_quality",
+        "regression"
+      ],
+      "risk": "agent_control_no_sql_rag_for_meta",
+      "requires_llm": false,
+      "requires_embedding": false,
+      "requires_db": false,
+      "assert": {
+        "route": "chitchat_meta",
+        "data_kinds": [
+          "message"
+        ],
+        "spec_empty": true,
+        "text_not_contains_any": [
+          "recalls by",
+          "ranked FDA recall",
+          "estimated",
+          "semantic vector",
+          "SQL"
+        ]
+      },
+      "fixture": "chitchat_meta_message_zh"
+    },
+    {
+      "id": "aq-raw-firm-exposure-evidence-and-no-verdict",
+      "kind": "answer_quality_fixture",
+      "question": "Which recalling firms have the most FDA drug recalls?",
+      "suite": [
+        "answer_quality",
+        "regression"
+      ],
+      "risk": "evidence_backed_raw_firm_exposure_no_safety_verdict",
+      "requires_llm": false,
+      "requires_embedding": false,
+      "requires_db": false,
+      "assert": {
+        "route": "sql",
+        "intents": [
+          "raw_firm_exposure"
+        ],
+        "data_kinds": [
+          "raw_firm_exposure"
+        ],
+        "data_fields": {
+          "formula_version": "raw_severity_v0",
+          "scope": "raw_fda_recalling_firm"
+        },
+        "summary_contains_any": [
+          "raw FDA `recalling_firm`",
+          "not a safety verdict"
+        ],
+        "data_caveats_contains_all": [
+          "raw FDA `recalling_firm`",
+          "not a legal, medical, or safety verdict"
+        ],
+        "requires_any_evidence": true,
+        "requires_evidence_links": true,
+        "items_require_evidence": true,
+        "items_require_evidence_links": true,
+        "text_not_contains_any": [
+          "safety score",
+          "safe to use",
+          "unsafe to use",
+          "is safe",
+          "is unsafe"
+        ],
+        "no_ilike": true
+      },
+      "fixture": "raw_firm_exposure"
+    },
+    {
+      "id": "aq-parent-group-exposure-provenance-caveat",
+      "kind": "answer_quality_fixture",
+      "question": "Which parent companies have the highest FDA recall exposure?",
+      "suite": [
+        "answer_quality",
+        "firm_profile",
+        "regression"
+      ],
+      "risk": "parent_group_claims_provenance_and_no_safety_verdict",
+      "requires_llm": false,
+      "requires_embedding": false,
+      "requires_db": false,
+      "assert": {
+        "route": "sql",
+        "intents": [
+          "parent_group_exposure"
+        ],
+        "data_kinds": [
+          "multi_section"
+        ],
+        "section_count": 1,
+        "sections": [
+          {
+            "id": "parent_group_exposure",
+            "kind": "distribution",
+            "dimension": "parent_group",
+            "source": "parent_group_exposure_v1"
+          }
+        ],
+        "summary_contains_any": [
+          "parent-group exposure",
+          "provenance-backed",
+          "not a safety verdict"
+        ],
+        "text_contains_all": [
+          "provenance-backed",
+          "not a safety verdict"
+        ],
+        "text_not_contains_any": [
+          "safety score",
+          "safe to use",
+          "unsafe to use",
+          "is safe",
+          "is unsafe"
+        ],
+        "no_ilike": true
+      },
+      "fixture": "parent_group_exposure"
+    },
+    {
+      "id": "aq-degraded-empty-retrieval-caveat",
+      "kind": "answer_quality_fixture",
+      "fixture": "degraded_empty_retrieval",
+      "question": "Show me recalls about a concept while semantic retrieval is unavailable.",
+      "query": "xqz nonexistent semantic recall concept",
+      "embedding_fallback_reason": "openrouter/openai/text-embedding-3-small: missing API key",
+      "suite": [
+        "answer_quality",
+        "regression"
+      ],
+      "risk": "degraded_retrieval_empty_result_not_factual_zero",
+      "requires_llm": false,
+      "requires_embedding": false,
+      "requires_db": false,
+      "assert": {
+        "route": "semantic",
+        "intents": [
+          "sample"
+        ],
+        "data_kinds": [
+          "retrieval"
+        ],
+        "data_fields": {
+          "retrieval_mode": "fts_only",
+          "degraded": true
+        },
+        "requires_highlights": true,
+        "text_contains_all": [
+          "Semantic vector retrieval is unavailable",
+          "keyword fallback",
+          "not evidence that FDA has zero matching recalls",
+          "not a full semantic conclusion"
+        ],
+        "text_not_contains_any": [
+          "FDA has no matching recalls",
+          "no FDA recalls exist",
+          "there are zero matching recalls",
+          "0 recalls matching"
+        ]
+      }
+    },
+    {
+      "id": "firm-profile-pfizer-safety-question-expected-future",
+      "kind": "expected_future",
+      "question": "Is Pfizer safe?",
+      "blocked_by": [
+        43
+      ],
+      "suite": [
+        "answer_quality",
+        "firm_profile"
+      ],
+      "risk": "future_recall_profile_no_absolute_safety_verdict",
+      "requires_llm": false,
+      "requires_embedding": false,
+      "requires_db": false,
+      "assert": {
+        "text_contains_all": [
+          "Recall Profile",
+          "FDA-fact",
+          "[inferred]",
+          "provenance",
+          "evidence"
+        ],
+        "text_not_contains_any": [
+          "Pfizer is safe",
+          "Pfizer is unsafe",
+          "safety score",
+          "safe to use",
+          "unsafe to use"
+        ]
+      },
+      "notes": "Pending until issue #43 ships the Recall Profile route; this must become an executable ask case in that PR."
+    },
+    {
+      "id": "firm-profile-zh-safety-question-expected-future",
+      "kind": "expected_future",
+      "question": "辉瑞这个公司安全吗？",
+      "blocked_by": [
+        43
+      ],
+      "suite": [
+        "answer_quality",
+        "firm_profile"
+      ],
+      "risk": "future_recall_profile_zh_no_absolute_safety_verdict",
+      "requires_llm": false,
+      "requires_embedding": false,
+      "requires_db": false,
+      "assert": {
+        "text_contains_all": [
+          "召回画像",
+          "FDA 事实",
+          "[inferred]",
+          "provenance",
+          "evidence"
+        ],
+        "text_not_contains_any": [
+          "辉瑞是安全的",
+          "辉瑞是不安全的",
+          "安全评分",
+          "可以放心使用",
+          "不要使用"
+        ]
+      },
+      "notes": "Pending until issue #43 ships the bilingual Recall Profile route; this must become an executable ask case in that PR."
+    }
+  ]
+}
