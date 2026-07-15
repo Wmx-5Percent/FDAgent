@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-07-14T16:32Z · 74 files · 2 missing description
+> Last generated: 2026-07-15T04:15Z · 79 files · 2 missing description
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -22,6 +22,9 @@
 - [`频率查询系统设计-过滤检索校验.md`](频率查询系统设计-过滤检索校验.md) — 频率/聚合类查询系统设计（过滤 → 检索 → 校验） — 配套 [PLAN.md](PLAN.md)。本文专门解决一类高频需求：
 
 ## .github/
+- [`.github/parallel-sprints/CONTRACT-TEMPLATE.md`](.github/parallel-sprints/CONTRACT-TEMPLATE.md) — Parallel sprint contract template — Copy this JSON into `.github/parallel-sprints/current.json` for a local run, or into a
+- [`.github/parallel-sprints/PROMPT-TEMPLATE.md`](.github/parallel-sprints/PROMPT-TEMPLATE.md) — Wave-gated parallel agent prompt template — Use this template to launch all waves at once. Replace placeholders before pasting.
+- [`.github/parallel-sprints/README.md`](.github/parallel-sprints/README.md) — Parallel Sprint Contracts — This directory stores machine-checkable contracts for multi-wave child-agent work.
 - [`.github/skills/INDEX.md`](.github/skills/INDEX.md) — Skills Index — Reusable skills for this repo — workflows, API guides, and best practices an agent can load on demand.
 - [`.github/skills/db-column-docs-from-dictionary/SKILL.md`](.github/skills/db-column-docs-from-dictionary/SKILL.md) — Documenting DB columns from an upstream field dictionary — - **Type**: Workflow
 - [`.github/skills/domain-modeling/ADR-FORMAT.md`](.github/skills/domain-modeling/ADR-FORMAT.md) — ADR Format — Write ADR **content in 简体中文 (Simplified Chinese)**; keep file names/paths (`docs/adr/0001-slug.md`) and the status keywords (`proposed` / `accepted` / `deprecated` / `superseded`) in their original form.
@@ -34,6 +37,7 @@
 - [`.github/skills/parallel-agent-pr-coordination/SKILL.md`](.github/skills/parallel-agent-pr-coordination/SKILL.md) — Parallel-Agent PR Coordination — - **Type**: Workflow + BestPractice
 - [`.github/skills/parallel-agent-prompt-pack/SKILL.md`](.github/skills/parallel-agent-prompt-pack/SKILL.md) — Parallel-Agent Prompt Pack — - **Type**: Workflow + BestPractice
 - [`.github/skills/parallel-dev-worktree-cleanup/SKILL.md`](.github/skills/parallel-dev-worktree-cleanup/SKILL.md) — Parallel-Dev Worktree Cleanup — - **Type**: Workflow + BestPractice
+- [`.github/skills/parallel-wave-gated-agents/SKILL.md`](.github/skills/parallel-wave-gated-agents/SKILL.md) — Parallel Wave-Gated Agents — Enable a multi-wave AI development sprint where the coordinator can launch all child agents at once, while every later-wave child is forced by a machine-checkable gate to wait until its dependencies are satisfied before editing files, committing, or pushing implementation work.
 - [`.github/skills/skill-writing/SKILL.md`](.github/skills/skill-writing/SKILL.md) — Skill 写作指南（Meta-Skill） — - **类型**: BestPractice
 
 ## docs/
@@ -50,6 +54,8 @@
 ## scripts/
 - [`scripts/check_hybrid_filter_validation.py`](scripts/check_hybrid_filter_validation.py) — Focused smoke checks for /hybrid-search bad-filter handling.
   - symbols: `main`
+- [`scripts/check_wave_gate.py`](scripts/check_wave_gate.py) — Check whether a parallel child-agent wave gate is READY or BLOCKED.
+  - symbols: `CheckResult`, `repo_root`, `run`, `load_contract`, `issue_state`, `pr_state`, `branch_synced`, `worktree_status`, `check_child`, `select_children`, `print_human`, `parse_args`
 - [`scripts/gen_index.py`](scripts/gen_index.py) — Generate PROJECT_INDEX.md — a reliable, auto-derived map of the repository.
   - symbols: `repo_root`, `list_files`, `read_text`, `describe_python`, `describe_markdown`, `describe_html`, `describe_generic`, `describe`, `group_key`, `render`, `strip_volatile`, `main`
 - [`scripts/hooks/install.sh`](scripts/hooks/install.sh) — Install the version-controlled git hooks into .git/hooks.

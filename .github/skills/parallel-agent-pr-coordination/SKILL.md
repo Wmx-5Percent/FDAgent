@@ -20,6 +20,7 @@ This skill has two operating modes:
 ## Boundaries
 - This skill coordinates work. It does **not** replace code review, QA, validation, or the cleanup-specific safe-delete gate in `parallel-dev-worktree-cleanup`.
 - A coordinator may inspect and comment on child worktrees/PRs, but must not edit a child worktree while its child agent is still active. Either the child fixes it, or the child stops and the coordinator explicitly takes over.
+- A coordinator may launch read-only review/status subagents, but must not launch implementation/dev subagents for a worktree already assigned to a child owner. If the coordinator launches a writer agent, that writer must be recorded as the sole child owner for that issue/worktree before any code changes.
 - A child agent must not start from stale `origin/main`, must not rebase feature branches during collaboration, and must not merge its own PR unless the user explicitly delegates merge authority.
 - GitHub PRs, issue comments, and local git state are the durable coordination surface. Terminal chat is transient; independent terminal sessions do not share live state.
 - Generated files are handled by their generator, not by hand-editing conflict markers.
@@ -35,6 +36,7 @@ During development:
 - Each child records the base SHA it started from and opens a Draft PR after the first meaningful checkpoint commit, not only at the end of the task.
 - Each open PR contains enough status for another agent to recover: scope, current validation results or blockers, known overlap, and dependency notes.
 - Owner comments that start with `[CONTROL]` are treated as higher priority than the original prompt, and the child replies after completing the requested action.
+- A child remains responsible for its PR after pushing code or marking it ready. The child must keep polling PR comments/status, respond to requested changes, fix mergeability problems, merge `origin/main` when needed, rerun validation, and push updates until the PR is actually merged, explicitly taken over, or closed/cancelled by the coordinator/human.
 - After any PR merges into `main`, all still-open PR branches either merge the new `origin/main` or explicitly document why they are blocked.
 - Any `PROGRESS.md` update preserves the complete multi-workstream "Next up" queue, including items owned by other agents and dependency gates.
 
@@ -62,6 +64,7 @@ Each child prompt should require:
 - treat `[CONTROL]` owner comments as authoritative
 - merge `origin/main`, never rebase, when the coordinator reports that main advanced
 - comment validation results after every corrective push
+- stay active in a waiting-for-merge loop after the PR is ready; task completion means PR merged (or explicit coordinator takeover/closure), not merely "PR opened" or "code pushed"
 - keep `PROGRESS.md` holistic: do not replace "Next action" / "Next up" with the child's single local task; report child-local next steps in PR comments.
 
 The coordinator should monitor artifacts, not hidden terminal state:
@@ -95,6 +98,7 @@ Hard rules:
 - **The coordinator could not observe independent terminals directly.** It could only inspect git/GitHub artifacts. Tooling like an observer window is helpful per session, but it does not make separate terminal sessions share live state.
 - **Dependency gates need post-merge sync too.** A frontend child correctly waited for the backend PR to merge, but later sidecar merges still made its branch conflict. Prevention: every open PR syncs after every main merge, not only after its direct dependency.
 - **Do not double-own a worktree.** If a child is active, coordinator comments or asks it to stop. Direct coordinator edits to the same worktree risk racing the child agent.
+- **Coordinator-spawned writer subagents are also writers.** A dev/implementation subagent launched by the coordinator is not "coordination"; it must own exactly one child worktree and follow the child protocol, or it must not be launched.
 - **Subagents collapsed `PROGRESS.md` to their own next step.** In parallel planning, the human may pre-stage multiple next-up items before launching several agents. Prevention: child prompts and review must treat `PROGRESS.md` "Next up" as the shared queue; a child can mark its item done/blocked but must not delete or reorder unrelated workstreams.
 
 ## Output

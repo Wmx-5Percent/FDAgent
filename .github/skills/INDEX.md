@@ -12,6 +12,7 @@ Complete workflows for a specific task.
 - [learning-session-notes](learning-session-notes/SKILL.md) — Summarize project conversations into durable personal learning notes: concepts, interview Q&A, project examples, and strategy tradeoffs, while deduplicating against `learning-notes/INDEX.md`.
 - [parallel-agent-prompt-pack](parallel-agent-prompt-pack/SKILL.md) — Create copy/paste prompt packs for multi-terminal parallel AI development: coordinator prompt, child-agent prompts, terminal map, dependency gates, Draft PR rules, `[CONTROL]` polling, validation commands, and generated-file conflict handling.
 - [parallel-agent-pr-coordination](parallel-agent-pr-coordination/SKILL.md) — Coordinate multi-terminal/multi-agent parallel PR development with main/origin preflight gates, early Draft PR visibility, `[CONTROL]` PR comments, merge-wave dependency handling, generated-index conflict rules, and cleanup handoff.
+- [parallel-wave-gated-agents](parallel-wave-gated-agents/SKILL.md) — Launch all waves of a multi-issue sprint at once while later-wave child agents wait on machine-checkable dependency gates before writing code.
 - [parallel-dev-worktree-cleanup](parallel-dev-worktree-cleanup/SKILL.md) — Retire the local git worktree/clone folders from parallel multi-agent development after their branches merge, with a three-check safe-to-delete gate so no unmerged/unpushed work is lost (uses `git worktree remove`, not `rm -rf`).
 
 ### API Guide

@@ -21,12 +21,14 @@ This skill authors prompts. The generated prompts should normally instruct agent
 - Do not rely on "main terminal" or "Terminal 1" alone to imply authority. Every generated prompt must explicitly declare `coordinator/main agent` or `feature/child agent`.
 - Do not generate child prompts that let multiple agents own the same files unless the overlap and merge order are explicit.
 - Do not generate child prompts that let a feature agent rewrite `PROGRESS.md` "Next action" / "Next up" as that feature's single local task. In parallel plans, `PROGRESS.md` is a shared multi-workstream queue; child-local status belongs in PR bodies/comments.
+- Coordinator prompts must prohibit implementation/dev subagents for child-owned worktrees. Read-only review/status subagents are allowed; writer subagents are allowed only if the prompt declares them as the sole child owner for that issue/worktree.
 - Avoid long background exposition in the output. The deliverable is prompts the user can paste, not a lecture.
 
 ## Acceptance criteria
 A successful prompt pack contains:
 - A terminal map table: terminal number/name, role, scope, branch, worktree/clone path, dependency gate, PR title, and allowed files.
 - A coordinator prompt that requires preflight verification that canonical `main` is clean and synchronized with `origin/main` before launching children.
+- A coordinator prompt that explicitly says read-only reviewer/status subagents are allowed, but implementation/dev subagents must not write to already child-owned worktrees.
 - One child prompt per parallel workstream with explicit role declaration, required skill loading, base branch, branch name, worktree path, file ownership, forbidden scope, Draft PR timing, PR comment polling, validation commands, and "do not merge your own PR" rule.
 - Dependency gates are executable: a waiting child knows exactly what PR/branch/title/merge condition satisfies the gate.
 - Each prompt includes what to do when `origin/main` advances: merge, not rebase; regenerate generated files; rerun validation; push; comment results.
@@ -38,6 +40,7 @@ A successful prompt pack contains:
 ## Prompt design requirements
 Every generated prompt should include these concepts, adapted to the workstream:
 - **Role and authority**: "You are the coordinator/main agent" or "You are a feature/child agent for X."
+- **Subagent boundary**: coordinator may use read-only review/status subagents; writer subagents are forbidden unless they are explicitly the sole feature child owner for one worktree.
 - **Skills to load/use**: at least `parallel-agent-pr-coordination`; cleanup work uses `parallel-dev-worktree-cleanup`.
 - **Repo facts**: canonical repo path, remote repo, base branch, branch name, worktree/clone path, venv/tooling conventions.
 - **Ownership**: files/directories the agent may touch, and explicit out-of-scope files.
@@ -88,6 +91,7 @@ The exact wording may vary, but the generated pack must preserve the authority b
 - **Children opened PRs only after finishing.** Prompt for Draft PRs after the first meaningful checkpoint commit so the coordinator can monitor early.
 - **PR comments were used as control messages without requiring polling.** Prompt every child to poll PR comments and treat `[CONTROL]` as higher priority.
 - **Role ambiguity caused coordination friction.** A skill can describe modes, but each terminal prompt must explicitly assign the role.
+- **Coordinator-launched dev subagents caused ownership ambiguity.** Prompts must say that writer subagents are child owners, not invisible coordinator helpers; no two writers may touch the same worktree.
 - **Dependency gates were only checked once.** A child can become stale after any other PR merges; prompts must require resync after every main advance.
 - **Generated index conflicts recurred.** Put the generator-based conflict rule directly in every child prompt that may add/move/delete files.
 - **Children overwrote shared Next Up with their own task.** Parallel prompt packs must explicitly say that `PROGRESS.md` is coordinator-owned shared state; child-local next steps go in PR comments, not in the global "Next action".

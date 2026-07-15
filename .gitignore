@@ -30,6 +30,7 @@ learning-notes/
 # 临时交接/会话笔记：有价值内容迁移到 PROGRESS.md / PLAN.md / docs/
 NOTES-*.md
 SESSION-*.md
+.github/parallel-sprints/current.json
 
 # 本地 UI 参考抓取，不入库
 web/openaiWebPageSample.css

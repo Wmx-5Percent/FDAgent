@@ -91,6 +91,21 @@ single subagent's local next step; per-agent next steps belong in that PR's body
   follow-up work. After a worktree-backed task merges, also retire its local worktree with
   `git worktree remove <path>` and `git worktree prune` after the safe-to-delete checks, so
   closed branches do not leave stale directories under `~/Desktop/developer`.
+- **Child-agent completion rule:** a feature child is **not done** when it opens a PR, pushes
+  code, or marks a PR ready. It owns that branch until the PR is actually merged, explicitly
+  taken over, or closed/cancelled by the coordinator/human; while waiting it must poll PR
+  comments/status, respond to requested changes, fix mergeability, merge `origin/main` when
+  needed, rerun validation, and push corrective updates.
+- **Coordinator subagent boundary:** the coordinator may launch read-only reviewer/status
+  subagents, but must **not** launch implementation/dev subagents for a worktree already owned
+  by a child agent. If the coordinator launches a writer, that writer must be declared as the
+  sole child owner for that issue/worktree before any code changes. Never let two writers touch
+  the same worktree.
+- **Multi-wave child-agent gates**: for multi-wave sprints, define a machine-checkable contract
+  under `.github/parallel-sprints/` and require every child to run
+  `.venv/bin/python scripts/check_wave_gate.py --issue <N>` before writing code. A blocked child
+  may read, poll, and comment `WAITING`, but must not edit files, commit, or push implementation
+  work until the gate returns `READY`.
 - **One-time vs scheduled**: DDL/table creation and first full back-fill are one-off; `fetch_openfda.py --since auto` is the scheduled incremental job.
 - **Sidecar freshness**: source FDA tables are immutable-ish facts; derived sidecars (`embeddings`, taxonomy labels, firm aliases) must be rerunnable after new ingest. For firm resolution, prefer incremental/idempotent updates with run ids and review logs over manual one-off merges.
 - **IP safety**: real company data is git-ignored and **never** committed. Only public-domain
