@@ -21,6 +21,14 @@ import psycopg  # noqa: E402
 
 import llm  # noqa: E402
 import retrieval  # noqa: E402
+from dataset_fingerprint import (  # noqa: E402
+    DATASET_DRIFT_EXIT_CODE,
+    DEFAULT_BASELINE as DEFAULT_DATASET_FINGERPRINT_BASELINE,
+    DEFAULT_TABLE as DEFAULT_DATASET_FINGERPRINT_TABLE,
+    DatasetFingerprintError,
+    DatasetFingerprintMismatch,
+    check_fingerprint,
+)
 from api import serialize_answer  # noqa: E402
 from nl_query import (  # noqa: E402
     MODEL,
@@ -766,6 +774,44 @@ def _build_ask_fn(args: argparse.Namespace) -> Callable[[str], dict[str, Any]]:
     return ask_local
 
 
+def _requires_dataset_fingerprint(cases: list[Mapping[str, Any]]) -> bool:
+    return any(bool(case.get("requires_db")) for case in cases)
+
+
+def _run_dataset_fingerprint_preflight(
+    args: argparse.Namespace,
+    cases: list[Mapping[str, Any]],
+) -> int:
+    if args.skip_dataset_fingerprint:
+        print("SKIP dataset fingerprint preflight (--skip-dataset-fingerprint)")
+        return 0
+    if not _requires_dataset_fingerprint(cases):
+        return 0
+    try:
+        result = check_fingerprint(
+            dsn=args.dsn,
+            table=args.dataset_fingerprint_table,
+            baseline_path=args.dataset_fingerprint_baseline,
+        )
+    except DatasetFingerprintMismatch as exc:
+        print(f"ERROR: dataset fingerprint preflight failed: {exc}", file=sys.stderr)
+        return DATASET_DRIFT_EXIT_CODE
+    except DatasetFingerprintError as exc:
+        print(f"ERROR: dataset fingerprint preflight failed: {exc}", file=sys.stderr)
+        return 2
+    actual = result.actual
+    print(
+        "Dataset fingerprint OK: "
+        f"sha256={actual['sha256']} rows={actual['row_count']} "
+        f"report_date={actual['report_date_min']}..{actual['report_date_max']} "
+        f"taxonomy_labels={actual.get('taxonomy_label_rows')} "
+        f"taxonomy_covered={actual.get('taxonomy_covered_records')} "
+        f"embeddings={actual.get('embedding_rows')} "
+        f"schema_sha256={actual.get('source_schema_sha256')}"
+    )
+    return 0
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Run FDAgent contract-tagged golden eval suites.")
     p.add_argument("--golden", type=Path, default=DEFAULT_GOLDEN,
@@ -780,6 +826,13 @@ def parse_args() -> argparse.Namespace:
                    help="optional running API base URL, e.g. http://127.0.0.1:8003")
     p.add_argument("--dsn", default=DEFAULT_DSN,
                    help="Postgres DSN for in-process evals and retrieval recall@k")
+    p.add_argument("--dataset-fingerprint-baseline", type=Path,
+                   default=DEFAULT_DATASET_FINGERPRINT_BASELINE,
+                   help="expected stable fixture fingerprint baseline path")
+    p.add_argument("--dataset-fingerprint-table", default=DEFAULT_DATASET_FINGERPRINT_TABLE,
+                   help="source table checked by the stable fixture fingerprint preflight")
+    p.add_argument("--skip-dataset-fingerprint", action="store_true",
+                   help="explicitly skip the stable fixture fingerprint preflight")
     p.add_argument("--model", default=MODEL,
                    help="chat model for in-process /ask evals")
     p.add_argument("--timeout", type=float, default=60.0,
@@ -809,6 +862,10 @@ def main() -> int:
             suites = ",".join(sorted(_case_suites(case)))
             print(f"{case['id']}\t{suites}\t{case['kind']}\t{case['risk']}")
         return 0
+
+    preflight_exit = _run_dataset_fingerprint_preflight(args, cases)
+    if preflight_exit:
+        return preflight_exit
 
     ask_fn: Callable[[str], dict[str, Any]] | None = None
     results: list[EvalResult] = []
