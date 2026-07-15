@@ -5,10 +5,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Mapping
@@ -41,6 +44,10 @@ from nl_query import (  # noqa: E402
 
 DEFAULT_DSN = os.environ.get("DATABASE_URL", "postgresql://localhost:5432/fda")
 DEFAULT_GOLDEN = REPO_ROOT / "evals" / "golden" / "v1.json"
+REPORT_SCHEMA_VERSION = "fdaagent_eval_report_v1"
+DEFAULT_COMPARE_PASS_RATE_THRESHOLDS = {"core": 1.0}
+DEFAULT_COMPARE_LATENCY_TOLERANCE_MS = {"*": 1000.0, "core": 500.0, "rag": 2000.0}
+DEFAULT_COMPARE_RECALL_TOLERANCE = {"rag": 0.0}
 
 
 @dataclass(frozen=True)
@@ -49,6 +56,8 @@ class EvalResult:
     passed: bool
     detail: str
     skipped: bool = False
+    duration_ms: float | None = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
 class EvalFailure(AssertionError):
@@ -57,6 +66,64 @@ class EvalFailure(AssertionError):
 
 def _plain(value: Any) -> Any:
     return getattr(value, "value", value)
+
+
+def _round_ms(value: float | None) -> float | None:
+    return None if value is None else round(value, 3)
+
+
+def _result_status(result: EvalResult) -> str:
+    if result.skipped:
+        return "skip"
+    return "pass" if result.passed else "fail"
+
+
+def _first_observation(value: Any, keys: set[str]) -> Any:
+    if isinstance(value, Mapping):
+        for key in keys:
+            if key in value and value[key] not in (None, ""):
+                return _plain(value[key])
+        for child in value.values():
+            observed = _first_observation(child, keys)
+            if observed not in (None, ""):
+                return observed
+    elif isinstance(value, list):
+        for child in value:
+            observed = _first_observation(child, keys)
+            if observed not in (None, ""):
+                return observed
+    return None
+
+
+def _answer_report_metadata(
+    case: Mapping[str, Any],
+    answer: Mapping[str, Any],
+    *,
+    intent: Any,
+    data_kind: Any,
+) -> dict[str, Any]:
+    spec = answer.get("spec") or {}
+    data = answer.get("data") or {}
+    assertions = case.get("assert") or {}
+    route = (
+        _plain(data.get("route")) if isinstance(data, Mapping) else None
+    ) or assertions.get("route") or ("semantic" if spec.get("semantic_query") else "sql")
+    fallback_reason = _first_observation(
+        answer,
+        {"embedding_fallback_reason", "fallback_reason"},
+    )
+    metadata = {
+        "route": route,
+        "intent": _plain(intent),
+        "data_kind": _plain(data_kind),
+        "retrieval_mode": _first_observation(answer, {"retrieval_mode"}),
+        "fallback_reason": fallback_reason,
+    }
+    return {key: value for key, value in metadata.items() if value not in (None, "")}
+
+
+def _is_timeout_exception(exc: BaseException) -> bool:
+    return isinstance(exc, TimeoutError) or "timed out" in str(exc).casefold()
 
 
 def _require(condition: bool, message: str) -> None:
@@ -438,8 +505,17 @@ def _assert_ask_case(case: Mapping[str, Any], answer: Mapping[str, Any]) -> Eval
                  f"expected data.route={route!r}, got {data.get('route')!r}")
         _require(data_kind in {"message", "clarification"},
                  f"guarded case returned unexpected data.kind={data_kind!r}")
-    return EvalResult(str(case["id"]), True,
-                      f"intent={intent} data.kind={data_kind} route={route or '-'}")
+    return EvalResult(
+        str(case["id"]),
+        True,
+        f"intent={intent} data.kind={data_kind} route={route or '-'}",
+        metadata=_answer_report_metadata(
+            case,
+            answer,
+            intent=intent,
+            data_kind=data_kind,
+        ),
+    )
 
 
 def _assert_deterministic_helper_case(case: Mapping[str, Any]) -> EvalResult:
@@ -588,6 +664,11 @@ def _assert_embedding_provider_config_case(case: Mapping[str, Any]) -> EvalResul
         str(case["id"]),
         True,
         f"provider={config.provider} model={config.model} base_url={config.base_url}",
+        metadata={
+            "embedding_provider": config.provider,
+            "embedding_model": config.model,
+            "embedding_dimension": config.dimension,
+        },
     )
 
 
@@ -619,6 +700,13 @@ def _run_retrieval_case(case: Mapping[str, Any], *, dsn: str) -> EvalResult:
             True,
             f"skipped vector recall@{k}: embedding unavailable ({type(exc).__name__}: {exc})",
             skipped=True,
+            metadata={
+                "embedding_provider": embed_config.provider,
+                "embedding_model": embed_config.model,
+                "embedding_dimension": embed_config.dimension,
+                "fallback_reason": llm.provider_error_summary(exc),
+                "metrics": {"recall_at_k": None, "k": k},
+            },
         )
     with psycopg.connect(dsn) as conn:
         hits = retrieval.search(conn, client, query, k=k, field=field,
@@ -632,10 +720,25 @@ def _run_retrieval_case(case: Mapping[str, Any], *, dsn: str) -> EvalResult:
     recall = len(matched) / len(expected)
     _require(recall >= threshold,
              f"recall@{k}={recall:.2f} below {threshold:.2f}; expected={sorted(expected)} got={returned}")
-    return EvalResult(str(case["id"]), True,
-                      f"provider={embed_config.provider} model={embed_config.model} "
-                      f"retrieval_mode={','.join(sorted(modes)) or '-'} "
-                      f"recall@{k}={recall:.2f} matched={sorted(matched)}")
+    return EvalResult(
+        str(case["id"]),
+        True,
+        f"provider={embed_config.provider} model={embed_config.model} "
+        f"retrieval_mode={','.join(sorted(modes)) or '-'} "
+        f"recall@{k}={recall:.2f} matched={sorted(matched)}",
+        metadata={
+            "embedding_provider": embed_config.provider,
+            "embedding_model": embed_config.model,
+            "embedding_dimension": embed_config.dimension,
+            "retrieval_mode": ",".join(sorted(modes)) or None,
+            "metrics": {
+                "recall_at_k": recall,
+                "k": k,
+                "matched_expected": sorted(matched),
+                "expected_count": len(expected),
+            },
+        },
+    )
 
 
 def _maybe_judge(case: Mapping[str, Any], answer: Mapping[str, Any], *, enabled: bool) -> EvalResult | None:
@@ -665,12 +768,12 @@ def _requires_dataset_fingerprint(cases: list[Mapping[str, Any]]) -> bool:
 def _run_dataset_fingerprint_preflight(
     args: argparse.Namespace,
     cases: list[Mapping[str, Any]],
-) -> int:
+) -> tuple[int, Mapping[str, Any] | None]:
     if args.skip_dataset_fingerprint:
         print("SKIP dataset fingerprint preflight (--skip-dataset-fingerprint)")
-        return 0
+        return 0, {"skipped": True, "required": _requires_dataset_fingerprint(cases)}
     if not _requires_dataset_fingerprint(cases):
-        return 0
+        return 0, {"required": False}
     try:
         result = check_fingerprint(
             dsn=args.dsn,
@@ -679,10 +782,10 @@ def _run_dataset_fingerprint_preflight(
         )
     except DatasetFingerprintMismatch as exc:
         print(f"ERROR: dataset fingerprint preflight failed: {exc}", file=sys.stderr)
-        return DATASET_DRIFT_EXIT_CODE
+        return DATASET_DRIFT_EXIT_CODE, None
     except DatasetFingerprintError as exc:
         print(f"ERROR: dataset fingerprint preflight failed: {exc}", file=sys.stderr)
-        return 2
+        return 2, None
     actual = result.actual
     print(
         "Dataset fingerprint OK: "
@@ -693,7 +796,349 @@ def _run_dataset_fingerprint_preflight(
         f"embeddings={actual.get('embedding_rows')} "
         f"schema_sha256={actual.get('source_schema_sha256')}"
     )
-    return 0
+    return 0, actual
+
+
+def _git_output(*args: str) -> str | None:
+    try:
+        completed = subprocess.run(
+            ("git", *args),
+            cwd=REPO_ROOT,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return completed.stdout.strip() or None
+
+
+def _git_metadata() -> dict[str, Any]:
+    return {
+        "sha": _git_output("rev-parse", "HEAD"),
+        "branch": _git_output("branch", "--show-current"),
+        "dirty": bool(_git_output("status", "--short")),
+    }
+
+
+def _provider_metadata(args: argparse.Namespace) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    try:
+        metadata.update(llm.chat_config(model=args.model).status())
+    except Exception as exc:  # noqa: BLE001 - report config errors without aborting reporting
+        metadata["llm_config_error"] = f"{type(exc).__name__}: {exc}"
+    try:
+        metadata.update(llm.embedding_config().status())
+    except Exception as exc:  # noqa: BLE001
+        metadata["embed_config_error"] = f"{type(exc).__name__}: {exc}"
+    return metadata
+
+
+def _numeric_override_map(
+    values: list[str] | None,
+    *,
+    defaults: Mapping[str, float],
+    arg_name: str,
+) -> dict[str, float]:
+    parsed = dict(defaults)
+    for raw in values or []:
+        if "=" not in raw:
+            raise EvalFailure(f"{arg_name} must use SUITE=NUMBER, got {raw!r}")
+        suite, value = raw.split("=", 1)
+        suite = suite.strip()
+        if not suite:
+            raise EvalFailure(f"{arg_name} requires a non-empty suite name")
+        try:
+            parsed[suite] = float(value)
+        except ValueError as exc:
+            raise EvalFailure(f"{arg_name} value for {suite!r} is not numeric: {value!r}") from exc
+    return parsed
+
+
+def _compare_thresholds(args: argparse.Namespace) -> dict[str, dict[str, float]]:
+    return {
+        "pass_rate": _numeric_override_map(
+            args.compare_pass_rate_threshold,
+            defaults=DEFAULT_COMPARE_PASS_RATE_THRESHOLDS,
+            arg_name="--compare-pass-rate-threshold",
+        ),
+        "latency_tolerance_ms": _numeric_override_map(
+            args.compare_latency_tolerance_ms,
+            defaults=DEFAULT_COMPARE_LATENCY_TOLERANCE_MS,
+            arg_name="--compare-latency-tolerance-ms",
+        ),
+        "recall_tolerance": _numeric_override_map(
+            args.compare_recall_tolerance,
+            defaults=DEFAULT_COMPARE_RECALL_TOLERANCE,
+            arg_name="--compare-recall-tolerance",
+        ),
+    }
+
+
+def _case_report(result: EvalResult, case: Mapping[str, Any] | None) -> dict[str, Any]:
+    case = case or {}
+    status = _result_status(result)
+    suites = sorted(_case_suites(case)) if case else []
+    metadata = dict(result.metadata)
+    report: dict[str, Any] = {
+        "id": result.case_id,
+        "status": status,
+        "passed": result.passed,
+        "skipped": result.skipped,
+        "detail": result.detail,
+        "duration_ms": _round_ms(result.duration_ms),
+        "timeout": bool(metadata.pop("timeout", False)),
+        "suite": suites,
+        "kind": case.get("kind"),
+        "risk": case.get("risk"),
+        "requires_llm": case.get("requires_llm"),
+        "requires_embedding": case.get("requires_embedding"),
+        "requires_db": case.get("requires_db"),
+    }
+    if status == "fail":
+        report["failure_detail"] = result.detail
+    metrics = metadata.pop("metrics", None)
+    if metrics is not None:
+        report["metrics"] = metrics
+    for key in (
+        "route",
+        "intent",
+        "data_kind",
+        "retrieval_mode",
+        "fallback_reason",
+        "embedding_provider",
+        "embedding_model",
+        "embedding_dimension",
+    ):
+        if key in metadata and metadata[key] not in (None, ""):
+            report[key] = metadata[key]
+    if metadata:
+        report["extra"] = metadata
+    return report
+
+
+def _summary_for_reports(reports: list[Mapping[str, Any]]) -> dict[str, Any]:
+    total = len(reports)
+    skipped = sum(1 for report in reports if report.get("status") == "skip")
+    failed = sum(1 for report in reports if report.get("status") == "fail")
+    passed = total - skipped - failed
+    evaluated = total - skipped
+    return {
+        "total": total,
+        "passed": passed,
+        "failed": failed,
+        "skipped": skipped,
+        "pass_rate": round(passed / evaluated, 6) if evaluated else None,
+    }
+
+
+def _suite_summary_for_reports(reports: list[Mapping[str, Any]]) -> dict[str, Any]:
+    summaries: dict[str, dict[str, Any]] = {}
+    for report in reports:
+        for suite in report.get("suite") or []:
+            summaries.setdefault(suite, {"cases": []})["cases"].append(report)
+    rendered: dict[str, Any] = {}
+    for suite, payload in sorted(summaries.items()):
+        suite_reports = payload["cases"]
+        summary = _summary_for_reports(suite_reports)
+        durations = [
+            float(report["duration_ms"])
+            for report in suite_reports
+            if isinstance(report.get("duration_ms"), (int, float))
+        ]
+        summary["duration_ms_total"] = round(sum(durations), 3)
+        summary["duration_ms_max"] = round(max(durations), 3) if durations else None
+        rendered[suite] = summary
+    return rendered
+
+
+def _build_report(
+    args: argparse.Namespace,
+    *,
+    golden: Mapping[str, Any],
+    cases: list[Mapping[str, Any]],
+    results: list[EvalResult],
+    dataset_fingerprint: Mapping[str, Any] | None,
+    thresholds: Mapping[str, Mapping[str, float]],
+) -> dict[str, Any]:
+    cases_by_id = {str(case["id"]): case for case in cases}
+    case_reports = [
+        _case_report(result, cases_by_id.get(result.case_id.split(":", 1)[0]))
+        for result in results
+    ]
+    return {
+        "schema_version": REPORT_SCHEMA_VERSION,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "git": _git_metadata(),
+        "golden": {
+            "path": str(args.golden),
+            "version": golden.get("version"),
+        },
+        "selection": {
+            "suite": sorted(_csv_values(args.suite)),
+            "case": sorted(_csv_values(args.case_ids)),
+            "case_count": len(cases),
+        },
+        "provider": _provider_metadata(args),
+        "dataset_fingerprint": dataset_fingerprint,
+        "thresholds": thresholds,
+        "summary": _summary_for_reports(case_reports),
+        "suite_summary": _suite_summary_for_reports(case_reports),
+        "cases": case_reports,
+    }
+
+
+def _write_report(report: Mapping[str, Any], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as fh:
+        json.dump(report, fh, indent=2, ensure_ascii=False)
+        fh.write("\n")
+    print(f"Wrote eval report JSON: {path}")
+
+
+def _suite_threshold_value(
+    suites: list[str],
+    thresholds: Mapping[str, float],
+    *,
+    default: float,
+) -> float:
+    values = [thresholds[suite] for suite in suites if suite in thresholds]
+    if values:
+        return max(values)
+    if "*" in thresholds:
+        return thresholds["*"]
+    return default
+
+
+def _case_metric(report: Mapping[str, Any], name: str) -> float | None:
+    value = (report.get("metrics") or {}).get(name)
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def _compare_case(
+    baseline: Mapping[str, Any],
+    current: Mapping[str, Any],
+    *,
+    thresholds: Mapping[str, Mapping[str, float]],
+) -> tuple[str, str]:
+    rank = {"fail": 0, "skip": 1, "pass": 2}
+    before = str(baseline.get("status"))
+    after = str(current.get("status"))
+    if rank.get(after, 0) < rank.get(before, 0):
+        return "regressed", f"status {before} -> {after}: {current.get('detail')}"
+    if rank.get(after, 0) > rank.get(before, 0):
+        return "improved", f"status {before} -> {after}"
+
+    suites = [str(suite) for suite in current.get("suite") or baseline.get("suite") or []]
+    latency_tolerance = _suite_threshold_value(
+        suites,
+        thresholds["latency_tolerance_ms"],
+        default=0.0,
+    )
+    before_ms = baseline.get("duration_ms")
+    after_ms = current.get("duration_ms")
+    if isinstance(before_ms, (int, float)) and isinstance(after_ms, (int, float)):
+        delta = float(after_ms) - float(before_ms)
+        if delta > latency_tolerance:
+            return (
+                "regressed",
+                f"latency +{delta:.1f}ms exceeds tolerance {latency_tolerance:.1f}ms",
+            )
+        if delta < -latency_tolerance:
+            return (
+                "improved",
+                f"latency {delta:.1f}ms beats tolerance {latency_tolerance:.1f}ms",
+            )
+
+    recall_tolerance = _suite_threshold_value(
+        suites,
+        thresholds["recall_tolerance"],
+        default=0.0,
+    )
+    before_recall = _case_metric(baseline, "recall_at_k")
+    after_recall = _case_metric(current, "recall_at_k")
+    if before_recall is not None and after_recall is not None:
+        delta = after_recall - before_recall
+        if delta < -recall_tolerance:
+            return (
+                "regressed",
+                f"recall_at_k {before_recall:.3f} -> {after_recall:.3f}",
+            )
+        if delta > recall_tolerance:
+            return (
+                "improved",
+                f"recall_at_k {before_recall:.3f} -> {after_recall:.3f}",
+            )
+
+    return "unchanged", "within configured thresholds"
+
+
+def _compare_reports(
+    current_report: Mapping[str, Any],
+    baseline_path: Path,
+    *,
+    thresholds: Mapping[str, Mapping[str, float]],
+) -> bool:
+    with baseline_path.open("r", encoding="utf-8") as fh:
+        baseline_report = json.load(fh)
+
+    baseline_cases = {str(case["id"]): case for case in baseline_report.get("cases", [])}
+    current_cases = {str(case["id"]): case for case in current_report.get("cases", [])}
+    buckets: dict[str, list[tuple[str, str]]] = {
+        "improved": [],
+        "unchanged": [],
+        "regressed": [],
+        "added": [],
+        "removed": [],
+    }
+    for case_id, current in sorted(current_cases.items()):
+        baseline = baseline_cases.get(case_id)
+        if baseline is None:
+            buckets["added"].append((case_id, "not present in baseline report"))
+            continue
+        bucket, reason = _compare_case(baseline, current, thresholds=thresholds)
+        buckets[bucket].append((case_id, reason))
+    for case_id in sorted(set(baseline_cases) - set(current_cases)):
+        buckets["removed"].append((case_id, "not present in current report"))
+
+    suite_violations: list[str] = []
+    suite_summary = current_report.get("suite_summary") or {}
+    for suite, threshold in sorted(thresholds["pass_rate"].items()):
+        if suite == "*":
+            summary = current_report.get("summary") or {}
+        else:
+            summary = suite_summary.get(suite)
+        if not summary:
+            continue
+        pass_rate = summary.get("pass_rate")
+        if isinstance(pass_rate, (int, float)) and float(pass_rate) < threshold:
+            suite_violations.append(
+                f"{suite}: pass_rate {float(pass_rate):.3f} < {threshold:.3f}"
+            )
+
+    print(f"\nBaseline comparison: {baseline_path}")
+    print(
+        "Comparison summary: "
+        f"{len(buckets['improved'])} improved, "
+        f"{len(buckets['unchanged'])} unchanged, "
+        f"{len(buckets['regressed'])} regressed, "
+        f"{len(buckets['added'])} added, "
+        f"{len(buckets['removed'])} removed"
+    )
+    for bucket in ("regressed", "improved", "added", "removed"):
+        if not buckets[bucket]:
+            continue
+        print(f"{bucket.upper()}:")
+        for case_id, reason in buckets[bucket][:20]:
+            print(f"  - {case_id}: {reason}")
+        if len(buckets[bucket]) > 20:
+            print(f"  ... {len(buckets[bucket]) - 20} more")
+    if suite_violations:
+        print("SUITE THRESHOLD VIOLATIONS:")
+        for violation in suite_violations:
+            print(f"  - {violation}")
+    return bool(buckets["regressed"] or buckets["removed"] or suite_violations)
 
 
 def parse_args() -> argparse.Namespace:
@@ -717,6 +1162,16 @@ def parse_args() -> argparse.Namespace:
                    help="source table checked by the stable fixture fingerprint preflight")
     p.add_argument("--skip-dataset-fingerprint", action="store_true",
                    help="explicitly skip the stable fixture fingerprint preflight")
+    p.add_argument("--report-json", type=Path,
+                   help="write a durable machine-readable eval baseline/report artifact")
+    p.add_argument("--compare-baseline", type=Path,
+                   help="compare this run against a prior --report-json artifact")
+    p.add_argument("--compare-pass-rate-threshold", action="append",
+                   help="suite pass-rate floor for comparison, as SUITE=FLOAT; repeatable")
+    p.add_argument("--compare-latency-tolerance-ms", action="append",
+                   help="latency delta tolerance for comparison, as SUITE=MS or *=MS; repeatable")
+    p.add_argument("--compare-recall-tolerance", action="append",
+                   help="recall_at_k delta tolerance for comparison, as SUITE=FLOAT; repeatable")
     p.add_argument("--model", default=MODEL,
                    help="chat model for in-process /ask evals")
     p.add_argument("--timeout", type=float, default=60.0,
@@ -729,6 +1184,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     try:
+        thresholds = _compare_thresholds(args)
         golden = _load_golden(args.golden)
         suite_filters = _csv_values(args.suite)
         case_filters = _csv_values(args.case_ids)
@@ -747,7 +1203,7 @@ def main() -> int:
             print(f"{case['id']}\t{suites}\t{case['kind']}\t{case['risk']}")
         return 0
 
-    preflight_exit = _run_dataset_fingerprint_preflight(args, cases)
+    preflight_exit, dataset_fingerprint = _run_dataset_fingerprint_preflight(args, cases)
     if preflight_exit:
         return preflight_exit
 
@@ -762,26 +1218,35 @@ def main() -> int:
     )
     for case in cases:
         case_id = str(case.get("id", "<missing-id>"))
+        started = time.monotonic()
+        case_results: list[EvalResult] = []
         try:
             kind = case.get("kind")
             if kind == "ask":
                 if ask_fn is None:
                     ask_fn = _build_ask_fn(args)
                 answer = ask_fn(str(case["question"]))
-                results.append(_assert_ask_case(case, answer))
+                case_results.append(_assert_ask_case(case, answer))
                 judge_result = _maybe_judge(case, answer, enabled=args.llm_judge)
                 if judge_result:
-                    results.append(judge_result)
+                    case_results.append(judge_result)
             elif kind == "deterministic_helper":
-                results.append(_assert_deterministic_helper_case(case))
+                case_results.append(_assert_deterministic_helper_case(case))
             elif kind == "embedding_provider_config":
-                results.append(_assert_embedding_provider_config_case(case))
+                case_results.append(_assert_embedding_provider_config_case(case))
             elif kind == "retrieval_recall":
-                results.append(_run_retrieval_case(case, dsn=args.dsn))
+                case_results.append(_run_retrieval_case(case, dsn=args.dsn))
             else:
                 raise EvalFailure(f"unknown case kind {kind!r}")
         except Exception as exc:  # noqa: BLE001 - eval runner must report every case failure
-            results.append(EvalResult(case_id, False, f"{type(exc).__name__}: {exc}"))
+            case_results.append(EvalResult(
+                case_id,
+                False,
+                f"{type(exc).__name__}: {exc}",
+                metadata={"timeout": _is_timeout_exception(exc)},
+            ))
+        duration_ms = (time.monotonic() - started) * 1000
+        results.extend(replace(result, duration_ms=duration_ms) for result in case_results)
 
     failed = [r for r in results if not r.passed and not r.skipped]
     skipped = [r for r in results if r.skipped]
@@ -790,7 +1255,28 @@ def main() -> int:
         print(f"{status} {result.case_id}: {result.detail}")
     passed = len(results) - len(failed) - len(skipped)
     print(f"\nSummary: {passed} passed, {len(failed)} failed, {len(skipped)} skipped")
-    return 1 if failed else 0
+    report = _build_report(
+        args,
+        golden=golden,
+        cases=cases,
+        results=results,
+        dataset_fingerprint=dataset_fingerprint,
+        thresholds=thresholds,
+    )
+    if args.report_json:
+        _write_report(report, args.report_json)
+    compare_failed = False
+    if args.compare_baseline:
+        try:
+            compare_failed = _compare_reports(
+                report,
+                args.compare_baseline,
+                thresholds=thresholds,
+            )
+        except (OSError, json.JSONDecodeError, EvalFailure) as exc:
+            print(f"ERROR: baseline comparison failed: {exc}", file=sys.stderr)
+            return 2
+    return 1 if failed or compare_failed else 0
 
 
 if __name__ == "__main__":

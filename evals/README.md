@@ -9,6 +9,8 @@
 - RAG / embedding 质量集：`.venv/bin/python scripts/run_eval.py --golden evals/golden/v1.json --suite rag`
 - 精确 case 子集：`.venv/bin/python scripts/run_eval.py --golden evals/golden/v1.json --case numeric-class-i-count --case taxonomy-reason-breakdown`
 - 查看选择结果：`.venv/bin/python scripts/run_eval.py --golden evals/golden/v1.json --suite core --list-cases`
+- 生成可持久化 baseline/report：`.venv/bin/python scripts/run_eval.py --golden evals/golden/v1.json --suite core --report-json evals/baselines/core-local-report.json`
+- 对比 feature 分支与已生成 baseline：`.venv/bin/python scripts/run_eval.py --golden evals/golden/v1.json --suite core --compare-baseline evals/baselines/core-local-report.json`
 
 `--suite` 和 `--case` 都支持重复传入或逗号分隔；同时传入时取交集。运行本地
 `ask` case 需要本地 Postgres `fda` 数据库和 chat provider；`rag` case 还可能需要
@@ -44,9 +46,41 @@ Runner 会在执行前校验这些字段，防止新 case 漏掉 suite 或前置
 4. `risk` 写清楚防守面；如果关联 issue/PR，可在 `notes` 中记录。
 5. 用 `--case <id>` 先跑新增 case，再跑相关 `--suite`。
 
-本合同只定义 suite / metadata / selection 规则。下方数据集指纹只负责 stable fixture
-preflight；baseline 对比、PR gate、RAG benchmark 和 answer-quality 细分实现分别由后续
-issue 承担。
+本合同定义 suite / metadata / selection 规则；下方数据集指纹负责 stable fixture
+preflight；baseline/report 与 compare-to-main 由 issue #60 提供。PR gate、RAG
+benchmark 和 answer-quality 细分实现分别由后续 issue 承担。
+
+## Baseline/report artifact 与 compare-to-main
+
+`scripts/run_eval.py --report-json <path>` 会写出机器可读报告（schema
+`fdaagent_eval_report_v1`），用于在 `main` 上留存 baseline，再让 feature 分支做
+compare-to-main。报告包含：
+
+- git SHA / branch / dirty 状态、运行时间、golden 版本和选择的 suite/case。
+- provider 配置摘要（只记录 provider/model/configured/dimension，不记录密钥）。
+- issue #59 的数据集指纹元数据；如果所选 case 不需要 DB，会标注 `required: false`。
+- 每个 case 的 id、suite、kind、risk、前置条件、pass/fail/skip、failure detail、
+  latency、timeout 标记，以及 `/ask` case 的 route / intent / data kind /
+  retrieval mode / fallback reason。
+- retrieval recall case 的 `metrics.recall_at_k`，便于后续 RAG suite 比较。
+
+推荐 compare 流程：
+
+1. 在最新 `main` 上生成 baseline，例如：
+   `.venv/bin/python scripts/run_eval.py --golden evals/golden/v1.json --suite core --report-json evals/baselines/core-main-report.json`
+2. 在 feature 分支运行同一选择并对比：
+   `.venv/bin/python scripts/run_eval.py --golden evals/golden/v1.json --suite core --compare-baseline evals/baselines/core-main-report.json`
+3. 将 concise compare summary 粘贴到 PR 评论或正文。
+
+比较会输出 improved / unchanged / regressed / added / removed cases；出现 regression、
+removed case 或 suite pass-rate 低于阈值时返回非零。阈值可按 suite 配置：
+
+- `--compare-pass-rate-threshold core=1.0`：核心 suite 默认要求 100% pass。
+- `--compare-latency-tolerance-ms core=500`：当前 latency 比 baseline 慢超过容差才算退化。
+- `--compare-recall-tolerance rag=0.05`：RAG recall@k 下降超过容差才算退化。
+
+这些报告是运行产物，不会自动 bless 新基线；需要固定进仓库时，应在 PR 中说明生成命令、
+源 branch/SHA 和数据集指纹。
 
 ## 数据集指纹 preflight
 
