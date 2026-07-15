@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-07-15T06:07Z · 84 files · 2 missing description
+> Last generated: 2026-07-15T06:32Z · 86 files · 2 missing description
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -49,6 +49,7 @@
 
 ## evals/
 - [`evals/README.md`](evals/README.md) — FDAgent Evaluation Contract — 定义本仓库 eval case 的稳定元数据、suite 标签和本地运行命令。
+- [`evals/baselines/drug_enforcement_fingerprint.json`](evals/baselines/drug_enforcement_fingerprint.json) — {"description": "Pinned stable fixture fingerprint for FDAgent eval preflight.",
 - [`evals/firm_resolution/golden_v1.json`](evals/firm_resolution/golden_v1.json) — {"description": "FDAgent firm-resolution threshold calibration pairs. Labels are for raw-name aliasing only: same means 
 - [`evals/golden/v1.json`](evals/golden/v1.json) — {"description": "FDAgent v1 golden eval set for /ask routing and retrieval recall@k.",
 
@@ -57,6 +58,8 @@
   - symbols: `main`
 - [`scripts/check_wave_gate.py`](scripts/check_wave_gate.py) — Check whether a parallel child-agent wave gate is READY or BLOCKED.
   - symbols: `CheckResult`, `repo_root`, `run`, `load_contract`, `issue_state`, `pr_state`, `branch_synced`, `worktree_status`, `check_child`, `select_children`, `print_human`, `parse_args`
+- [`scripts/dataset_fingerprint.py`](scripts/dataset_fingerprint.py) — Compute and check stable openFDA dataset fingerprints for eval fixtures.
+  - symbols: `DatasetFingerprintError`, `DatasetFingerprintMismatch`, `FingerprintCheck`, `compute_fingerprint`, `load_baseline`, `write_baseline`, `fingerprint_mismatches`, `check_fingerprint`, `parse_args`, `main`
 - [`scripts/ensure_worktree_venv.py`](scripts/ensure_worktree_venv.py) — Link linked worktrees to the primary checkout's reusable Python virtualenv.
   - symbols: `repo_root`, `git_common_dir`, `primary_worktree_root`, `configured_shared_venv`, `venv_is_usable`, `same_path`, `symlink_target`, `link_text`, `info`, `warn`, `ensure_venv`, `parse_args`
 - [`scripts/gen_index.py`](scripts/gen_index.py) — Generate PROJECT_INDEX.md — a reliable, auto-derived map of the repository.
