@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-07-15T08:04Z · 88 files · 2 missing description
+> Last generated: 2026-07-15T08:48Z · 89 files · 2 missing description
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -49,6 +49,7 @@
 
 ## evals/
 - [`evals/README.md`](evals/README.md) — FDAgent Evaluation Contract — 定义本仓库 eval case 的稳定元数据、suite 标签和本地运行命令。
+- [`evals/answer_quality/v1.json`](evals/answer_quality/v1.json) — {
 - [`evals/baselines/drug_enforcement_fingerprint.json`](evals/baselines/drug_enforcement_fingerprint.json) — {"description": "Pinned stable fixture fingerprint for FDAgent eval preflight.",
 - [`evals/firm_resolution/golden_v1.json`](evals/firm_resolution/golden_v1.json) — {"description": "FDAgent firm-resolution threshold calibration pairs. Labels are for raw-name aliasing only: same means 
 - [`evals/golden/v1.json`](evals/golden/v1.json) — {"description": "FDAgent v1 golden eval set for /ask routing and retrieval recall@k.",

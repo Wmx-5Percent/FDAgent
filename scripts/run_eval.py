@@ -23,6 +23,7 @@ sys.path.insert(0, str(SRC_DIR))
 import psycopg  # noqa: E402
 
 import llm  # noqa: E402
+import nl_query as nl_query_module  # noqa: E402
 import retrieval  # noqa: E402
 from dataset_fingerprint import (  # noqa: E402
     DATASET_DRIFT_EXIT_CODE,
@@ -36,6 +37,7 @@ from api import serialize_answer  # noqa: E402
 from nl_query import (  # noqa: E402
     MODEL,
     NLEngine,
+    QuerySpec,
     _class_filter_label,
     _maybe_raw_firm_exposure_spec,
     _maybe_simple_class_count_spec,
@@ -552,6 +554,98 @@ def _assert_filters(assertions: Mapping[str, Any], spec: Mapping[str, Any]) -> N
         _require(matched, f"expected filter {dict(expected)!r}, got {filters!r}")
 
 
+def _surface_text(answer: Mapping[str, Any]) -> str:
+    surface = {
+        "summary": answer.get("summary"),
+        "highlights": answer.get("highlights"),
+        "data": answer.get("data"),
+    }
+    return json.dumps(surface, ensure_ascii=False, sort_keys=True).casefold()
+
+
+def _collect_key(value: Any, key: str) -> list[Any]:
+    found: list[Any] = []
+    if isinstance(value, Mapping):
+        if key in value:
+            found.append(value[key])
+        for child in value.values():
+            found.extend(_collect_key(child, key))
+    elif isinstance(value, list):
+        for child in value:
+            found.extend(_collect_key(child, key))
+    return found
+
+
+def _assert_text_boundaries(assertions: Mapping[str, Any], answer: Mapping[str, Any]) -> None:
+    haystack = _surface_text(answer)
+    for needle in assertions.get("text_contains_all") or []:
+        _require(
+            str(needle).casefold() in haystack,
+            f"answer surface text expected to contain {needle!r}",
+        )
+    any_needles = [str(v).casefold() for v in assertions.get("text_contains_any") or []]
+    if any_needles:
+        _require(
+            any(needle in haystack for needle in any_needles),
+            f"answer surface text did not contain any of {any_needles}",
+        )
+    for needle in assertions.get("text_not_contains_any") or []:
+        _require(
+            str(needle).casefold() not in haystack,
+            f"answer surface text unexpectedly contained {needle!r}",
+        )
+
+
+def _assert_evidence_boundaries(assertions: Mapping[str, Any], data: Mapping[str, Any]) -> None:
+    if assertions.get("requires_any_evidence"):
+        evidence_values = [
+            value for value in _collect_key(data, "evidence")
+            if isinstance(value, list) and bool(value)
+        ]
+        _require(bool(evidence_values), "expected at least one non-empty evidence list")
+    if assertions.get("requires_evidence_links"):
+        link_values = [
+            value for value in _collect_key(data, "evidence_links")
+            if isinstance(value, list) and bool(value)
+        ]
+        _require(bool(link_values), "expected at least one non-empty evidence_links list")
+        for links in link_values:
+            for idx, link in enumerate(links):
+                _require(isinstance(link, Mapping),
+                         f"evidence_links[{idx}] must be an object")
+                for key in ("recall_number", "url", "source_url"):
+                    _require(bool(link.get(key)),
+                             f"evidence_links[{idx}] missing non-empty {key!r}")
+    if assertions.get("items_require_evidence") or assertions.get("items_require_evidence_links"):
+        items = data.get("items")
+        _require(isinstance(items, list) and bool(items),
+                 "item evidence assertions require non-empty data.items")
+        for idx, item in enumerate(items):
+            _require(isinstance(item, Mapping),
+                     f"data.items[{idx}] must be an object")
+            if assertions.get("items_require_evidence"):
+                _require(isinstance(item.get("evidence"), list) and bool(item.get("evidence")),
+                         f"data.items[{idx}] expected non-empty evidence")
+            if assertions.get("items_require_evidence_links"):
+                _require(
+                    isinstance(item.get("evidence_links"), list) and bool(item.get("evidence_links")),
+                    f"data.items[{idx}] expected non-empty evidence_links",
+                )
+
+
+def _assert_caveats(assertions: Mapping[str, Any], data: Mapping[str, Any]) -> None:
+    expected = assertions.get("data_caveats_contains_all") or []
+    if not expected:
+        return
+    caveats = data.get("caveats")
+    _require(isinstance(caveats, list) and bool(caveats),
+             "expected non-empty data.caveats list")
+    haystack = "\n".join(str(value) for value in caveats).casefold()
+    for needle in expected:
+        _require(str(needle).casefold() in haystack,
+                 f"data.caveats expected to contain {needle!r}, got {caveats!r}")
+
+
 def _assert_ask_case(case: Mapping[str, Any], answer: Mapping[str, Any]) -> EvalResult:
     assertions = case.get("assert") or {}
     _require(isinstance(assertions, Mapping), "ask case assert must be an object")
@@ -581,6 +675,9 @@ def _assert_ask_case(case: Mapping[str, Any], answer: Mapping[str, Any]) -> Eval
     if assertions.get("spec_empty"):
         _require(not spec, f"expected empty spec for guarded response, got {spec!r}")
     _assert_filters(assertions, spec)
+    _assert_text_boundaries(assertions, answer)
+    _assert_evidence_boundaries(assertions, data)
+    _assert_caveats(assertions, data)
     if data_kind in {"semantic_count", "semantic_distribution"}:
         _assert_semantic_count(assertions, data)
     _assert_highlights(assertions, answer)
@@ -811,6 +908,114 @@ def _assert_embedding_provider_config_case(case: Mapping[str, Any]) -> EvalResul
             "embedding_model": config.model,
             "embedding_dimension": config.dimension,
         },
+    )
+
+
+def _ask_with_eval_overrides(
+    case: Mapping[str, Any],
+    *,
+    args: argparse.Namespace,
+    spec: QuerySpec | None = None,
+) -> dict[str, Any]:
+    """Run ``NLEngine.ask`` with controlled upstream provider decisions.
+
+    The eval runner may control only provider boundary inputs that would otherwise make local
+    tests nondeterministic: the LLM intent-router decision, generated ``QuerySpec``, or embedding
+    client failure. Final answer assembly, metadata, highlights, and serialization still come from
+    the production ``NLEngine.ask`` path.
+    """
+    question = str(case.get("question") or "").strip()
+    _require(bool(question), f"{case.get('id', '<case>')}: question must be non-empty")
+    engine = NLEngine(dsn=args.dsn, model=args.model)
+    if engine.chat_client is None:
+        engine.chat_client = SimpleNamespace()
+        engine.client = engine.chat_client
+        engine.chat_error = None
+
+    simulated_error = (
+        case.get("simulate_embedding_error")
+        or (case.get("assert") or {}).get("simulate_embedding_error")
+    )
+    if simulated_error:
+        engine.embed_client = None
+        engine.embedding_error = _simulated_embedding_error(str(simulated_error), engine.embed_config)
+
+    control_payload = case.get("control_decision")
+    if control_payload is not None:
+        _require(isinstance(control_payload, Mapping),
+                 f"{case.get('id', '<case>')}: control_decision must be an object")
+
+    old_structured_completion = llm.structured_completion
+    old_generate_spec = nl_query_module.generate_spec
+
+    def fake_structured_completion(
+        client: Any,
+        config: Any,
+        messages: Any,
+        response_model: type[Any],
+        **kwargs: Any,
+    ) -> Any:
+        if response_model.__name__ == "LLMIntentDecision":
+            payload = dict(control_payload) if control_payload is not None else {
+                "route": "in_domain",
+                "reason": "eval_forced_in_domain",
+                "message": "",
+                "suggestions": [],
+            }
+            return response_model.model_validate(payload)
+        return old_structured_completion(client, config, messages, response_model, **kwargs)
+
+    def fake_generate_spec(*_: Any, **__: Any) -> QuerySpec:
+        _require(spec is not None, "eval generate_spec override requires a QuerySpec")
+        return spec
+
+    try:
+        llm.structured_completion = fake_structured_completion
+        if spec is not None:
+            nl_query_module.generate_spec = fake_generate_spec
+        return serialize_answer(engine.ask(question))
+    finally:
+        llm.structured_completion = old_structured_completion
+        nl_query_module.generate_spec = old_generate_spec
+
+
+def _assert_ask_spec_case(case: Mapping[str, Any], *, args: argparse.Namespace) -> EvalResult:
+    spec_payload = case.get("spec")
+    _require(isinstance(spec_payload, Mapping), "ask_spec cases must include a spec object")
+    spec = QuerySpec.model_validate(spec_payload)
+    answer = _ask_with_eval_overrides(case, args=args, spec=spec)
+    eval_result = _assert_ask_case(case, answer)
+    return EvalResult(
+        eval_result.case_id,
+        eval_result.passed,
+        f"ask_spec {eval_result.detail}",
+        skipped=eval_result.skipped,
+        metadata=eval_result.metadata,
+    )
+
+
+def _assert_expected_future_case(case: Mapping[str, Any]) -> EvalResult:
+    blocked_by = case.get("blocked_by") or []
+    _require(isinstance(blocked_by, list) and bool(blocked_by),
+             "expected_future cases must include non-empty blocked_by")
+    assertions = case.get("assert") or {}
+    _require(isinstance(assertions, Mapping),
+             "expected_future case assert must be an object")
+    _require(
+        bool(assertions.get("text_contains_all") or assertions.get("text_contains_any")),
+        "expected_future cases must describe required future answer text",
+    )
+    _require(
+        bool(assertions.get("text_not_contains_any") or assertions.get("summary_not_contains_any")),
+        "expected_future cases must describe forbidden overclaim text",
+    )
+    return EvalResult(
+        str(case["id"]),
+        True,
+        "expected_future pending; blocked_by="
+        f"{','.join(str(item) for item in blocked_by)}; not counted as passing behavior",
+        skipped=True,
+        metadata={"blocked_by": blocked_by},
     )
 
 
@@ -1542,9 +1747,12 @@ def main() -> int:
         try:
             kind = case.get("kind")
             if kind == "ask":
-                if ask_fn is None:
-                    ask_fn = _build_ask_fn(args)
-                answer = ask_fn(str(case["question"]))
+                if "control_decision" in case:
+                    answer = _ask_with_eval_overrides(case, args=args)
+                else:
+                    if ask_fn is None:
+                        ask_fn = _build_ask_fn(args)
+                    answer = ask_fn(str(case["question"]))
                 case_results.append(_assert_ask_case(case, answer))
                 judge_result = _maybe_judge(case, answer, enabled=args.llm_judge)
                 if judge_result:
@@ -1553,6 +1761,10 @@ def main() -> int:
                 case_results.append(_assert_deterministic_helper_case(case))
             elif kind == "embedding_provider_config":
                 case_results.append(_assert_embedding_provider_config_case(case))
+            elif kind == "ask_spec":
+                case_results.append(_assert_ask_spec_case(case, args=args))
+            elif kind == "expected_future":
+                case_results.append(_assert_expected_future_case(case))
             elif kind == "retrieval_recall":
                 case_results.append(_run_retrieval_case(case, dsn=args.dsn))
             else:
