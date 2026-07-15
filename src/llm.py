@@ -430,6 +430,8 @@ def embed_text(client: OpenAI, config: EmbeddingConfig, text: str) -> list[float
     kwargs: dict[str, Any] = {"model": config.model, "input": [text]}
     if config.provider == "openrouter":
         kwargs["encoding_format"] = "float"
+        if config.default_headers:
+            kwargs["extra_headers"] = dict(config.default_headers)
     try:
         response = client.embeddings.create(**kwargs)
     except OpenAIError as exc:
@@ -539,6 +541,22 @@ def public_error_detail(exc: ProviderError) -> str:
     if len(parts) == 1:
         return parts[0]
     return f"{parts[0]} ({', '.join(parts[1:])})"
+
+
+def provider_error_summary(exc: BaseException) -> str:
+    """Compact, secret-free provider failure label for logs and retrieval fallbacks."""
+    if not isinstance(exc, ProviderError):
+        return type(exc).__name__
+    fields = []
+    if exc.provider:
+        fields.append(f"provider={exc.provider}")
+    if exc.model:
+        fields.append(f"model={exc.model}")
+    if exc.operation:
+        fields.append(f"operation={exc.operation}")
+    if not fields:
+        return type(exc).__name__
+    return f"{type(exc).__name__}({', '.join(fields)})"
 
 
 def _response_format(response_model: type[BaseModel]) -> dict[str, Any]:
