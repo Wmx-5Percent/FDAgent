@@ -35,16 +35,16 @@
   "cases": [
     {
       "id": "aq-control-out-of-domain-english-no-sql-rag",
-      "kind": "answer_quality_fixture",
+      "kind": "ask",
       "question": "Tell me a joke.",
       "suite": [
         "answer_quality",
         "regression"
       ],
       "risk": "agent_control_no_sql_rag_for_out_of_domain",
-      "requires_llm": false,
+      "requires_llm": true,
       "requires_embedding": false,
-      "requires_db": false,
+      "requires_db": true,
       "assert": {
         "route": "out_of_domain",
         "data_kinds": [
@@ -58,21 +58,20 @@
           "semantic vector",
           "SQL"
         ]
-      },
-      "fixture": "out_of_domain_message"
+      }
     },
     {
       "id": "aq-control-meta-chinese-no-sql-rag",
-      "kind": "answer_quality_fixture",
+      "kind": "ask",
       "question": "你可以做什么？",
       "suite": [
         "answer_quality",
         "regression"
       ],
       "risk": "agent_control_no_sql_rag_for_meta",
-      "requires_llm": false,
+      "requires_llm": true,
       "requires_embedding": false,
-      "requires_db": false,
+      "requires_db": true,
       "assert": {
         "route": "chitchat_meta",
         "data_kinds": [
@@ -86,8 +85,7 @@
           "semantic vector",
           "SQL"
         ]
-      },
-      "fixture": "chitchat_meta_message_zh"
+      }
     },
     {
       "id": "aq-raw-firm-exposure-evidence-and-no-verdict",

@@ -22,9 +22,10 @@ sys.path.insert(0, str(SRC_DIR))
 
 import psycopg  # noqa: E402
 
+import agent_control  # noqa: E402
 import llm  # noqa: E402
+import nl_query as nl_query_module  # noqa: E402
 import retrieval  # noqa: E402
-from analytics import RecallAnalytics  # noqa: E402
 from dataset_fingerprint import (  # noqa: E402
     DATASET_DRIFT_EXIT_CODE,
     DEFAULT_BASELINE as DEFAULT_DATASET_FINGERPRINT_BASELINE,
@@ -35,18 +36,13 @@ from dataset_fingerprint import (  # noqa: E402
 )
 from api import serialize_answer  # noqa: E402
 from nl_query import (  # noqa: E402
-    Answer,
-    Intent,
     MODEL,
     NLEngine,
     QuerySpec,
     _class_filter_label,
     _maybe_raw_firm_exposure_spec,
     _maybe_simple_class_count_spec,
-    _run_question_spec,
     _safe_hard_filter_specs_or_defer,
-    build_highlights,
-    summarize,
 )
 
 DEFAULT_DSN = os.environ.get("DATABASE_URL", "postgresql://localhost:5432/fda")
@@ -916,109 +912,53 @@ def _assert_embedding_provider_config_case(case: Mapping[str, Any]) -> EvalResul
     )
 
 
-def _answer_quality_fixture_payload(case: Mapping[str, Any]) -> dict[str, Any]:
-    fixture = str(case.get("fixture") or "")
-    if fixture == "out_of_domain_message":
-        question = str(case.get("question") or "Tell me a joke.")
-        return {
-            "question": question,
-            "intent": "out_of_domain",
-            "spec": {},
-            "summary": "I can answer questions about FDA drug recall enforcement reports, not unrelated topics.",
-            "data": {
-                "kind": "message",
-                "route": "out_of_domain",
-                "message": "Ask about FDA drug recall counts, trends, reasons, firms, or evidence.",
-            },
-        }
-    if fixture == "chitchat_meta_message_zh":
-        question = str(case.get("question") or "你可以做什么？")
-        return {
-            "question": question,
-            "intent": "chitchat_meta",
-            "spec": {},
-            "summary": "我可以回答 FDA 药品召回数据的问题，并给出可核查的召回证据。",
-            "data": {
-                "kind": "message",
-                "route": "chitchat_meta",
-                "message": "你可以问召回数量、趋势、原因分类、公司/firm 排名和样本证据。",
-            },
-        }
-    raise EvalFailure(f"unknown answer_quality fixture {fixture!r}")
-
-
-def _assert_answer_quality_fixture_case(case: Mapping[str, Any]) -> EvalResult:
-    answer = _answer_quality_fixture_payload(case)
-    result = _assert_ask_case(case, answer)
-    return EvalResult(
-        result.case_id,
-        result.passed,
-        f"fixture={case.get('fixture')} {result.detail}",
-        skipped=result.skipped,
-        metadata=result.metadata,
-    )
-
-
-def _assert_ask_spec_case(case: Mapping[str, Any], *, args: argparse.Namespace) -> EvalResult:
-    spec_payload = case.get("spec")
-    _require(isinstance(spec_payload, Mapping), "ask_spec cases must include a spec object")
+def _ask_with_eval_overrides(
+    case: Mapping[str, Any],
+    *,
+    args: argparse.Namespace,
+    spec: QuerySpec | None = None,
+) -> dict[str, Any]:
     question = str(case.get("question") or "").strip()
-    _require(bool(question), "ask_spec cases must include a non-empty question")
-    spec = QuerySpec.model_validate(spec_payload)
+    _require(bool(question), f"{case.get('id', '<case>')}: question must be non-empty")
     engine = NLEngine(dsn=args.dsn, model=args.model)
+    if engine.chat_client is None:
+        engine.chat_client = SimpleNamespace()
+        engine.client = engine.chat_client
+        engine.chat_error = None
 
-    embed_client = engine.embed_client
-    embedding_error: BaseException | None = engine.embedding_error
     simulated_error = (
         case.get("simulate_embedding_error")
         or (case.get("assert") or {}).get("simulate_embedding_error")
     )
     if simulated_error:
-        embed_client = None
-        embedding_error = _simulated_embedding_error(str(simulated_error), engine.embed_config)
+        engine.embed_client = None
+        engine.embedding_error = _simulated_embedding_error(str(simulated_error), engine.embed_config)
 
-    with RecallAnalytics(args.dsn) as analytics:
-        result = _run_question_spec(
-            analytics,
-            spec,
-            engine.chat_client,
-            engine.chat_config,
-            embed_client,
-            engine.embed_config,
-            embedding_error,
-            question,
-        )
+    old_classify = agent_control.classify_llm
+    old_generate_spec = nl_query_module.generate_spec
 
-    metadata: dict[str, Any] = {}
-    if (
-        spec.semantic_query
-        and spec.intent is Intent.sample
-        and getattr(result, "retrieval_mode", None) == "fts_only"
-        and getattr(result, "embedding_fallback_reason", None)
-    ):
-        metadata.update({
-            "retrieval_mode": "fts_only",
-            "embedding_fallback_reason": getattr(result, "embedding_fallback_reason", None),
-            "degraded": True,
-        })
-        if not result:
-            summary = (
-                f"No keyword fallback matches for '{spec.semantic_query}'. Semantic vector retrieval "
-                "is currently unavailable, so this empty result is not a full semantic conclusion."
-            )
-        else:
-            summary = summarize(spec, result)
-    else:
-        summary = summarize(spec, result)
+    def fake_classify_llm(client: Any, config: Any, question_text: str) -> agent_control.AgentControlDecision:
+        return agent_control.AgentControlDecision(route="in_domain", reason="eval_forced_in_domain")
 
-    answer = serialize_answer(Answer(
-        question,
-        spec,
-        summary,
-        result,
-        metadata=metadata,
-        highlights=build_highlights(question, spec, result),
-    ))
+    def fake_generate_spec(*_: Any, **__: Any) -> QuerySpec:
+        _require(spec is not None, "eval generate_spec override requires a QuerySpec")
+        return spec
+
+    try:
+        agent_control.classify_llm = fake_classify_llm
+        if spec is not None:
+            nl_query_module.generate_spec = fake_generate_spec
+        return serialize_answer(engine.ask(question))
+    finally:
+        agent_control.classify_llm = old_classify
+        nl_query_module.generate_spec = old_generate_spec
+
+
+def _assert_ask_spec_case(case: Mapping[str, Any], *, args: argparse.Namespace) -> EvalResult:
+    spec_payload = case.get("spec")
+    _require(isinstance(spec_payload, Mapping), "ask_spec cases must include a spec object")
+    spec = QuerySpec.model_validate(spec_payload)
+    answer = _ask_with_eval_overrides(case, args=args, spec=spec)
     eval_result = _assert_ask_case(case, answer)
     return EvalResult(
         eval_result.case_id,
@@ -1795,8 +1735,6 @@ def main() -> int:
                 case_results.append(_assert_embedding_provider_config_case(case))
             elif kind == "ask_spec":
                 case_results.append(_assert_ask_spec_case(case, args=args))
-            elif kind == "answer_quality_fixture":
-                case_results.append(_assert_answer_quality_fixture_case(case))
             elif kind == "expected_future":
                 case_results.append(_assert_expected_future_case(case))
             elif kind == "retrieval_recall":

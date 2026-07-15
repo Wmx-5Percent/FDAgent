@@ -86,10 +86,11 @@ Runner 会在执行前校验这些字段，防止新 case 漏掉 suite 或前置
 caveat、degraded retrieval 的「不能当作事实零结果」提示、meta/out-of-domain 不进入 SQL/RAG，
 以及公司安全问题不得输出 safe/unsafe verdict 或 safety score。
 
-可执行的数据路径 case 优先用 `kind: ask_spec`：直接给定 `QuerySpec`，跑真实
-analytics/retrieval/summarize/serialize 路径，避免 LLM 路由不稳定，但仍能抓住最终答案
-结构和措辞回归。`kind: answer_quality_fixture` 只用于 terminal guard message 这类不应进入
-SQL/RAG 的固定消息边界，不能用来替代证据型数据路径。
+可执行的数据路径 case 优先用 `kind: ask_spec`：直接给定 `QuerySpec`，通过
+`NLEngine.ask` 跑真实 analytics/retrieval/summarize/serialize 路径，避免 LLM 路由不稳定，
+但仍能抓住最终答案结构和措辞回归。Terminal guard 边界用 `kind: ask_control`：只替换
+classifier 决策，仍调用 `NLEngine.ask` 的生产终止路径，确保 meta/out-of-domain 不进入
+SQL/RAG。不要用 hard-coded fixture 替代会声明证据或 caveat 的数据路径。
 
 该 suite 的零容忍边界必须用 deterministic assertions（文本、结构、evidence fields）
 表达；LLM-as-judge 只能作为额外审计信息，不能作为唯一断言。尚未实现的 Recall Profile
