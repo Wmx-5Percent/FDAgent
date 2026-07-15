@@ -609,6 +609,30 @@ def _assert_min_float(assertions: Mapping[str, Any], key: str, actual: float,
     _require(actual >= expected, f"{label}={actual:.3f} below {expected:.3f}")
 
 
+_SIMULATED_EMBEDDING_ERRORS: Mapping[str, type[llm.ProviderError]] = {
+    "ProviderMissingKeyError": llm.ProviderMissingKeyError,
+    "ProviderAuthError": llm.ProviderAuthError,
+    "ProviderQuotaError": llm.ProviderQuotaError,
+    "ProviderRateLimitError": llm.ProviderRateLimitError,
+    "ProviderConnectionError": llm.ProviderConnectionError,
+}
+
+
+def _simulated_embedding_error(name: str, config: llm.EmbeddingConfig) -> llm.ProviderError:
+    error_type = _SIMULATED_EMBEDDING_ERRORS.get(name)
+    _require(
+        error_type is not None,
+        f"unknown simulated embedding error {name!r}; expected one of "
+        f"{sorted(_SIMULATED_EMBEDDING_ERRORS)}",
+    )
+    return error_type(
+        f"simulated {name} for retrieval benchmark",
+        provider=config.provider,
+        model=config.model,
+        operation="embedding",
+    )
+
+
 def _run_retrieval_case(case: Mapping[str, Any], *, dsn: str) -> EvalResult:
     assertions = case.get("assert") or {}
     _require(isinstance(assertions, Mapping),
@@ -625,25 +649,27 @@ def _run_retrieval_case(case: Mapping[str, Any], *, dsn: str) -> EvalResult:
     field = str(case.get("field", "both"))
     threshold = float(assertions.get("min_recall_at_k", case.get("min_recall_at_k", 1.0)))
     expected_mode = assertions.get("retrieval_mode", case.get("retrieval_mode"))
+    simulated_error_name = (
+        assertions.get("simulate_embedding_error")
+        or case.get("simulate_embedding_error")
+    )
     simulate_fallback = bool(
         assertions.get("simulate_embedding_fallback")
         or case.get("simulate_embedding_fallback")
+        or simulated_error_name
     )
 
     embed_config = llm.embedding_config()
     embedding_error: llm.ProviderError | None = None
     if simulate_fallback:
         client = None
-        embedding_error = llm.ProviderMissingKeyError(
-            "simulated embedding provider outage for retrieval benchmark",
-            provider=embed_config.provider,
-            model=embed_config.model,
-            operation="embedding",
+        embedding_error = _simulated_embedding_error(
+            str(simulated_error_name or "ProviderMissingKeyError"),
+            embed_config,
         )
     else:
         try:
             client = llm.create_embedding_client(embed_config)
-            llm.embed_text(client, embed_config, query)
         except llm.ProviderError as exc:
             return EvalResult(
                 str(case["id"]),
@@ -660,6 +686,18 @@ def _run_retrieval_case(case: Mapping[str, Any], *, dsn: str) -> EvalResult:
     retrieval_mode = getattr(hits, "retrieval_mode", None) or (
         hits[0].retrieval_mode if hits else "-"
     )
+    fallback_reason = getattr(hits, "embedding_fallback_reason", None)
+    if fallback_reason and case.get("requires_embedding") and not simulate_fallback:
+        return EvalResult(
+            str(case["id"]),
+            True,
+            "skipped hybrid recall@"
+            f"{k}: embedding degraded; provider={embed_config.provider} "
+            f"model={embed_config.model} dimension={embed_config.dimension} "
+            f"retrieval_mode={retrieval_mode} fallback={fallback_reason}; "
+            "not counted as zero recall",
+            skipped=True,
+        )
     if expected_mode:
         _require(retrieval_mode == expected_mode,
                  f"expected retrieval_mode={expected_mode!r}, got {retrieval_mode!r}")
@@ -676,12 +714,25 @@ def _run_retrieval_case(case: Mapping[str, Any], *, dsn: str) -> EvalResult:
     ndcg = _ndcg_at_k(positions, ideal_relevant=min(len(expected), k))
     _assert_min_float(assertions, "min_mrr_at_k", mrr, label=f"mrr@{k}")
     _assert_min_float(assertions, "min_ndcg_at_k", ndcg, label=f"ndcg@{k}")
-    fallback_reason = getattr(hits, "embedding_fallback_reason", None)
+    if "embedding_fallback_reason" in assertions:
+        _require(fallback_reason == assertions["embedding_fallback_reason"],
+                 f"embedding_fallback_reason expected {assertions['embedding_fallback_reason']!r}, "
+                 f"got {fallback_reason!r}")
     if assertions.get("requires_fallback_reason"):
         _require(bool(fallback_reason), "expected non-empty embedding_fallback_reason")
     for needle in assertions.get("fallback_reason_contains_all") or []:
         _require(str(needle) in str(fallback_reason),
                  f"fallback_reason expected to contain {needle!r}, got {fallback_reason!r}")
+    for attr, key in (
+        ("vector_hit_count", "min_vector_hit_count"),
+        ("fts_hit_count", "min_fts_hit_count"),
+        ("fused_hit_count", "min_fused_hit_count"),
+    ):
+        if key in assertions:
+            actual = int(getattr(hits, attr, 0))
+            expected_min = int(assertions[key])
+            _require(actual >= expected_min,
+                     f"{attr} expected >= {expected_min}, got {actual}")
     return EvalResult(str(case["id"]), True,
                       f"provider={embed_config.provider} model={embed_config.model} "
                       f"dimension={embed_config.dimension} retrieval_mode={retrieval_mode} "
@@ -690,7 +741,7 @@ def _run_retrieval_case(case: Mapping[str, Any], *, dsn: str) -> EvalResult:
                       f"fts_hits={getattr(hits, 'fts_hit_count', '-')} "
                       f"fused_hits={getattr(hits, 'fused_hit_count', '-')} "
                       f"recall@{k}={recall:.2f} mrr@{k}={mrr:.2f} "
-                      f"ndcg@{k}={ndcg:.2f} matched={sorted(matched)}")
+                      f"ndcg@{k}={ndcg:.2f} matched={sorted(matched)} returned={returned}")
 
 
 def _maybe_judge(case: Mapping[str, Any], answer: Mapping[str, Any], *, enabled: bool) -> EvalResult | None:
