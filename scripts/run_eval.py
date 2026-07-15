@@ -916,7 +916,6 @@ def _ask_with_eval_overrides(
     *,
     args: argparse.Namespace,
     spec: QuerySpec | None = None,
-    control: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     question = str(case.get("question") or "").strip()
     _require(bool(question), f"{case.get('id', '<case>')}: question must be non-empty")
@@ -945,12 +944,12 @@ def _ask_with_eval_overrides(
         **kwargs: Any,
     ) -> Any:
         if response_model.__name__ == "LLMIntentDecision":
-            payload = dict(control or {
+            payload = {
                 "route": "in_domain",
                 "reason": "eval_forced_in_domain",
                 "message": "",
                 "suggestions": [],
-            })
+            }
             return response_model.model_validate(payload)
         return old_structured_completion(client, config, messages, response_model, **kwargs)
 
@@ -969,24 +968,15 @@ def _ask_with_eval_overrides(
 
 
 def _assert_ask_spec_case(case: Mapping[str, Any], *, args: argparse.Namespace) -> EvalResult:
-    control = case.get("mock_control")
-    if control is not None:
-        _require(isinstance(control, Mapping), "ask_spec mock_control must be an object")
-        _require(str(control.get("route") or "") in {"chitchat_meta", "out_of_domain", "ambiguous"},
-                 f"mock_control route must be terminal, got {control.get('route')!r}")
-        answer = _ask_with_eval_overrides(case, args=args, control=control)
-        label = "ask_spec mock_control"
-    else:
-        spec_payload = case.get("spec")
-        _require(isinstance(spec_payload, Mapping), "ask_spec cases must include a spec object")
-        spec = QuerySpec.model_validate(spec_payload)
-        answer = _ask_with_eval_overrides(case, args=args, spec=spec)
-        label = "ask_spec"
+    spec_payload = case.get("spec")
+    _require(isinstance(spec_payload, Mapping), "ask_spec cases must include a spec object")
+    spec = QuerySpec.model_validate(spec_payload)
+    answer = _ask_with_eval_overrides(case, args=args, spec=spec)
     eval_result = _assert_ask_case(case, answer)
     return EvalResult(
         eval_result.case_id,
         eval_result.passed,
-        f"{label} {eval_result.detail}",
+        f"ask_spec {eval_result.detail}",
         skipped=eval_result.skipped,
         metadata=eval_result.metadata,
     )
