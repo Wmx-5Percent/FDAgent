@@ -1,9 +1,9 @@
 """Hybrid retrieval over the `embeddings` table — Path 2 / slice 2.2.
 
-Embeds a natural-language query with text-embedding-3-small, retrieves both semantic vector
-neighbors (pgvector cosine distance) and keyword matches (Postgres FTS over content_tsv), then
-fuses the two ranked lists with reciprocal rank fusion (RRF). Results are joined back to
-drug_enforcement for metadata + evidence.
+Embeds a natural-language query with the configured provider-compatible embedding model,
+retrieves both semantic vector neighbors (pgvector cosine distance) and keyword matches
+(Postgres FTS over content_tsv), then fuses the two ranked lists with reciprocal rank fusion
+(RRF). Results are joined back to drug_enforcement for metadata + evidence.
 
 Run:
     .venv/bin/python src/retrieval.py "sterility problems"
@@ -29,8 +29,6 @@ from analytics import Filter, _conditions
 
 load_dotenv()
 DEFAULT_DSN = os.environ.get("DATABASE_URL", "postgresql://localhost:5432/fda")
-EMBED_MODEL = os.environ.get("EMBED_MODEL") or os.environ.get("OPENAI_EMBED_MODEL") \
-    or llm.DEFAULT_EMBED_MODEL
 FIELDS = ("reason_for_recall", "product_description", "both")
 RRF_K = 60
 MIN_CANDIDATES = 50
@@ -103,6 +101,10 @@ def _vec_literal(vec: Sequence[float]) -> str:
 
 def embed_query(client: Any, config: llm.EmbeddingConfig, text: str) -> list[float]:
     return llm.embed_text(client, config, text)
+
+
+def _embedding_fallback_reason(exc: BaseException) -> str:
+    return llm.provider_error_summary(exc)
 
 
 def _candidate_limit(k: int) -> int:
@@ -396,7 +398,7 @@ def search(conn: psycopg.Connection, client: Any | None, query: str, *,
             k=k,
             field=field,
             retrieval_mode="fts_only",
-            fallback_reason=type(exc).__name__,
+            fallback_reason=_embedding_fallback_reason(exc),
             timings_ms=timings_ms,
             fts_queries=used_fts_queries,
         )
@@ -452,6 +454,13 @@ def main() -> None:
         hits = search(conn, client, args.query, k=args.k, field=args.field,
                       embed_config=embed_config, embedding_error=embedding_error)
         print(f"Q: {args.query!r}  (field={args.field}, k={args.k})\n")
+        print(
+            f"Embedding: provider={embed_config.provider} model={embed_config.model} "
+            f"dimension={embed_config.dimension} retrieval_mode={hits.retrieval_mode}"
+        )
+        if hits.embedding_fallback_reason:
+            print(f"Embedding fallback: {hits.embedding_fallback_reason}")
+        print()
         for i, h in enumerate(hits, 1):
             print(f"{i:>2}. [{h.recall_number}] {h.score_kind}={h.retrieval_score:.3f}  "
                   f"{h.retrieval_mode}  {h.classification or '-'}  {h.recalling_firm or '-'}")
