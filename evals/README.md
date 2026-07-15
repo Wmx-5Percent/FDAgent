@@ -1,0 +1,48 @@
+# FDAgent Evaluation Contract
+
+> 定义本仓库 eval case 的稳定元数据、suite 标签和本地运行命令。
+
+## PR 前该跑什么
+
+- 默认全量：`.venv/bin/python scripts/run_eval.py --golden evals/golden/v1.json`
+- PR 阻塞核心集：`.venv/bin/python scripts/run_eval.py --golden evals/golden/v1.json --suite core`
+- RAG / embedding 质量集：`.venv/bin/python scripts/run_eval.py --golden evals/golden/v1.json --suite rag`
+- 精确 case 子集：`.venv/bin/python scripts/run_eval.py --golden evals/golden/v1.json --case numeric-class-i-count --case taxonomy-reason-breakdown`
+- 查看选择结果：`.venv/bin/python scripts/run_eval.py --golden evals/golden/v1.json --suite core --list-cases`
+
+`--suite` 和 `--case` 都支持重复传入或逗号分隔；同时传入时取交集。运行本地
+`ask` case 需要本地 Postgres `fda` 数据库和 chat provider；`rag` case 还可能需要
+embedding provider。每个 case 用 `requires_llm` / `requires_embedding` /
+`requires_db` 显式声明这些前置条件。
+
+## Case 元数据契约
+
+每个 `evals/golden/*.json` case 必须包含：
+
+- `id`：稳定唯一 ID；修 bug 后不要重命名既有 regression case。
+- `kind`：runner 分发类型，例如 `ask`、`deterministic_helper`、`retrieval_recall`。
+- `suite`：非空 suite 标签字符串或字符串数组；标签必须在文件顶层 `suites` 中定义。
+- `risk`：该 case 防守的风险面，例如 `agent_control`、`filter_preservation`、`retrieval_recall_at_k`。
+- `requires_llm` / `requires_embedding` / `requires_db`：布尔前置条件。
+- `assert`：可执行断言对象；输入字段（如 `question`、`query`、`k`）留在 case 顶层。
+
+Runner 会在执行前校验这些字段，防止新 case 漏掉 suite 或前置条件说明。
+
+## Suite 标签
+
+- `core`：稳定、可作为 PR 阻塞的核心 `/ask`、deterministic helper 与 provider 配置回归。
+- `rag`：检索、embedding、recall@k 或语义路由质量；通常不应混入快速 PR gate。
+- `answer_quality`：最终答案诚实性、证据边界、措辞约束；由后续 answer-quality 工作扩展。
+- `firm_profile`：未来 Recall Profile / 公司画像行为；不得提前实现业务路由。
+- `regression`：所有已修 bug 的永久回归标签；可与 `core`、`rag` 等主 suite 同时存在。
+
+## 如何添加 regression case
+
+1. 在修 bug 的同一 PR 中添加最小可复现 case。
+2. 保留完整断言，不要只断言“没有报错”。
+3. 设置合适主 suite，并加上 `regression` 标签。
+4. `risk` 写清楚防守面；如果关联 issue/PR，可在 `notes` 中记录。
+5. 用 `--case <id>` 先跑新增 case，再跑相关 `--suite`。
+
+本合同只定义 suite / metadata / selection 规则。数据指纹、baseline 对比、PR gate、
+RAG benchmark 和 answer-quality 细分实现分别由后续 issue 承担。
