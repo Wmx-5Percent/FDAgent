@@ -574,6 +574,33 @@
       }
     },
     {
+      "id": "provider-openrouter-query-embedding-config",
+      "kind": "embedding_provider_config",
+      "env": {
+        "EMBED_PROVIDER": "openrouter",
+        "EMBED_MODEL": "openai/text-embedding-3-small",
+        "OPENROUTER_API_KEY": "dummy-openrouter-key",
+        "OPENROUTER_BASE_URL": "https://openrouter.ai/api/v1",
+        "OPENROUTER_APP_TITLE": "FDAgent Eval",
+        "OPENAI_API_KEY": "dummy-openai-key-that-must-not-be-used"
+      },
+      "unset_env": ["OPENAI_EMBED_MODEL", "OPENROUTER_EMBED_MODEL"],
+      "assert": {
+        "provider": "openrouter",
+        "model": "openai/text-embedding-3-small",
+        "base_url": "https://openrouter.ai/api/v1",
+        "dimension": 1536,
+        "configured": true,
+        "client_api_key": "dummy-openrouter-key",
+        "client_not_api_key": "dummy-openai-key-that-must-not-be-used",
+        "client_base_url": "https://openrouter.ai/api/v1",
+        "client_default_headers_include": ["X-OpenRouter-Title"],
+        "request_model": "openai/text-embedding-3-small",
+        "request_encoding_format": "float",
+        "request_extra_headers_include": ["X-OpenRouter-Title"]
+      }
+    },
+    {
       "id": "retrieval-glass-particles",
       "kind": "retrieval_recall",
       "query": "glass particles in drug vials",
