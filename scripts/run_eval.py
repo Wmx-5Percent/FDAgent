@@ -917,6 +917,13 @@ def _ask_with_eval_overrides(
     args: argparse.Namespace,
     spec: QuerySpec | None = None,
 ) -> dict[str, Any]:
+    """Run ``NLEngine.ask`` with controlled upstream provider decisions.
+
+    The eval runner may control only provider boundary inputs that would otherwise make local
+    tests nondeterministic: the LLM intent-router decision, generated ``QuerySpec``, or embedding
+    client failure. Final answer assembly, metadata, highlights, and serialization still come from
+    the production ``NLEngine.ask`` path.
+    """
     question = str(case.get("question") or "").strip()
     _require(bool(question), f"{case.get('id', '<case>')}: question must be non-empty")
     engine = NLEngine(dsn=args.dsn, model=args.model)
@@ -933,6 +940,11 @@ def _ask_with_eval_overrides(
         engine.embed_client = None
         engine.embedding_error = _simulated_embedding_error(str(simulated_error), engine.embed_config)
 
+    control_payload = case.get("control_decision")
+    if control_payload is not None:
+        _require(isinstance(control_payload, Mapping),
+                 f"{case.get('id', '<case>')}: control_decision must be an object")
+
     old_structured_completion = llm.structured_completion
     old_generate_spec = nl_query_module.generate_spec
 
@@ -944,7 +956,7 @@ def _ask_with_eval_overrides(
         **kwargs: Any,
     ) -> Any:
         if response_model.__name__ == "LLMIntentDecision":
-            payload = {
+            payload = dict(control_payload) if control_payload is not None else {
                 "route": "in_domain",
                 "reason": "eval_forced_in_domain",
                 "message": "",
@@ -1735,9 +1747,12 @@ def main() -> int:
         try:
             kind = case.get("kind")
             if kind == "ask":
-                if ask_fn is None:
-                    ask_fn = _build_ask_fn(args)
-                answer = ask_fn(str(case["question"]))
+                if "control_decision" in case:
+                    answer = _ask_with_eval_overrides(case, args=args)
+                else:
+                    if ask_fn is None:
+                        ask_fn = _build_ask_fn(args)
+                    answer = ask_fn(str(case["question"]))
                 case_results.append(_assert_ask_case(case, answer))
                 judge_result = _maybe_judge(case, answer, enabled=args.llm_judge)
                 if judge_result:

@@ -42,24 +42,30 @@
         "regression"
       ],
       "risk": "agent_control_no_sql_rag_for_out_of_domain",
-      "requires_llm": true,
+      "requires_llm": false,
       "requires_embedding": false,
       "requires_db": true,
-      "allow_provider_unavailable_skip": true,
+      "control_decision": {
+        "route": "out_of_domain",
+        "reason": "eval_out_of_domain_joke"
+      },
       "assert": {
         "route": "out_of_domain",
         "data_kinds": [
           "message"
         ],
         "spec_empty": true,
+        "text_contains_all": [
+          "FDA drug-recall enforcement data"
+        ],
         "text_not_contains_any": [
           "recalls by",
           "ranked FDA recall",
-          "estimated",
           "semantic vector",
           "SQL"
         ]
-      }
+      },
+      "notes": "control_decision leaves message/suggestions empty so production NLEngine.ask uses the app's guard-message fallback instead of a hard-coded eval payload."
     },
     {
       "id": "aq-control-meta-chinese-no-sql-rag",
@@ -70,24 +76,31 @@
         "regression"
       ],
       "risk": "agent_control_no_sql_rag_for_meta",
-      "requires_llm": true,
+      "requires_llm": false,
       "requires_embedding": false,
       "requires_db": true,
-      "allow_provider_unavailable_skip": true,
+      "control_decision": {
+        "route": "chitchat_meta",
+        "reason": "eval_capability_question"
+      },
       "assert": {
         "route": "chitchat_meta",
         "data_kinds": [
           "message"
         ],
         "spec_empty": true,
+        "text_contains_all": [
+          "FDAgent",
+          "openFDA drug enforcement recalls"
+        ],
         "text_not_contains_any": [
           "recalls by",
           "ranked FDA recall",
-          "estimated",
           "semantic vector",
           "SQL"
         ]
-      }
+      },
+      "notes": "control_decision leaves message/suggestions empty so production NLEngine.ask uses the app's guard-message fallback instead of a hard-coded eval payload."
     },
     {
       "id": "aq-raw-firm-exposure-evidence-and-no-verdict",
