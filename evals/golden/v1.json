@@ -1,13 +1,62 @@
 {"description": "FDAgent v1 golden eval set for /ask routing and retrieval recall@k.",
   "version": "v1",
+  "case_metadata_contract": {
+    "required_case_fields": [
+      "id",
+      "kind",
+      "suite",
+      "risk",
+      "requires_llm",
+      "requires_embedding",
+      "requires_db",
+      "assert"
+    ],
+    "suite": "string or non-empty list of strings defined in top-level suites",
+    "risk": "stable risk area protected by the case",
+    "assert": "executable assertion object; input fields such as question/query/k stay at case top level"
+  },
+  "suites": {
+    "core": {
+      "description": "Stable PR-blocking /ask, deterministic-helper, and provider-configuration contract cases.",
+      "blocking": true,
+      "default_command": ".venv/bin/python scripts/run_eval.py --golden evals/golden/v1.json --suite core"
+    },
+    "rag": {
+      "description": "Retrieval, embedding, semantic-routing, and recall@k quality cases.",
+      "blocking": false,
+      "default_command": ".venv/bin/python scripts/run_eval.py --golden evals/golden/v1.json --suite rag"
+    },
+    "answer_quality": {
+      "description": "Final-answer honesty, caveat, evidence, and no-overclaim checks for future suites.",
+      "blocking": false
+    },
+    "firm_profile": {
+      "description": "Future Recall Profile / company-profile behavior checks; contract only for now.",
+      "blocking": false
+    },
+    "regression": {
+      "description": "Permanent fixed-bug regression tag; combine with a primary suite tag.",
+      "blocking": false
+    }
+  },
   "cases": [
     {
       "id": "control-meta-who-are-you",
       "kind": "ask",
       "question": "who you are?",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "agent_control",
+      "requires_llm": true,
+      "requires_embedding": false,
+      "requires_db": true,
       "assert": {
         "route": "chitchat_meta",
-        "data_kinds": ["message"],
+        "data_kinds": [
+          "message"
+        ],
         "spec_empty": true
       }
     },
@@ -15,9 +64,19 @@
       "id": "control-out-of-domain-joke",
       "kind": "ask",
       "question": "Tell me a joke.",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "agent_control",
+      "requires_llm": true,
+      "requires_embedding": false,
+      "requires_db": true,
       "assert": {
         "route": "out_of_domain",
-        "data_kinds": ["message"],
+        "data_kinds": [
+          "message"
+        ],
         "spec_empty": true
       }
     },
@@ -25,9 +84,19 @@
       "id": "control-out-of-domain-company-employees",
       "kind": "ask",
       "question": "Which companies have the most employees?",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "agent_control",
+      "requires_llm": true,
+      "requires_embedding": false,
+      "requires_db": true,
       "assert": {
         "route": "out_of_domain",
-        "data_kinds": ["message"],
+        "data_kinds": [
+          "message"
+        ],
         "spec_empty": true
       }
     },
@@ -35,9 +104,19 @@
       "id": "control-out-of-domain-toyota-class-count",
       "kind": "ask",
       "question": "How many Class I recalls were there for Toyota cars?",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "agent_control",
+      "requires_llm": true,
+      "requires_embedding": false,
+      "requires_db": true,
       "assert": {
         "route": "out_of_domain",
-        "data_kinds": ["message"],
+        "data_kinds": [
+          "message"
+        ],
         "spec_empty": true
       }
     },
@@ -45,9 +124,19 @@
       "id": "control-zh-meta-ask",
       "kind": "ask",
       "question": "你可以做什么？",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "agent_control",
+      "requires_llm": true,
+      "requires_embedding": false,
+      "requires_db": true,
       "assert": {
         "route": "chitchat_meta",
-        "data_kinds": ["message"],
+        "data_kinds": [
+          "message"
+        ],
         "spec_empty": true
       }
     },
@@ -55,9 +144,19 @@
       "id": "control-zh-out-of-domain-ask",
       "kind": "ask",
       "question": "今天天气怎么样？",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "agent_control",
+      "requires_llm": true,
+      "requires_embedding": false,
+      "requires_db": true,
       "assert": {
         "route": "out_of_domain",
-        "data_kinds": ["message"],
+        "data_kinds": [
+          "message"
+        ],
         "spec_empty": true
       }
     },
@@ -65,26 +164,59 @@
       "id": "control-zh-superpotent-semantic",
       "kind": "ask",
       "question": "给我看几个因为药效太强被召回的药品。",
+      "suite": [
+        "rag",
+        "regression"
+      ],
+      "risk": "retrieval_semantic_routing",
+      "requires_llm": true,
+      "requires_embedding": true,
+      "requires_db": true,
       "assert": {
         "route": "semantic",
-        "intents": ["sample"],
-        "data_kinds": ["retrieval"],
+        "intents": [
+          "sample"
+        ],
+        "data_kinds": [
+          "retrieval"
+        ],
         "no_ilike": true,
-        "semantic_query_contains_any": ["superpotent", "strong", "potent", "assay"],
+        "semantic_query_contains_any": [
+          "superpotent",
+          "strong",
+          "potent",
+          "assay"
+        ],
         "requires_highlights": true,
         "min_highlights": 3,
         "max_highlights": 6,
-        "highlights_contains_any": ["returned", "retrieval", "evidence"]
+        "highlights_contains_any": [
+          "returned",
+          "retrieval",
+          "evidence"
+        ]
       }
     },
     {
       "id": "numeric-class-i-count",
       "kind": "ask",
       "question": "How many Class I drug recalls have there been?",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "sql_count_and_filter_preservation",
+      "requires_llm": true,
+      "requires_embedding": false,
+      "requires_db": true,
       "assert": {
         "route": "sql",
-        "intents": ["count_total"],
-        "data_kinds": ["scalar"],
+        "intents": [
+          "count_total"
+        ],
+        "data_kinds": [
+          "scalar"
+        ],
         "value_equals": 1729,
         "no_ilike": true
       }
@@ -93,13 +225,37 @@
       "id": "numeric-class-i-count-canada-preserves-country",
       "kind": "ask",
       "question": "How many Class I drug recalls in Canada?",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "sql_count_and_filter_preservation",
+      "requires_llm": true,
+      "requires_embedding": false,
+      "requires_db": true,
       "assert": {
         "route": "sql",
-        "intents": ["count_total"],
-        "data_kinds": ["scalar"],
+        "intents": [
+          "count_total"
+        ],
+        "data_kinds": [
+          "scalar"
+        ],
         "filters_include": [
-          {"column": "classification", "op": "eq", "values": ["Class I"]},
-          {"column": "country", "op": "eq", "values": ["Canada"]}
+          {
+            "column": "classification",
+            "op": "eq",
+            "values": [
+              "Class I"
+            ]
+          },
+          {
+            "column": "country",
+            "op": "eq",
+            "values": [
+              "Canada"
+            ]
+          }
         ],
         "value_equals": 4,
         "no_ilike": true
@@ -109,13 +265,37 @@
       "id": "numeric-class-i-count-united-states-preserves-country",
       "kind": "ask",
       "question": "How many Class I drug recalls in the United States?",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "sql_count_and_filter_preservation",
+      "requires_llm": true,
+      "requires_embedding": false,
+      "requires_db": true,
       "assert": {
         "route": "sql",
-        "intents": ["count_total"],
-        "data_kinds": ["scalar"],
+        "intents": [
+          "count_total"
+        ],
+        "data_kinds": [
+          "scalar"
+        ],
         "filters_include": [
-          {"column": "classification", "op": "eq", "values": ["Class I"]},
-          {"column": "country", "op": "eq", "values": ["United States"]}
+          {
+            "column": "classification",
+            "op": "eq",
+            "values": [
+              "Class I"
+            ]
+          },
+          {
+            "column": "country",
+            "op": "eq",
+            "values": [
+              "United States"
+            ]
+          }
         ],
         "value_equals": 1671,
         "no_ilike": true
@@ -125,13 +305,37 @@
       "id": "numeric-class-i-count-us-preserves-country",
       "kind": "ask",
       "question": "How many Class I drug recalls in the US?",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "sql_count_and_filter_preservation",
+      "requires_llm": true,
+      "requires_embedding": false,
+      "requires_db": true,
       "assert": {
         "route": "sql",
-        "intents": ["count_total"],
-        "data_kinds": ["scalar"],
+        "intents": [
+          "count_total"
+        ],
+        "data_kinds": [
+          "scalar"
+        ],
         "filters_include": [
-          {"column": "classification", "op": "eq", "values": ["Class I"]},
-          {"column": "country", "op": "eq", "values": ["United States"]}
+          {
+            "column": "classification",
+            "op": "eq",
+            "values": [
+              "Class I"
+            ]
+          },
+          {
+            "column": "country",
+            "op": "eq",
+            "values": [
+              "United States"
+            ]
+          }
         ],
         "value_equals": 1671,
         "no_ilike": true
@@ -141,13 +345,37 @@
       "id": "numeric-pending-class-i-preserves-status",
       "kind": "ask",
       "question": "How many pending Class I recalls are there?",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "sql_count_and_filter_preservation",
+      "requires_llm": true,
+      "requires_embedding": false,
+      "requires_db": true,
       "assert": {
         "route": "sql",
-        "intents": ["count_total"],
-        "data_kinds": ["scalar"],
+        "intents": [
+          "count_total"
+        ],
+        "data_kinds": [
+          "scalar"
+        ],
         "filters_include": [
-          {"column": "classification", "op": "eq", "values": ["Class I"]},
-          {"column": "status", "op": "eq", "values": ["Pending"]}
+          {
+            "column": "classification",
+            "op": "eq",
+            "values": [
+              "Class I"
+            ]
+          },
+          {
+            "column": "status",
+            "op": "eq",
+            "values": [
+              "Pending"
+            ]
+          }
         ],
         "value_equals": 0,
         "no_ilike": true
@@ -157,10 +385,30 @@
       "id": "helper-bare-country-class-count-preserves-country",
       "kind": "deterministic_helper",
       "question": "How many Class I Canada drug recalls are there?",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "deterministic_helper_filter_preservation",
+      "requires_llm": false,
+      "requires_embedding": false,
+      "requires_db": false,
       "assert": {
         "simple_class_count_filters_include": [
-          {"column": "classification", "op": "eq", "values": ["Class I"]},
-          {"column": "country", "op": "eq", "values": ["Canada"]}
+          {
+            "column": "classification",
+            "op": "eq",
+            "values": [
+              "Class I"
+            ]
+          },
+          {
+            "column": "country",
+            "op": "eq",
+            "values": [
+              "Canada"
+            ]
+          }
         ],
         "raw_firm_exposure_spec_empty": true,
         "helper_filter_invariant": true
@@ -170,10 +418,30 @@
       "id": "helper-bare-state-class-count-preserves-state",
       "kind": "deterministic_helper",
       "question": "How many Class I California drug recalls are there?",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "deterministic_helper_filter_preservation",
+      "requires_llm": false,
+      "requires_embedding": false,
+      "requires_db": false,
       "assert": {
         "simple_class_count_filters_include": [
-          {"column": "classification", "op": "eq", "values": ["Class I"]},
-          {"column": "state", "op": "eq", "values": ["CA"]}
+          {
+            "column": "classification",
+            "op": "eq",
+            "values": [
+              "Class I"
+            ]
+          },
+          {
+            "column": "state",
+            "op": "eq",
+            "values": [
+              "CA"
+            ]
+          }
         ],
         "raw_firm_exposure_spec_empty": true,
         "helper_filter_invariant": true
@@ -183,6 +451,14 @@
       "id": "helper-product-qualified-class-count-containing-defers",
       "kind": "deterministic_helper",
       "question": "How many Class I recalls containing acetaminophen are there?",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "deterministic_helper_filter_preservation",
+      "requires_llm": false,
+      "requires_embedding": false,
+      "requires_db": false,
       "assert": {
         "simple_class_count_spec_empty": true,
         "raw_firm_exposure_spec_empty": true
@@ -192,6 +468,14 @@
       "id": "helper-product-qualified-class-count-bare-ingredient-defers",
       "kind": "deterministic_helper",
       "question": "How many acetaminophen Class I recalls are there?",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "deterministic_helper_filter_preservation",
+      "requires_llm": false,
+      "requires_embedding": false,
+      "requires_db": false,
       "assert": {
         "simple_class_count_spec_empty": true,
         "raw_firm_exposure_spec_empty": true
@@ -201,12 +485,27 @@
       "id": "numeric-class-i-by-firm",
       "kind": "ask",
       "question": "Which firms had the most Class I recalls?",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "sql_count_and_filter_preservation",
+      "requires_llm": true,
+      "requires_embedding": false,
+      "requires_db": true,
       "assert": {
         "route": "sql",
-        "intents": ["count_by"],
-        "data_kinds": ["distribution"],
+        "intents": [
+          "count_by"
+        ],
+        "data_kinds": [
+          "distribution"
+        ],
         "top_items": [
-          {"value": "King Bio Inc.", "count": 465}
+          {
+            "value": "King Bio Inc.",
+            "count": 465
+          }
         ],
         "no_ilike": true
       }
@@ -215,10 +514,22 @@
       "id": "exposure-raw-firm-count-leaderboard",
       "kind": "ask",
       "question": "Which recalling firms have the most FDA drug recalls?",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "raw_firm_exposure",
+      "requires_llm": true,
+      "requires_embedding": false,
+      "requires_db": true,
       "assert": {
         "route": "sql",
-        "intents": ["raw_firm_exposure"],
-        "data_kinds": ["raw_firm_exposure"],
+        "intents": [
+          "raw_firm_exposure"
+        ],
+        "data_kinds": [
+          "raw_firm_exposure"
+        ],
         "data_fields": {
           "metric": "recall_count",
           "formula_version": "raw_severity_v0",
@@ -235,7 +546,11 @@
             "exposure_score": 1076
           }
         ],
-        "summary_contains_any": ["raw FDA `recalling_firm`", "not a safety verdict", "3 * Class I"],
+        "summary_contains_any": [
+          "raw FDA `recalling_firm`",
+          "not a safety verdict",
+          "3 * Class I"
+        ],
         "no_ilike": true
       }
     },
@@ -243,10 +558,22 @@
       "id": "exposure-severity-weighted-leaderboard",
       "kind": "ask",
       "question": "Rank firms by severity-weighted recalls.",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "raw_firm_exposure",
+      "requires_llm": true,
+      "requires_embedding": false,
+      "requires_db": true,
       "assert": {
         "route": "sql",
-        "intents": ["raw_firm_exposure"],
-        "data_kinds": ["raw_firm_exposure"],
+        "intents": [
+          "raw_firm_exposure"
+        ],
+        "data_kinds": [
+          "raw_firm_exposure"
+        ],
         "data_fields": {
           "metric": "severity_weighted",
           "formula_version": "raw_severity_v0",
@@ -263,7 +590,11 @@
             "exposure_score": 1395
           }
         ],
-        "summary_contains_any": ["severity-weighted exposure score", "not a safety verdict", "raw FDA"],
+        "summary_contains_any": [
+          "severity-weighted exposure score",
+          "not a safety verdict",
+          "raw FDA"
+        ],
         "no_ilike": true
       }
     },
@@ -271,10 +602,22 @@
       "id": "exposure-parent-group-leaderboard-caveated",
       "kind": "ask",
       "question": "Which parent companies have the highest FDA recall exposure?",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "parent_group_exposure",
+      "requires_llm": true,
+      "requires_embedding": false,
+      "requires_db": true,
       "assert": {
         "route": "sql",
-        "intents": ["parent_group_exposure"],
-        "data_kinds": ["multi_section"],
+        "intents": [
+          "parent_group_exposure"
+        ],
+        "data_kinds": [
+          "multi_section"
+        ],
         "section_count": 1,
         "sections": [
           {
@@ -284,7 +627,11 @@
             "source": "parent_group_exposure_v1"
           }
         ],
-        "summary_contains_any": ["parent-group exposure", "provenance-backed", "not a safety verdict"],
+        "summary_contains_any": [
+          "parent-group exposure",
+          "provenance-backed",
+          "not a safety verdict"
+        ],
         "no_ilike": true
       }
     },
@@ -292,15 +639,38 @@
       "id": "exposure-filtered-california-preserves-state",
       "kind": "ask",
       "question": "Which firms in California have the most FDA drug recalls?",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "raw_firm_exposure",
+      "requires_llm": true,
+      "requires_embedding": false,
+      "requires_db": true,
       "assert": {
         "route": "sql",
-        "intents": ["count_by", "raw_firm_exposure"],
-        "data_kinds": ["distribution", "raw_firm_exposure"],
+        "intents": [
+          "count_by",
+          "raw_firm_exposure"
+        ],
+        "data_kinds": [
+          "distribution",
+          "raw_firm_exposure"
+        ],
         "filters_include": [
-          {"column": "state", "op": "eq", "values": ["CA"]}
+          {
+            "column": "state",
+            "op": "eq",
+            "values": [
+              "CA"
+            ]
+          }
         ],
         "top_items": [
-          {"firm_equals": "Herbal Doctor Remedies", "recall_count_equals": 113}
+          {
+            "firm_equals": "Herbal Doctor Remedies",
+            "recall_count_equals": 113
+          }
         ],
         "no_ilike": true
       }
@@ -309,15 +679,38 @@
       "id": "exposure-filtered-canada-preserves-country",
       "kind": "ask",
       "question": "Which firms in Canada have the most FDA drug recalls?",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "raw_firm_exposure",
+      "requires_llm": true,
+      "requires_embedding": false,
+      "requires_db": true,
       "assert": {
         "route": "sql",
-        "intents": ["count_by", "raw_firm_exposure"],
-        "data_kinds": ["distribution", "raw_firm_exposure"],
+        "intents": [
+          "count_by",
+          "raw_firm_exposure"
+        ],
+        "data_kinds": [
+          "distribution",
+          "raw_firm_exposure"
+        ],
         "filters_include": [
-          {"column": "country", "op": "eq", "values": ["Canada"]}
+          {
+            "column": "country",
+            "op": "eq",
+            "values": [
+              "Canada"
+            ]
+          }
         ],
         "top_items": [
-          {"firm_equals": "Attix Pharmaceuticals", "recall_count_equals": 470}
+          {
+            "firm_equals": "Attix Pharmaceuticals",
+            "recall_count_equals": 470
+          }
         ],
         "no_ilike": true
       }
@@ -326,10 +719,24 @@
       "id": "helper-bare-country-raw-exposure-preserves-country",
       "kind": "deterministic_helper",
       "question": "Which firms have the most Canada FDA drug recalls?",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "deterministic_helper_filter_preservation",
+      "requires_llm": false,
+      "requires_embedding": false,
+      "requires_db": false,
       "assert": {
         "simple_class_count_spec_empty": true,
         "raw_firm_exposure_filters_include": [
-          {"column": "country", "op": "eq", "values": ["Canada"]}
+          {
+            "column": "country",
+            "op": "eq",
+            "values": [
+              "Canada"
+            ]
+          }
         ],
         "helper_filter_invariant": true
       }
@@ -338,10 +745,24 @@
       "id": "helper-bare-state-raw-exposure-preserves-state",
       "kind": "deterministic_helper",
       "question": "Which firms have the most California FDA drug recalls?",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "deterministic_helper_filter_preservation",
+      "requires_llm": false,
+      "requires_embedding": false,
+      "requires_db": false,
       "assert": {
         "simple_class_count_spec_empty": true,
         "raw_firm_exposure_filters_include": [
-          {"column": "state", "op": "eq", "values": ["CA"]}
+          {
+            "column": "state",
+            "op": "eq",
+            "values": [
+              "CA"
+            ]
+          }
         ],
         "helper_filter_invariant": true
       }
@@ -350,15 +771,39 @@
       "id": "exposure-filtered-us-and-canada-preserves-all-countries",
       "kind": "ask",
       "question": "Which firms in the US and Canada have the most FDA drug recalls?",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "raw_firm_exposure",
+      "requires_llm": true,
+      "requires_embedding": false,
+      "requires_db": true,
       "assert": {
         "route": "sql",
-        "intents": ["count_by", "raw_firm_exposure"],
-        "data_kinds": ["distribution", "raw_firm_exposure"],
+        "intents": [
+          "count_by",
+          "raw_firm_exposure"
+        ],
+        "data_kinds": [
+          "distribution",
+          "raw_firm_exposure"
+        ],
         "filters_include": [
-          {"column": "country", "op": "in", "values": ["United States", "Canada"]}
+          {
+            "column": "country",
+            "op": "in",
+            "values": [
+              "United States",
+              "Canada"
+            ]
+          }
         ],
         "top_items": [
-          {"firm_equals": "Aidapak Services, LLC", "recall_count_equals": 538}
+          {
+            "firm_equals": "Aidapak Services, LLC",
+            "recall_count_equals": 538
+          }
         ],
         "no_ilike": true
       }
@@ -367,15 +812,38 @@
       "id": "exposure-filtered-united-states-article-preserves-country",
       "kind": "ask",
       "question": "Which firms in the United States have the most FDA drug recalls?",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "raw_firm_exposure",
+      "requires_llm": true,
+      "requires_embedding": false,
+      "requires_db": true,
       "assert": {
         "route": "sql",
-        "intents": ["count_by", "raw_firm_exposure"],
-        "data_kinds": ["distribution", "raw_firm_exposure"],
+        "intents": [
+          "count_by",
+          "raw_firm_exposure"
+        ],
+        "data_kinds": [
+          "distribution",
+          "raw_firm_exposure"
+        ],
         "filters_include": [
-          {"column": "country", "op": "eq", "values": ["United States"]}
+          {
+            "column": "country",
+            "op": "eq",
+            "values": [
+              "United States"
+            ]
+          }
         ],
         "top_items": [
-          {"firm_equals": "Aidapak Services, LLC", "recall_count_equals": 538}
+          {
+            "firm_equals": "Aidapak Services, LLC",
+            "recall_count_equals": 538
+          }
         ],
         "no_ilike": true
       }
@@ -384,15 +852,38 @@
       "id": "exposure-filtered-us-article-preserves-country",
       "kind": "ask",
       "question": "Which firms in the US have the most FDA drug recalls?",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "raw_firm_exposure",
+      "requires_llm": true,
+      "requires_embedding": false,
+      "requires_db": true,
       "assert": {
         "route": "sql",
-        "intents": ["count_by", "raw_firm_exposure"],
-        "data_kinds": ["distribution", "raw_firm_exposure"],
+        "intents": [
+          "count_by",
+          "raw_firm_exposure"
+        ],
+        "data_kinds": [
+          "distribution",
+          "raw_firm_exposure"
+        ],
         "filters_include": [
-          {"column": "country", "op": "eq", "values": ["United States"]}
+          {
+            "column": "country",
+            "op": "eq",
+            "values": [
+              "United States"
+            ]
+          }
         ],
         "top_items": [
-          {"firm_equals": "Aidapak Services, LLC", "recall_count_equals": 538}
+          {
+            "firm_equals": "Aidapak Services, LLC",
+            "recall_count_equals": 538
+          }
         ],
         "no_ilike": true
       }
@@ -401,15 +892,39 @@
       "id": "exposure-filtered-bare-year-preserves-report-year",
       "kind": "ask",
       "question": "Which firms had the most FDA drug recalls 2024?",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "raw_firm_exposure",
+      "requires_llm": true,
+      "requires_embedding": false,
+      "requires_db": true,
       "assert": {
         "route": "sql",
-        "intents": ["count_by", "raw_firm_exposure"],
-        "data_kinds": ["distribution", "raw_firm_exposure"],
+        "intents": [
+          "count_by",
+          "raw_firm_exposure"
+        ],
+        "data_kinds": [
+          "distribution",
+          "raw_firm_exposure"
+        ],
         "filters_include": [
-          {"column": "report_date", "op": "between", "values": ["2024-01-01", "2024-12-31"]}
+          {
+            "column": "report_date",
+            "op": "between",
+            "values": [
+              "2024-01-01",
+              "2024-12-31"
+            ]
+          }
         ],
         "top_items": [
-          {"firm_equals": "CARDINAL HEALTHCARE", "recall_count_equals": 42}
+          {
+            "firm_equals": "CARDINAL HEALTHCARE",
+            "recall_count_equals": 42
+          }
         ],
         "no_ilike": true
       }
@@ -418,6 +933,14 @@
       "id": "helper-product-qualified-raw-exposure-containing-defers",
       "kind": "deterministic_helper",
       "question": "Which firms had the most FDA drug recalls containing acetaminophen?",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "deterministic_helper_filter_preservation",
+      "requires_llm": false,
+      "requires_embedding": false,
+      "requires_db": false,
       "assert": {
         "simple_class_count_spec_empty": true,
         "raw_firm_exposure_spec_empty": true
@@ -427,6 +950,14 @@
       "id": "helper-product-qualified-raw-exposure-bare-ingredient-defers",
       "kind": "deterministic_helper",
       "question": "Which firms had the most acetaminophen FDA drug recalls?",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "deterministic_helper_filter_preservation",
+      "requires_llm": false,
+      "requires_embedding": false,
+      "requires_db": false,
       "assert": {
         "simple_class_count_spec_empty": true,
         "raw_firm_exposure_spec_empty": true
@@ -436,15 +967,38 @@
       "id": "exposure-filtered-class-i-preserves-class",
       "kind": "ask",
       "question": "Rank firms by severity-weighted Class I recalls.",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "raw_firm_exposure",
+      "requires_llm": true,
+      "requires_embedding": false,
+      "requires_db": true,
       "assert": {
         "route": "sql",
-        "intents": ["count_by", "raw_firm_exposure"],
-        "data_kinds": ["distribution", "raw_firm_exposure"],
+        "intents": [
+          "count_by",
+          "raw_firm_exposure"
+        ],
+        "data_kinds": [
+          "distribution",
+          "raw_firm_exposure"
+        ],
         "filters_include": [
-          {"column": "classification", "op": "eq", "values": ["Class I"]}
+          {
+            "column": "classification",
+            "op": "eq",
+            "values": [
+              "Class I"
+            ]
+          }
         ],
         "top_items": [
-          {"firm_equals": "King Bio Inc.", "recall_count_equals": 465}
+          {
+            "firm_equals": "King Bio Inc.",
+            "recall_count_equals": 465
+          }
         ],
         "no_ilike": true
       }
@@ -453,42 +1007,93 @@
       "id": "fuzzy-sterility-routing",
       "kind": "ask",
       "question": "Show me a few sterility-related recalls.",
+      "suite": [
+        "rag",
+        "regression"
+      ],
+      "risk": "retrieval_semantic_routing",
+      "requires_llm": true,
+      "requires_embedding": true,
+      "requires_db": true,
       "assert": {
         "route": "semantic",
-        "intents": ["sample"],
-        "data_kinds": ["retrieval"],
+        "intents": [
+          "sample"
+        ],
+        "data_kinds": [
+          "retrieval"
+        ],
         "no_ilike": true,
-        "semantic_query_contains_any": ["sterility", "sterile"],
+        "semantic_query_contains_any": [
+          "sterility",
+          "sterile"
+        ],
         "requires_highlights": true,
         "min_highlights": 3,
         "max_highlights": 6,
-        "highlights_contains_any": ["returned", "retrieval", "evidence"]
+        "highlights_contains_any": [
+          "returned",
+          "retrieval",
+          "evidence"
+        ]
       }
     },
     {
       "id": "fuzzy-superpotent-routing",
       "kind": "ask",
       "question": "Show recalls where pills were too strong.",
+      "suite": [
+        "rag",
+        "regression"
+      ],
+      "risk": "retrieval_semantic_routing",
+      "requires_llm": true,
+      "requires_embedding": true,
+      "requires_db": true,
       "assert": {
         "route": "semantic",
-        "intents": ["sample"],
-        "data_kinds": ["retrieval"],
+        "intents": [
+          "sample"
+        ],
+        "data_kinds": [
+          "retrieval"
+        ],
         "no_ilike": true,
-        "semantic_query_contains_any": ["strong", "superpotent", "potent"],
+        "semantic_query_contains_any": [
+          "strong",
+          "superpotent",
+          "potent"
+        ],
         "requires_highlights": true,
         "min_highlights": 3,
         "max_highlights": 6,
-        "highlights_contains_any": ["returned", "retrieval", "evidence"]
+        "highlights_contains_any": [
+          "returned",
+          "retrieval",
+          "evidence"
+        ]
       }
     },
     {
       "id": "taxonomy-sterility-exact-count",
       "kind": "ask",
       "question": "How many sterility recalls?",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "taxonomy_querying",
+      "requires_llm": true,
+      "requires_embedding": false,
+      "requires_db": true,
       "assert": {
         "route": "sql",
-        "intents": ["count_total"],
-        "data_kinds": ["scalar"],
+        "intents": [
+          "count_total"
+        ],
+        "data_kinds": [
+          "scalar"
+        ],
         "no_ilike": true,
         "value_equals": 6308
       }
@@ -497,13 +1102,29 @@
       "id": "taxonomy-reason-breakdown",
       "kind": "ask",
       "question": "What are the most common recall reason categories?",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "taxonomy_querying",
+      "requires_llm": true,
+      "requires_embedding": false,
+      "requires_db": true,
       "assert": {
         "route": "sql",
-        "intents": ["count_by_taxonomy"],
-        "data_kinds": ["distribution"],
+        "intents": [
+          "count_by_taxonomy"
+        ],
+        "data_kinds": [
+          "distribution"
+        ],
         "no_ilike": true,
         "top_items": [
-          {"value": "Sterility assurance", "node_id": "sterility_assurance", "count": 6308}
+          {
+            "value": "Sterility assurance",
+            "node_id": "sterility_assurance",
+            "count": 6308
+          }
         ]
       }
     },
@@ -511,16 +1132,32 @@
       "id": "firm-aidapak-top-reasons-and-products",
       "kind": "ask",
       "question": "Aidapak Services, LLC 帮我看一下这家公司前十最多召回的原因是什么，以及他们旗下的哪些产品召回最多？\n\n请帮我把他们旗下前十最多召回的产品，以及前十最多召回的原因，分别列为两个表。",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "multi_section_firm_summary",
+      "requires_llm": true,
+      "requires_embedding": false,
+      "requires_db": true,
       "assert": {
         "route": "sql",
-        "intents": ["multi_count_by"],
-        "data_kinds": ["multi_section"],
+        "intents": [
+          "multi_count_by"
+        ],
+        "data_kinds": [
+          "multi_section"
+        ],
         "no_ilike": true,
         "section_count": 2,
         "requires_highlights": true,
         "min_highlights": 3,
         "max_highlights": 6,
-        "highlights_contains_any": ["top returned", "tables", "evidence"],
+        "highlights_contains_any": [
+          "top returned",
+          "tables",
+          "evidence"
+        ],
         "sections": [
           {
             "id": "top_recall_reason_categories",
@@ -528,7 +1165,11 @@
             "dimension": "recall_reason_category",
             "source": "taxonomy",
             "top_items": [
-              {"value": "Labeling error", "node_id": "labeling_error", "count": 538}
+              {
+                "value": "Labeling error",
+                "node_id": "labeling_error",
+                "count": 538
+              }
             ]
           },
           {
@@ -538,7 +1179,10 @@
             "source": "drug_enforcement.product_description",
             "min_items": 10,
             "top_items": [
-              {"value_contains": "CILOSTAZOL Tablet, 100 mg", "count": 2}
+              {
+                "value_contains": "CILOSTAZOL Tablet, 100 mg",
+                "count": 2
+              }
             ]
           }
         ]
@@ -548,13 +1192,33 @@
       "id": "taxonomy-cgmp-explanation-zh",
       "kind": "ask",
       "question": "CGMP Deviations Reason for recall 中的一个召回原因有这么一个类别，这到底是什么？在药物领域里面，这是什么意思啊？",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "taxonomy_querying",
+      "requires_llm": true,
+      "requires_embedding": false,
+      "requires_db": true,
       "assert": {
         "route": "explanation",
-        "intents": ["explain_taxonomy_node"],
-        "data_kinds": ["taxonomy_explanation"],
-        "data_not_kinds": ["distribution"],
+        "intents": [
+          "explain_taxonomy_node"
+        ],
+        "data_kinds": [
+          "taxonomy_explanation"
+        ],
+        "data_not_kinds": [
+          "distribution"
+        ],
         "taxonomy_node_id_equals": "cgmp_deviation",
-        "summary_contains_any": ["cgmp", "gmp", "良好生产规范", "生产质量管理规范", "current good manufacturing practice"],
+        "summary_contains_any": [
+          "cgmp",
+          "gmp",
+          "良好生产规范",
+          "生产质量管理规范",
+          "current good manufacturing practice"
+        ],
         "no_ilike": true
       }
     },
@@ -562,10 +1226,22 @@
       "id": "taxonomy-cgmp-count-still-sql",
       "kind": "ask",
       "question": "How many cGMP deviation recalls are there?",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "taxonomy_querying",
+      "requires_llm": true,
+      "requires_embedding": false,
+      "requires_db": true,
       "assert": {
         "route": "sql",
-        "intents": ["count_total"],
-        "data_kinds": ["scalar"],
+        "intents": [
+          "count_total"
+        ],
+        "data_kinds": [
+          "scalar"
+        ],
         "taxonomy_node_id_equals": "cgmp_deviation",
         "no_ilike": true
       }
@@ -574,13 +1250,28 @@
       "id": "taxonomy-sterility-by-firm",
       "kind": "ask",
       "question": "Which firms had the most sterility recalls?",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "taxonomy_querying",
+      "requires_llm": true,
+      "requires_embedding": false,
+      "requires_db": true,
       "assert": {
         "route": "sql",
-        "intents": ["count_by"],
-        "data_kinds": ["distribution"],
+        "intents": [
+          "count_by"
+        ],
+        "data_kinds": [
+          "distribution"
+        ],
         "no_ilike": true,
         "top_items": [
-          {"value": "The Compounding Pharmacy of America", "count": 383}
+          {
+            "value": "The Compounding Pharmacy of America",
+            "count": 383
+          }
         ]
       }
     },
@@ -588,15 +1279,34 @@
       "id": "control-empty-sample-guard",
       "kind": "ask",
       "question": "Show me recalls.",
+      "suite": [
+        "core",
+        "regression"
+      ],
+      "risk": "agent_control",
+      "requires_llm": true,
+      "requires_embedding": false,
+      "requires_db": true,
       "assert": {
         "route": "ambiguous",
-        "data_kinds": ["clarification"],
+        "data_kinds": [
+          "clarification"
+        ],
         "spec_empty": true
       }
     },
     {
       "id": "provider-openrouter-query-embedding-config",
       "kind": "embedding_provider_config",
+      "suite": [
+        "core",
+        "rag",
+        "regression"
+      ],
+      "risk": "embedding_provider_config",
+      "requires_llm": false,
+      "requires_embedding": false,
+      "requires_db": false,
       "env": {
         "EMBED_PROVIDER": "openrouter",
         "EMBED_MODEL": "openai/text-embedding-3-small",
@@ -627,9 +1337,23 @@
       "query": "glass particles in drug vials",
       "field": "both",
       "k": 10,
-      "retrieval_mode": "hybrid",
-      "expected_recall_numbers": ["D-0580-2026", "D-0412-2025", "D-0416-2025"],
-      "min_recall_at_k": 0.34
+      "suite": [
+        "rag",
+        "regression"
+      ],
+      "risk": "retrieval_recall_at_k",
+      "requires_llm": false,
+      "requires_embedding": true,
+      "requires_db": true,
+      "assert": {
+        "expected_recall_numbers": [
+          "D-0580-2026",
+          "D-0412-2025",
+          "D-0416-2025"
+        ],
+        "min_recall_at_k": 0.34,
+        "retrieval_mode": "hybrid"
+      }
     }
   ]
 }

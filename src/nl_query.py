@@ -1480,17 +1480,25 @@ def _parent_group_exposure_result(
         "severity-weighted exposure score"
         if leaderboard.metric == "severity_weighted" else "recall count"
     )
+    primary_count = (
+        (lambda item: item.exposure_score)
+        if leaderboard.metric == "severity_weighted"
+        else (lambda item: item.total_recalls)
+    )
     groups = [
         Group(
             value=item.recalling_firm,
-            count=item.total_recalls,
+            count=primary_count(item),
             evidence=list(item.evidence),
             label=item.recalling_firm,
             metadata={
                 "rank": item.rank,
                 "parent_group_id": item.metadata.get("parent_group_id"),
                 "parent_group_name": item.metadata.get("parent_group_name", item.recalling_firm),
+                "primary_metric": leaderboard.metric,
+                "primary_value": primary_count(item),
                 "exposure_score": item.exposure_score,
+                "total_recalls": item.total_recalls,
                 "class_i_recalls": item.class_i_recalls,
                 "class_ii_recalls": item.class_ii_recalls,
                 "class_iii_recalls": item.class_iii_recalls,
@@ -1890,6 +1898,22 @@ def _multi_section_highlights(result: MultiSectionResult) -> list[str]:
             _append_unique(bullets, f"{section.title}: no rows were returned.")
             continue
         top = rows[0]
+        if result.intent == Intent.parent_group_exposure.value and section.id == "parent_group_exposure":
+            metric = section.metadata.get("metric", "severity_weighted")
+            metric_label = section.metadata.get(
+                "metric_label",
+                "severity-weighted exposure score" if metric == "severity_weighted" else "recall count",
+            )
+            total_recalls = int(top.metadata.get("total_recalls") or top.count)
+            _append_unique(
+                bullets,
+                (
+                    f"{section.title}: top returned {section.dimension} is "
+                    f"{_short_text(top.value, limit=120) or '-'} "
+                    f"({metric_label}: {int(top.count):,}; total recalls: {total_recalls:,})."
+                ),
+            )
+            continue
         _append_unique(
             bullets,
             (
@@ -2004,10 +2028,11 @@ def summarize(spec: QuerySpec, result: Any) -> str:
                     f"{int(item_meta.get('class_iii_recalls') or 0):,}"
                 )
                 exposure_score = int(item_meta.get("exposure_score") or 0)
+                total_recalls = int(item_meta.get("total_recalls") or item.count)
                 if metric == "severity_weighted":
-                    primary = f"score {exposure_score:,}; total {item.count:,}; {class_breakdown}"
+                    primary = f"score {item.count:,}; total {total_recalls:,}; {class_breakdown}"
                 else:
-                    primary = f"total {item.count:,}; severity score {exposure_score:,}; {class_breakdown}"
+                    primary = f"total {total_recalls:,}; severity score {exposure_score:,}; {class_breakdown}"
                 rank = item_meta.get("rank")
                 rank_text = f"{rank}. " if rank else ""
                 lines.append(f"  {rank_text}{item.value}: {primary}{member_text}{reason}{evidence}")
