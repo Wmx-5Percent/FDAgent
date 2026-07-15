@@ -45,6 +45,7 @@ from nl_query import (  # noqa: E402
 DEFAULT_DSN = os.environ.get("DATABASE_URL", "postgresql://localhost:5432/fda")
 DEFAULT_GOLDEN = REPO_ROOT / "evals" / "golden" / "v1.json"
 REPORT_SCHEMA_VERSION = "fdaagent_eval_report_v1"
+CORE_PR_GATE_SUITE = "core"
 DEFAULT_COMPARE_PASS_RATE_THRESHOLDS = {"core": 1.0}
 DEFAULT_COMPARE_LATENCY_TOLERANCE_MS = {"*": 1000.0, "core": 500.0, "rag": 2000.0}
 DEFAULT_COMPARE_RECALL_TOLERANCE = {"rag": 0.0}
@@ -126,6 +127,10 @@ def _is_timeout_exception(exc: BaseException) -> bool:
     return isinstance(exc, TimeoutError) or "timed out" in str(exc).casefold()
 
 
+def _is_provider_unavailable(exc: BaseException) -> bool:
+    return isinstance(exc, llm.ProviderError) and bool(getattr(exc, "fallback_allowed", False))
+
+
 def _require(condition: bool, message: str) -> None:
     if not condition:
         raise EvalFailure(message)
@@ -175,6 +180,9 @@ def _validate_case_metadata(case: Mapping[str, Any], *, known_suites: set[str]) 
     for field in ("requires_llm", "requires_embedding", "requires_db"):
         _require(isinstance(case.get(field), bool),
                  f"{case_id}: {field} must be a boolean")
+    if "allow_provider_unavailable_skip" in case:
+        _require(isinstance(case.get("allow_provider_unavailable_skip"), bool),
+                 f"{case_id}: allow_provider_unavailable_skip must be a boolean")
     _require(isinstance(case.get("assert"), Mapping),
              f"{case_id}: assert must be an object")
 
@@ -216,6 +224,140 @@ def _select_cases(
         selected.append(case)
     _require(bool(selected), "eval selection matched no cases")
     return selected
+
+
+def _case_by_base_result_id(
+    cases: list[Mapping[str, Any]],
+) -> dict[str, Mapping[str, Any]]:
+    return {str(case["id"]): case for case in cases}
+
+
+def _allows_provider_unavailable_skip(case: Mapping[str, Any]) -> bool:
+    assertions = case.get("assert") or {}
+    return bool(
+        case.get("allow_provider_unavailable_skip")
+        or (
+            isinstance(assertions, Mapping)
+            and assertions.get("allow_provider_unavailable_skip")
+        )
+    )
+
+
+def _provider_unavailable_skip(result: EvalResult) -> bool:
+    detail = result.detail.casefold()
+    metadata = result.metadata
+    return bool(metadata.get("fallback_reason")) or any(
+        marker in detail
+        for marker in (
+            "provider",
+            "embedding unavailable",
+            "embedding degraded",
+            "missing key",
+            "auth",
+            "quota",
+            "rate limit",
+            "fallback",
+        )
+    )
+
+
+def _allowed_core_gate_skip(
+    result: EvalResult,
+    case: Mapping[str, Any] | None,
+) -> bool:
+    if not result.skipped or case is None:
+        return False
+    requires_provider = bool(case.get("requires_llm") or case.get("requires_embedding"))
+    return (
+        requires_provider
+        and _allows_provider_unavailable_skip(case)
+        and _provider_unavailable_skip(result)
+    )
+
+
+def _core_case_ids(golden: Mapping[str, Any]) -> set[str]:
+    return {
+        str(case["id"])
+        for case in golden["cases"]
+        if CORE_PR_GATE_SUITE in _case_suites(case)
+    }
+
+
+def _validate_core_pr_gate_args(
+    args: argparse.Namespace,
+    golden: Mapping[str, Any],
+    *,
+    suite_filters: set[str],
+    case_filters: set[str],
+    selected_cases: list[Mapping[str, Any]],
+) -> None:
+    if not args.core_pr_gate:
+        return
+    _require(
+        not args.skip_dataset_fingerprint,
+        "--core-pr-gate cannot be combined with --skip-dataset-fingerprint",
+    )
+    _require(
+        not case_filters,
+        "--core-pr-gate must run the complete core suite; do not pass --case",
+    )
+    _require(
+        suite_filters == {CORE_PR_GATE_SUITE},
+        "--core-pr-gate must select exactly --suite core",
+    )
+    suites = golden.get("suites") or {}
+    core_suite = suites.get(CORE_PR_GATE_SUITE)
+    _require(
+        isinstance(core_suite, Mapping) and core_suite.get("blocking") is True,
+        "golden suite 'core' must be marked blocking=true for --core-pr-gate",
+    )
+    selected_ids = {str(case["id"]) for case in selected_cases}
+    expected_ids = _core_case_ids(golden)
+    missing = sorted(expected_ids - selected_ids)
+    extra = sorted(selected_ids - expected_ids)
+    _require(
+        not missing and not extra,
+        "--core-pr-gate selection mismatch: "
+        f"missing={missing or '-'} extra={extra or '-'}",
+    )
+
+
+def _core_pr_gate_failed(
+    cases: list[Mapping[str, Any]],
+    results: list[EvalResult],
+) -> bool:
+    cases_by_id = _case_by_base_result_id(cases)
+    failed = [result for result in results if not result.passed and not result.skipped]
+    skipped = [result for result in results if result.skipped]
+    disallowed_skips = [
+        result
+        for result in skipped
+        if not _allowed_core_gate_skip(
+            result,
+            cases_by_id.get(result.case_id.split(":", 1)[0]),
+        )
+    ]
+    allowed_skips = len(skipped) - len(disallowed_skips)
+
+    if failed or disallowed_skips:
+        print("\nCore PR gate: FAIL")
+        for result in failed:
+            print(f"FAIL {result.case_id}: {result.detail}")
+        for result in disallowed_skips:
+            print(f"DISALLOWED SKIP {result.case_id}: {result.detail}")
+        if disallowed_skips:
+            print(
+                "Only provider-unavailable skips explicitly marked with "
+                "allow_provider_unavailable_skip=true are allowed in the core gate."
+            )
+        return True
+
+    passed = len(results) - len(skipped)
+    print(
+        "\nCore PR gate: PASS "
+        f"({passed} passed, {allowed_skips} provider-unavailable skips excluded)"
+    )
+    return False
 
 
 def _post_ask(base_url: str, question: str, timeout: float) -> dict[str, Any]:
@@ -896,6 +1038,34 @@ def _build_ask_fn(args: argparse.Namespace) -> Callable[[str], dict[str, Any]]:
     return ask_local
 
 
+def _provider_unavailable_skip_result(
+    case: Mapping[str, Any],
+    exc: BaseException,
+) -> EvalResult | None:
+    if not case.get("allow_provider_unavailable_skip") or not _is_provider_unavailable(exc):
+        return None
+    provider = getattr(exc, "provider", None)
+    model = getattr(exc, "model", None)
+    operation = getattr(exc, "operation", None)
+    summary = llm.provider_error_summary(exc) if isinstance(exc, llm.ProviderError) else str(exc)
+    return EvalResult(
+        str(case["id"]),
+        True,
+        "provider-unavailable skip: "
+        f"{type(exc).__name__}: {summary}; provider={provider or '-'} "
+        f"model={model or '-'} operation={operation or '-'}",
+        skipped=True,
+        metadata={
+            "skip_category": "provider_unavailable",
+            "provider_error": type(exc).__name__,
+            "provider": provider,
+            "model": model,
+            "operation": operation,
+            "fallback_reason": summary,
+        },
+    )
+
+
 def _requires_dataset_fingerprint(cases: list[Mapping[str, Any]]) -> bool:
     return any(bool(case.get("requires_db")) for case in cases)
 
@@ -1282,6 +1452,8 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Run FDAgent contract-tagged golden eval suites.")
     p.add_argument("--golden", type=Path, default=DEFAULT_GOLDEN,
                    help=f"golden set path (default: {DEFAULT_GOLDEN})")
+    p.add_argument("--core-pr-gate", action="store_true",
+                   help="run the full PR-blocking core suite and enforce gate rules")
     p.add_argument("--suite", action="append",
                    help="run only cases tagged with this suite; repeat or comma-separate")
     p.add_argument("--case", dest="case_ids", action="append",
@@ -1325,10 +1497,20 @@ def main() -> int:
         golden = _load_golden(args.golden)
         suite_filters = _csv_values(args.suite)
         case_filters = _csv_values(args.case_ids)
+        if args.core_pr_gate and not suite_filters:
+            suite_filters = {CORE_PR_GATE_SUITE}
+            args.suite = [CORE_PR_GATE_SUITE]
         cases = _select_cases(
             golden,
             suite_filters=suite_filters,
             case_filters=case_filters,
+        )
+        _validate_core_pr_gate_args(
+            args,
+            golden,
+            suite_filters=suite_filters,
+            case_filters=case_filters,
+            selected_cases=cases,
         )
     except EvalFailure as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
@@ -1376,12 +1558,16 @@ def main() -> int:
             else:
                 raise EvalFailure(f"unknown case kind {kind!r}")
         except Exception as exc:  # noqa: BLE001 - eval runner must report every case failure
-            case_results.append(EvalResult(
-                case_id,
-                False,
-                f"{type(exc).__name__}: {exc}",
-                metadata={"timeout": _is_timeout_exception(exc)},
-            ))
+            skipped = _provider_unavailable_skip_result(case, exc)
+            if skipped is not None:
+                case_results.append(skipped)
+            else:
+                case_results.append(EvalResult(
+                    case_id,
+                    False,
+                    f"{type(exc).__name__}: {exc}",
+                    metadata={"timeout": _is_timeout_exception(exc)},
+                ))
         duration_ms = (time.monotonic() - started) * 1000
         results.extend(replace(result, duration_ms=duration_ms) for result in case_results)
 
@@ -1413,7 +1599,8 @@ def main() -> int:
         except (OSError, json.JSONDecodeError, EvalFailure) as exc:
             print(f"ERROR: baseline comparison failed: {exc}", file=sys.stderr)
             return 2
-    return 1 if failed or compare_failed else 0
+    core_gate_failed = _core_pr_gate_failed(cases, results) if args.core_pr_gate else False
+    return 1 if failed or compare_failed or core_gate_failed else 0
 
 
 if __name__ == "__main__":
