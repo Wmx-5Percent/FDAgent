@@ -274,11 +274,16 @@
       "assert": {
         "route": "sql",
         "intents": ["parent_group_exposure"],
-        "data_kinds": ["raw_firm_exposure"],
-        "data_fields": {
-          "scope": "parent_group_provenance_backed",
-          "formula_version": "parent_group_severity_v1"
-        },
+        "data_kinds": ["multi_section"],
+        "section_count": 1,
+        "sections": [
+          {
+            "id": "parent_group_exposure",
+            "kind": "distribution",
+            "dimension": "parent_group",
+            "source": "parent_group_exposure_v1"
+          }
+        ],
         "summary_contains_any": ["parent-group exposure", "provenance-backed", "not a safety verdict"],
         "no_ilike": true
       }
