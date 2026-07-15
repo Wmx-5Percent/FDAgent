@@ -1227,6 +1227,13 @@ def _semantic_groups(
     with a.conn.cursor() as cur:
         cur.execute(q, [recall_numbers])
         values = {r[0]: r[1] for r in cur.fetchall()}
+    a.record_sql_debug(
+        q,
+        [recall_numbers],
+        source="analytics.semantic_count_group_lookup",
+        title=f"Semantic-count group lookup by {group_by}",
+        query_id=f"semantic_count_group_{group_by}",
+    )
 
     pool_counts: dict[Any, int] = {}
     evidence: dict[Any, list[str]] = {}

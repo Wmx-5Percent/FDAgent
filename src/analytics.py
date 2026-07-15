@@ -247,6 +247,25 @@ class RecallAnalytics:
     def clear_sql_debug(self) -> None:
         self._debug_queries.clear()
 
+    def record_sql_debug(
+        self,
+        query: sql.Composable,
+        params: Sequence[Any],
+        *,
+        source: str,
+        title: str,
+        query_id: str,
+    ) -> None:
+        sql_text = query.as_string(self.conn)
+        debug_id = f"{query_id}_{len(self._debug_queries) + 1}"
+        self._debug_queries.append(SQLDebugQuery(
+            id=debug_id,
+            title=title,
+            sql=sql_text,
+            params=list(params),
+            source=source,
+        ))
+
     def _record_sql_debug(
         self,
         query: sql.Composable,
@@ -256,18 +275,13 @@ class RecallAnalytics:
         title: str,
         query_id: str,
     ) -> None:
-        try:
-            sql_text = query.as_string(self.conn)
-        except Exception:  # pragma: no cover - best-effort debug display only
-            sql_text = str(query)
-        debug_id = f"{query_id}_{len(self._debug_queries) + 1}"
-        self._debug_queries.append(SQLDebugQuery(
-            id=debug_id,
-            title=title,
-            sql=sql_text,
-            params=list(params),
+        self.record_sql_debug(
+            query,
+            params,
             source=source,
-        ))
+            title=title,
+            query_id=query_id,
+        )
 
     def _rows(
         self,
