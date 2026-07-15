@@ -20,6 +20,22 @@
 embedding provider。每个 case 用 `requires_llm` / `requires_embedding` /
 `requires_db` 显式声明这些前置条件。
 
+## 固定 baseline 系统总览
+
+Issue #57 的 baseline 由以下层次组成：
+
+| Layer | Artifact / command | 用途 |
+| --- | --- | --- |
+| Contract | `evals/README.md` + `evals/*/v1.json` metadata | 固定 suite、case 元数据和新增 regression case 的位置 |
+| Stable fixture | `scripts/dataset_fingerprint.py --check` | 在 exact-count suite 前确认本地 DB 与已审查数据集一致 |
+| Core PR gate | `scripts/run_eval.py --core-pr-gate` | 快速、PR 阻塞的 deterministic/core `/ask` 回归门 |
+| Baseline report | `scripts/run_eval.py ... --report-json <path>` | 记录 pass/fail、latency、route/intent、provider、dataset fingerprint、git SHA |
+| Compare-to-main | `scripts/run_eval.py ... --compare-baseline <path>` | 输出 improved / unchanged / regressed / added / removed cases |
+| RAG benchmark | `evals/rag/v1.json --suite rag` | 固定 retrieval recall@k、MRR/nDCG、provider/fallback 行为 |
+| Answer honesty | `evals/answer_quality/v1.json --suite answer_quality` | 固定最终答案证据、caveat、degraded retrieval 和 no-verdict 边界 |
+
+这些层次共同回答「这个改动相对固定 baseline 是改善、回归，还是只是改变」。
+
 ## PR 阻塞 core gate
 
 `--core-pr-gate` 是 issue #61 固定的本地 PR gate。它等价于选择
@@ -53,8 +69,8 @@ reason、vector/FTS/fused hit counts、`recall@k`、MRR、nDCG、matched recall 
   需要区分具体错误类型时可用 `simulate_embedding_error`（例如
   `ProviderMissingKeyError`）。
 - 当前基准使用 per-case metric floors（如 `min_recall_at_k` / `min_mrr_at_k` /
-  `min_ndcg_at_k`）来捕捉召回率下降；跨分支 baseline snapshot/compare-to-main 报告由
-  后续 baseline issue 实现，避免在这里重复。
+  `min_ndcg_at_k`）来捕捉召回率下降；跨分支回归用本文的
+  `--report-json` / `--compare-baseline` 流程比较 `metrics.recall_at_k`。
 
 ## Case 元数据契约
 
@@ -67,7 +83,9 @@ reason、vector/FTS/fused hit counts、`recall@k`、MRR、nDCG、matched recall 
 - `requires_llm` / `requires_embedding` / `requires_db`：布尔前置条件。
 - `allow_provider_unavailable_skip`（可选）：仅用于 provider 依赖 case；为 `true`
   时，core gate 只会把缺 key、鉴权、quota、rate limit、临时连接失败等
-  provider-unavailable 错误记为 `SKIP`，业务断言失败仍然是 `FAIL`。
+  provider-unavailable 错误记为 `SKIP`，业务断言失败仍然是 `FAIL`。非
+  `--core-pr-gate` 运行会根据 `requires_llm` / `requires_embedding` 自动把
+  provider-unavailable 错误记为显式 `SKIP`，避免把无凭据环境误报成业务回归。
 - `assert`：可执行断言对象；输入字段（如 `question`、`query`、`k`）留在 case 顶层。
 
 Runner 会在执行前校验这些字段，防止新 case 漏掉 suite 或前置条件说明。
@@ -111,9 +129,10 @@ case 改成可执行 `ask` case，或新增更精确 case 后删除/替换 pendi
 5. 用 `--case <id>` 先跑新增 case，再跑相关 `--suite`。
 
 本合同定义 suite / metadata / selection 规则；下方数据集指纹负责 stable fixture
-preflight；baseline/report 与 compare-to-main 由 issue #60 提供。PR gate 由
-`--core-pr-gate` 提供；RAG benchmark 和 answer-quality 细分实现分别由后续 issue
-承担。
+preflight；baseline/report 与 compare-to-main 由 `--report-json` /
+`--compare-baseline` 提供。PR gate 由 `--core-pr-gate` 提供；RAG benchmark 和
+answer-quality suite 分别由 `evals/rag/v1.json` 与 `evals/answer_quality/v1.json`
+承载。
 
 ## Baseline/report artifact 与 compare-to-main
 
