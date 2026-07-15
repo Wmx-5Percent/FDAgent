@@ -5,7 +5,7 @@
 ## PR 前该跑什么
 
 - 默认全量：`.venv/bin/python scripts/run_eval.py --golden evals/golden/v1.json`
-- PR 阻塞核心集：`.venv/bin/python scripts/run_eval.py --golden evals/golden/v1.json --suite core`
+- PR 阻塞核心 gate：`.venv/bin/python scripts/run_eval.py --core-pr-gate`
 - RAG / embedding 质量烟测：`.venv/bin/python scripts/run_eval.py --golden evals/golden/v1.json --suite rag`
 - RAG retrieval benchmark：`.venv/bin/python scripts/run_eval.py --golden evals/rag/v1.json --suite rag`
 - Answer-quality / honesty regression：`.venv/bin/python scripts/run_eval.py --golden evals/answer_quality/v1.json --suite answer_quality`
@@ -19,6 +19,25 @@
 `ask` case 需要本地 Postgres `fda` 数据库和 chat provider；`rag` case 还可能需要
 embedding provider。每个 case 用 `requires_llm` / `requires_embedding` /
 `requires_db` 显式声明这些前置条件。
+
+## PR 阻塞 core gate
+
+`--core-pr-gate` 是 issue #61 固定的本地 PR gate。它等价于选择
+`evals/golden/v1.json` 的完整 `core` suite，并额外强制：
+
+- `core` suite 必须在 golden 文件里标记为 `blocking: true`。
+- 不能传 `--case` 缩小范围，也不能传 `--skip-dataset-fingerprint` 跳过 stable
+  fixture preflight。
+- deterministic core case 必须 100% pass；失败会逐条打印 `FAIL <case-id>:
+  <reason>`。
+- `SKIP` 只有在 case 显式设置 `allow_provider_unavailable_skip: true` 且该 case
+  声明需要 LLM 或 embedding provider 时才允许；否则 gate 会输出
+  `DISALLOWED SKIP <case-id>: <reason>` 并返回非零。
+
+当前没有 GitHub Actions CI 硬跑该 gate：core `/ask` case 依赖本地 Postgres `fda`
+fixture、issue #59 的 dataset fingerprint baseline、以及 chat provider 配置；仓库
+还没有可在 Actions 中安全还原的 DB fixture 和 provider secrets。PR 作者应本地运行
+上面的 gate 命令，并把完整 Summary / Core PR gate 输出贴到 PR body 或评论中。
 
 ## RAG retrieval benchmark
 
@@ -46,6 +65,9 @@ reason、vector/FTS/fused hit counts、`recall@k`、MRR、nDCG、matched recall 
 - `suite`：非空 suite 标签字符串或字符串数组；标签必须在文件顶层 `suites` 中定义。
 - `risk`：该 case 防守的风险面，例如 `agent_control`、`filter_preservation`、`retrieval_recall_at_k`。
 - `requires_llm` / `requires_embedding` / `requires_db`：布尔前置条件。
+- `allow_provider_unavailable_skip`（可选）：仅用于 provider 依赖 case；为 `true`
+  时，core gate 只会把缺 key、鉴权、quota、rate limit、临时连接失败等
+  provider-unavailable 错误记为 `SKIP`，业务断言失败仍然是 `FAIL`。
 - `assert`：可执行断言对象；输入字段（如 `question`、`query`、`k`）留在 case 顶层。
 
 Runner 会在执行前校验这些字段，防止新 case 漏掉 suite 或前置条件说明。
@@ -84,8 +106,9 @@ case 改成可执行 `ask` case，或新增更精确 case 后删除/替换 pendi
 5. 用 `--case <id>` 先跑新增 case，再跑相关 `--suite`。
 
 本合同定义 suite / metadata / selection 规则；下方数据集指纹负责 stable fixture
-preflight；baseline/report 与 compare-to-main 由 issue #60 提供。PR gate、RAG
-benchmark 和 answer-quality 细分实现分别由后续 issue 承担。
+preflight；baseline/report 与 compare-to-main 由 issue #60 提供。PR gate 由
+`--core-pr-gate` 提供；RAG benchmark 和 answer-quality 细分实现分别由后续 issue
+承担。
 
 ## Baseline/report artifact 与 compare-to-main
 

@@ -13,13 +13,17 @@
     ],
     "suite": "string or non-empty list of strings defined in top-level suites",
     "risk": "stable risk area protected by the case",
-    "assert": "executable assertion object; input fields such as question/query/k stay at case top level"
+    "assert": "executable assertion object; input fields such as question/query/k stay at case top level",
+    "optional_case_fields": [
+      "allow_provider_unavailable_skip"
+    ],
+    "allow_provider_unavailable_skip": "optional boolean; only provider-unavailable errors may SKIP when true; deterministic assertion failures must still fail"
   },
   "suites": {
     "core": {
       "description": "Stable PR-blocking /ask, deterministic-helper, and provider-configuration contract cases.",
       "blocking": true,
-      "default_command": ".venv/bin/python scripts/run_eval.py --golden evals/golden/v1.json --suite core"
+      "default_command": ".venv/bin/python scripts/run_eval.py --core-pr-gate"
     },
     "rag": {
       "description": "Retrieval, embedding, semantic-routing, and recall@k quality cases.",
@@ -58,7 +62,8 @@
           "message"
         ],
         "spec_empty": true
-      }
+      },
+      "allow_provider_unavailable_skip": true
     },
     {
       "id": "control-out-of-domain-joke",
@@ -78,7 +83,8 @@
           "message"
         ],
         "spec_empty": true
-      }
+      },
+      "allow_provider_unavailable_skip": true
     },
     {
       "id": "control-out-of-domain-company-employees",
@@ -98,7 +104,8 @@
           "message"
         ],
         "spec_empty": true
-      }
+      },
+      "allow_provider_unavailable_skip": true
     },
     {
       "id": "control-out-of-domain-toyota-class-count",
@@ -118,7 +125,8 @@
           "message"
         ],
         "spec_empty": true
-      }
+      },
+      "allow_provider_unavailable_skip": true
     },
     {
       "id": "control-zh-meta-ask",
@@ -138,7 +146,8 @@
           "message"
         ],
         "spec_empty": true
-      }
+      },
+      "allow_provider_unavailable_skip": true
     },
     {
       "id": "control-zh-out-of-domain-ask",
@@ -158,7 +167,8 @@
           "message"
         ],
         "spec_empty": true
-      }
+      },
+      "allow_provider_unavailable_skip": true
     },
     {
       "id": "control-zh-superpotent-semantic",
@@ -219,7 +229,8 @@
         ],
         "value_equals": 1729,
         "no_ilike": true
-      }
+      },
+      "allow_provider_unavailable_skip": true
     },
     {
       "id": "numeric-class-i-count-canada-preserves-country",
@@ -259,7 +270,8 @@
         ],
         "value_equals": 4,
         "no_ilike": true
-      }
+      },
+      "allow_provider_unavailable_skip": true
     },
     {
       "id": "numeric-class-i-count-united-states-preserves-country",
@@ -299,7 +311,8 @@
         ],
         "value_equals": 1671,
         "no_ilike": true
-      }
+      },
+      "allow_provider_unavailable_skip": true
     },
     {
       "id": "numeric-class-i-count-us-preserves-country",
@@ -339,7 +352,8 @@
         ],
         "value_equals": 1671,
         "no_ilike": true
-      }
+      },
+      "allow_provider_unavailable_skip": true
     },
     {
       "id": "numeric-pending-class-i-preserves-status",
@@ -379,7 +393,8 @@
         ],
         "value_equals": 0,
         "no_ilike": true
-      }
+      },
+      "allow_provider_unavailable_skip": true
     },
     {
       "id": "helper-bare-country-class-count-preserves-country",
@@ -508,7 +523,8 @@
           }
         ],
         "no_ilike": true
-      }
+      },
+      "allow_provider_unavailable_skip": true
     },
     {
       "id": "exposure-raw-firm-count-leaderboard",
@@ -552,7 +568,8 @@
           "3 * Class I"
         ],
         "no_ilike": true
-      }
+      },
+      "allow_provider_unavailable_skip": true
     },
     {
       "id": "exposure-severity-weighted-leaderboard",
@@ -596,7 +613,8 @@
           "raw FDA"
         ],
         "no_ilike": true
-      }
+      },
+      "allow_provider_unavailable_skip": true
     },
     {
       "id": "exposure-parent-group-leaderboard-caveated",
@@ -633,7 +651,8 @@
           "not a safety verdict"
         ],
         "no_ilike": true
-      }
+      },
+      "allow_provider_unavailable_skip": true
     },
     {
       "id": "exposure-filtered-california-preserves-state",
@@ -673,7 +692,8 @@
           }
         ],
         "no_ilike": true
-      }
+      },
+      "allow_provider_unavailable_skip": true
     },
     {
       "id": "exposure-filtered-canada-preserves-country",
@@ -713,7 +733,8 @@
           }
         ],
         "no_ilike": true
-      }
+      },
+      "allow_provider_unavailable_skip": true
     },
     {
       "id": "helper-bare-country-raw-exposure-preserves-country",
@@ -806,7 +827,8 @@
           }
         ],
         "no_ilike": true
-      }
+      },
+      "allow_provider_unavailable_skip": true
     },
     {
       "id": "exposure-filtered-united-states-article-preserves-country",
@@ -846,7 +868,8 @@
           }
         ],
         "no_ilike": true
-      }
+      },
+      "allow_provider_unavailable_skip": true
     },
     {
       "id": "exposure-filtered-us-article-preserves-country",
@@ -886,7 +909,8 @@
           }
         ],
         "no_ilike": true
-      }
+      },
+      "allow_provider_unavailable_skip": true
     },
     {
       "id": "exposure-filtered-bare-year-preserves-report-year",
@@ -927,7 +951,8 @@
           }
         ],
         "no_ilike": true
-      }
+      },
+      "allow_provider_unavailable_skip": true
     },
     {
       "id": "helper-product-qualified-raw-exposure-containing-defers",
@@ -1001,7 +1026,8 @@
           }
         ],
         "no_ilike": true
-      }
+      },
+      "allow_provider_unavailable_skip": true
     },
     {
       "id": "fuzzy-sterility-routing",
@@ -1096,7 +1122,8 @@
         ],
         "no_ilike": true,
         "value_equals": 6308
-      }
+      },
+      "allow_provider_unavailable_skip": true
     },
     {
       "id": "taxonomy-reason-breakdown",
@@ -1126,7 +1153,8 @@
             "count": 6308
           }
         ]
-      }
+      },
+      "allow_provider_unavailable_skip": true
     },
     {
       "id": "firm-aidapak-top-reasons-and-products",
@@ -1186,7 +1214,8 @@
             ]
           }
         ]
-      }
+      },
+      "allow_provider_unavailable_skip": true
     },
     {
       "id": "taxonomy-cgmp-explanation-zh",
@@ -1220,7 +1249,8 @@
           "current good manufacturing practice"
         ],
         "no_ilike": true
-      }
+      },
+      "allow_provider_unavailable_skip": true
     },
     {
       "id": "taxonomy-cgmp-count-still-sql",
@@ -1244,7 +1274,8 @@
         ],
         "taxonomy_node_id_equals": "cgmp_deviation",
         "no_ilike": true
-      }
+      },
+      "allow_provider_unavailable_skip": true
     },
     {
       "id": "taxonomy-sterility-by-firm",
@@ -1273,7 +1304,8 @@
             "count": 383
           }
         ]
-      }
+      },
+      "allow_provider_unavailable_skip": true
     },
     {
       "id": "control-empty-sample-guard",
@@ -1293,7 +1325,8 @@
           "clarification"
         ],
         "spec_empty": true
-      }
+      },
+      "allow_provider_unavailable_skip": true
     },
     {
       "id": "provider-openrouter-query-embedding-config",
@@ -1315,7 +1348,10 @@
         "OPENROUTER_APP_TITLE": "FDAgent Eval",
         "OPENAI_API_KEY": "dummy-openai-key-that-must-not-be-used"
       },
-      "unset_env": ["OPENAI_EMBED_MODEL", "OPENROUTER_EMBED_MODEL"],
+      "unset_env": [
+        "OPENAI_EMBED_MODEL",
+        "OPENROUTER_EMBED_MODEL"
+      ],
       "assert": {
         "provider": "openrouter",
         "model": "openai/text-embedding-3-small",
@@ -1325,10 +1361,14 @@
         "client_api_key": "dummy-openrouter-key",
         "client_not_api_key": "dummy-openai-key-that-must-not-be-used",
         "client_base_url": "https://openrouter.ai/api/v1",
-        "client_default_headers_include": ["X-OpenRouter-Title"],
+        "client_default_headers_include": [
+          "X-OpenRouter-Title"
+        ],
         "request_model": "openai/text-embedding-3-small",
         "request_encoding_format": "float",
-        "request_extra_headers_include": ["X-OpenRouter-Title"]
+        "request_extra_headers_include": [
+          "X-OpenRouter-Title"
+        ]
       }
     },
     {
