@@ -1302,6 +1302,7 @@ def _run_semantic_count(
         embed_config=embed_config,
         embedding_error=embedding_error,
         fts_queries=spec.semantic_aliases,
+        sql_debug_recorder=a.record_sql_debug,
     )
     fallback_reason = getattr(hits, "embedding_fallback_reason", None) or (
         hits[0].embedding_fallback_reason
@@ -1484,6 +1485,7 @@ def run_spec(
             embed_config=embed_config,
             embedding_error=embedding_error,
             fts_queries=spec.semantic_aliases,
+            sql_debug_recorder=a.record_sql_debug,
         )
     if spec.semantic_query and spec.intent in {Intent.count_total, Intent.count_by}:
         return _run_semantic_count(
