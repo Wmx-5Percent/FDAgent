@@ -36,6 +36,14 @@ RAW_FIRM_EXPOSURE_CAVEATS = [
     "Legal entities, subsidiaries, and parent groups are not normalized or merged in this v0 view.",
     "The score is a recall-data exposure signal, not a legal, medical, or safety verdict.",
 ]
+PARENT_GROUP_EXPOSURE_FORMULA_VERSION = "parent_group_severity_v1"
+PARENT_GROUP_EXPOSURE_SCOPE = "parent_group_provenance_backed"
+PARENT_GROUP_EXPOSURE_CAVEATS = [
+    "This leaderboard uses only confirmed firm→parent_group edges with provenance metadata.",
+    "Unmapped, unknown, unconfirmed, and LLM-only parent edges are excluded from the ranked total and reported separately.",
+    "Parent-group aggregation is inferred from the sidecar; FDA facts remain the underlying recalling_firm records.",
+    "The score is a recall-data exposure signal, not a legal, medical, or safety verdict.",
+]
 
 
 class Kind(str, Enum):
@@ -112,6 +120,7 @@ class FirmExposure:
     top_reason_node_id: str | None = None
     top_reason_count: int | None = None
     evidence: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -123,6 +132,7 @@ class RawFirmExposureLeaderboard:
     formula: str = RAW_FIRM_EXPOSURE_FORMULA
     scope: str = RAW_FIRM_EXPOSURE_SCOPE
     caveats: list[str] = field(default_factory=lambda: list(RAW_FIRM_EXPOSURE_CAVEATS))
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def _conditions(filters: Sequence[Filter]) -> tuple[list[sql.Composable], list[Any]]:
@@ -211,6 +221,9 @@ class RecallAnalytics:
             cur.execute(query, params)
             row = cur.fetchone()
             return row[0] if row else None
+
+    def _regclass_exists(self, name: str) -> bool:
+        return self._scalar(sql.SQL("SELECT to_regclass(%s)"), [name]) is not None
 
     # -- public API ---------------------------------------------------------
     def count_total(
@@ -460,6 +473,402 @@ class RecallAnalytics:
         return RawFirmExposureLeaderboard(
             metric="severity_weighted" if rank_by == "severity_weighted_exposure" else "recall_count",
             items=items,
+        )
+
+    def parent_group_exposure_leaderboard(
+        self,
+        filters: Sequence[Filter] = (),
+        *,
+        limit: int = 20,
+        rank_by: str = "severity_weighted_exposure",
+        evidence_n: int = 3,
+        taxonomy_version: str = DEFAULT_TAXONOMY_VERSION,
+    ) -> RawFirmExposureLeaderboard:
+        """Rank provenance-backed parent groups by recall exposure.
+
+        This consumes the firm-resolution sidecar only when ``sql/011`` has created
+        confirmed firm→parent edges. Unknown, unconfirmed, and LLM-only edges are
+        kept out of the parent total and summarized in metadata so inferred rollups
+        never silently mix with raw FDA facts.
+        """
+        if rank_by not in {"severity_weighted_exposure", "recall_count"}:
+            raise ValueError("rank_by must be 'severity_weighted_exposure' or 'recall_count'")
+        limit = max(1, min(int(limit), 100))
+        evidence_n = max(1, min(int(evidence_n), 10))
+        metric = "severity_weighted" if rank_by == "severity_weighted_exposure" else "recall_count"
+
+        required = ("firm_alias", "firm", "parent_group", "firm_parent_group_edge")
+        missing = [name for name in required if not self._regclass_exists(name)]
+        if missing:
+            return RawFirmExposureLeaderboard(
+                metric=metric,
+                items=[],
+                formula_version=PARENT_GROUP_EXPOSURE_FORMULA_VERSION,
+                formula=RAW_FIRM_EXPOSURE_FORMULA,
+                scope=PARENT_GROUP_EXPOSURE_SCOPE,
+                caveats=[
+                    *PARENT_GROUP_EXPOSURE_CAVEATS,
+                    "Parent-group rollup prerequisites are not installed; run sql/011_parent_group_rollup.sql.",
+                ],
+                metadata={
+                    "available": False,
+                    "missing_tables": missing,
+                    "backed_edge_count": 0,
+                    "mapped_recall_count": 0,
+                    "excluded_recall_count": 0,
+                },
+            )
+
+        backed_edge_count = int(self._scalar(
+            sql.SQL(
+                """
+                SELECT count(*)
+                FROM firm_parent_group_edge
+                WHERE active
+                  AND review_status = 'confirmed'
+                  AND provenance_tier <> 'unknown'
+                  AND source <> 'llm'
+                """
+            ),
+            [],
+        ) or 0)
+        if backed_edge_count == 0:
+            return RawFirmExposureLeaderboard(
+                metric=metric,
+                items=[],
+                formula_version=PARENT_GROUP_EXPOSURE_FORMULA_VERSION,
+                formula=RAW_FIRM_EXPOSURE_FORMULA,
+                scope=PARENT_GROUP_EXPOSURE_SCOPE,
+                caveats=[
+                    *PARENT_GROUP_EXPOSURE_CAVEATS,
+                    "No confirmed provenance-backed parent edges are present yet; raw-firm exposure remains the fallback view.",
+                ],
+                metadata={
+                    "available": False,
+                    "backed_edge_count": 0,
+                    "mapped_recall_count": 0,
+                    "excluded_recall_count": None,
+                },
+            )
+
+        conds, params = _conditions(filters)
+        conds.extend([
+            sql.SQL("recalling_firm IS NOT NULL"),
+            sql.SQL("btrim(recalling_firm) <> ''"),
+        ])
+        where = sql.SQL(" WHERE ") + sql.SQL(" AND ").join(conds)
+        order_by = (
+            sql.SQL("exposure_score DESC, total_recalls DESC, parent_group_name ASC")
+            if rank_by == "severity_weighted_exposure"
+            else sql.SQL("total_recalls DESC, exposure_score DESC, parent_group_name ASC")
+        )
+        tbl, label_tbl, taxonomy_tbl = (
+            sql.Identifier(TABLE),
+            sql.Identifier(LABEL_TABLE),
+            sql.Identifier("taxonomy"),
+        )
+        q = sql.SQL(
+            """
+            WITH base AS (
+                SELECT id, recall_number, recalling_firm, classification, recall_initiation_date
+                FROM {tbl}
+                {where}
+            ),
+            mapped AS (
+                SELECT
+                    b.id,
+                    b.recall_number,
+                    b.recalling_firm,
+                    b.classification,
+                    b.recall_initiation_date,
+                    f.id AS firm_id,
+                    f.canonical_name AS firm_name,
+                    pg.id AS parent_group_id,
+                    pg.canonical_name AS parent_group_name,
+                    edge.provenance_tier,
+                    edge.source,
+                    edge.source_name,
+                    edge.source_url,
+                    edge.source_id,
+                    edge.as_of_date,
+                    edge.evidence AS edge_evidence
+                FROM base b
+                JOIN firm_alias fa
+                  ON fa.source_table = 'drug_enforcement'
+                 AND fa.source_field = 'recalling_firm'
+                 AND fa.raw_firm = b.recalling_firm
+                JOIN firm f ON f.id = fa.firm_id
+                JOIN firm_parent_group_edge edge
+                  ON edge.firm_id = f.id
+                 AND edge.active
+                 AND edge.review_status = 'confirmed'
+                 AND edge.provenance_tier <> 'unknown'
+                 AND edge.source <> 'llm'
+                JOIN parent_group pg ON pg.id = edge.parent_group_id
+            ),
+            parent_counts AS (
+                SELECT
+                    parent_group_id,
+                    parent_group_name,
+                    count(*) AS total_recalls,
+                    count(*) FILTER (WHERE classification = 'Class I') AS class_i_recalls,
+                    count(*) FILTER (WHERE classification = 'Class II') AS class_ii_recalls,
+                    count(*) FILTER (WHERE classification = 'Class III') AS class_iii_recalls,
+                    count(*) FILTER (
+                        WHERE classification IS NULL
+                           OR classification NOT IN ('Class I', 'Class II', 'Class III')
+                    ) AS unclassified_recalls,
+                    (
+                        3 * count(*) FILTER (WHERE classification = 'Class I')
+                        + 2 * count(*) FILTER (WHERE classification = 'Class II')
+                        + count(*) FILTER (WHERE classification = 'Class III')
+                    ) AS exposure_score,
+                    count(DISTINCT firm_id) AS member_firm_count,
+                    (
+                        array_agg(
+                            recall_number
+                            ORDER BY
+                                CASE classification
+                                    WHEN 'Class I' THEN 3
+                                    WHEN 'Class II' THEN 2
+                                    WHEN 'Class III' THEN 1
+                                    ELSE 0
+                                END DESC,
+                                recall_initiation_date DESC NULLS LAST,
+                                recall_number
+                        )
+                    )[1:%s] AS evidence
+                FROM mapped
+                GROUP BY parent_group_id, parent_group_name
+            ),
+            member_counts AS (
+                SELECT
+                    parent_group_id,
+                    firm_id,
+                    firm_name,
+                    count(*) AS total_recalls,
+                    count(*) FILTER (WHERE classification = 'Class I') AS class_i_recalls,
+                    count(*) FILTER (WHERE classification = 'Class II') AS class_ii_recalls,
+                    count(*) FILTER (WHERE classification = 'Class III') AS class_iii_recalls,
+                    count(*) FILTER (
+                        WHERE classification IS NULL
+                           OR classification NOT IN ('Class I', 'Class II', 'Class III')
+                    ) AS unclassified_recalls,
+                    (
+                        3 * count(*) FILTER (WHERE classification = 'Class I')
+                        + 2 * count(*) FILTER (WHERE classification = 'Class II')
+                        + count(*) FILTER (WHERE classification = 'Class III')
+                    ) AS exposure_score,
+                    min(provenance_tier) AS provenance_tier,
+                    min(source) AS source,
+                    min(source_name) AS source_name,
+                    min(source_url) AS source_url,
+                    min(source_id) AS source_id,
+                    min(as_of_date) AS as_of_date,
+                    jsonb_agg(DISTINCT edge_evidence) FILTER (WHERE edge_evidence <> '{{}}'::jsonb) AS edge_evidence,
+                    (
+                        array_agg(
+                            recall_number
+                            ORDER BY
+                                CASE classification
+                                    WHEN 'Class I' THEN 3
+                                    WHEN 'Class II' THEN 2
+                                    WHEN 'Class III' THEN 1
+                                    ELSE 0
+                                END DESC,
+                                recall_initiation_date DESC NULLS LAST,
+                                recall_number
+                        )
+                    )[1:%s] AS evidence
+                FROM mapped
+                GROUP BY parent_group_id, firm_id, firm_name
+            ),
+            members AS (
+                SELECT
+                    parent_group_id,
+                    jsonb_agg(
+                        jsonb_build_object(
+                            'firm_id', firm_id,
+                            'firm_name', firm_name,
+                            'total_recalls', total_recalls,
+                            'exposure_score', exposure_score,
+                            'class_i_recalls', class_i_recalls,
+                            'class_ii_recalls', class_ii_recalls,
+                            'class_iii_recalls', class_iii_recalls,
+                            'unclassified_recalls', unclassified_recalls,
+                            'edge_provenance_tier', provenance_tier,
+                            'edge_source', source,
+                            'edge_source_name', source_name,
+                            'edge_source_url', source_url,
+                            'edge_source_id', source_id,
+                            'edge_as_of_date', as_of_date,
+                            'edge_evidence', COALESCE(edge_evidence, '[]'::jsonb),
+                            'evidence', evidence
+                        )
+                        ORDER BY exposure_score DESC, total_recalls DESC, firm_name ASC
+                    ) AS member_breakdown
+                FROM member_counts
+                GROUP BY parent_group_id
+            ),
+            reason_counts AS (
+                SELECT
+                    m.parent_group_id,
+                    t.label,
+                    rl.node_id,
+                    count(DISTINCT m.id) AS category_count,
+                    row_number() OVER (
+                        PARTITION BY m.parent_group_id
+                        ORDER BY count(DISTINCT m.id) DESC, t.label ASC
+                    ) AS rn
+                FROM mapped m
+                JOIN {label_tbl} rl ON rl.record_id = m.id AND rl.version = %s
+                JOIN {taxonomy_tbl} t ON t.version = rl.version AND t.node_id = rl.node_id
+                GROUP BY m.parent_group_id, t.label, rl.node_id
+            )
+            SELECT
+                pc.parent_group_id,
+                pc.parent_group_name,
+                pc.exposure_score,
+                pc.total_recalls,
+                pc.class_i_recalls,
+                pc.class_ii_recalls,
+                pc.class_iii_recalls,
+                pc.unclassified_recalls,
+                pc.member_firm_count,
+                rc.label AS top_reason_category,
+                rc.node_id AS top_reason_node_id,
+                rc.category_count AS top_reason_count,
+                pc.evidence,
+                COALESCE(m.member_breakdown, '[]'::jsonb) AS member_breakdown
+            FROM parent_counts pc
+            LEFT JOIN reason_counts rc
+                ON rc.parent_group_id = pc.parent_group_id AND rc.rn = 1
+            LEFT JOIN members m ON m.parent_group_id = pc.parent_group_id
+            ORDER BY {order_by}
+            LIMIT %s
+            """
+        ).format(
+            tbl=tbl,
+            where=where,
+            label_tbl=label_tbl,
+            taxonomy_tbl=taxonomy_tbl,
+            order_by=order_by,
+        )
+        rows = self._rows(q, [*params, evidence_n, evidence_n, taxonomy_version, limit])
+
+        coverage_q = sql.SQL(
+            """
+            WITH base AS (
+                SELECT id, recalling_firm
+                FROM {tbl}
+                {where}
+            ),
+            classified AS (
+                SELECT
+                    b.id,
+                    b.recalling_firm,
+                    CASE
+                        WHEN fa.id IS NULL THEN 'unaliased'
+                        WHEN EXISTS (
+                            SELECT 1 FROM firm_parent_group_edge edge
+                            WHERE edge.firm_id = fa.firm_id
+                              AND edge.active
+                              AND edge.review_status = 'confirmed'
+                              AND edge.provenance_tier <> 'unknown'
+                              AND edge.source <> 'llm'
+                        ) THEN 'mapped'
+                        WHEN EXISTS (
+                            SELECT 1 FROM firm_parent_group_edge edge
+                            WHERE edge.firm_id = fa.firm_id
+                              AND edge.active
+                              AND edge.review_status <> 'confirmed'
+                        ) THEN 'unconfirmed_parent_edge'
+                        WHEN EXISTS (
+                            SELECT 1 FROM firm_parent_group_edge edge
+                            WHERE edge.firm_id = fa.firm_id
+                              AND edge.active
+                              AND edge.review_status = 'confirmed'
+                              AND edge.provenance_tier = 'unknown'
+                        ) THEN 'unknown_parent_edge'
+                        WHEN EXISTS (
+                            SELECT 1 FROM firm_parent_group_edge edge
+                            WHERE edge.firm_id = fa.firm_id
+                              AND edge.active
+                              AND edge.review_status = 'confirmed'
+                              AND edge.source = 'llm'
+                        ) THEN 'llm_only_parent_edge'
+                        WHEN EXISTS (
+                            SELECT 1 FROM firm_parent_group_edge edge
+                            WHERE edge.firm_id = fa.firm_id
+                              AND edge.active
+                        ) THEN 'unconfirmed_parent_edge'
+                        ELSE 'no_parent_edge'
+                    END AS mapping_status
+                FROM base b
+                LEFT JOIN firm_alias fa
+                  ON fa.source_table = 'drug_enforcement'
+                 AND fa.source_field = 'recalling_firm'
+                 AND fa.raw_firm = b.recalling_firm
+            )
+            SELECT
+                COALESCE(sum(n) FILTER (WHERE mapping_status = 'mapped'), 0)::int AS mapped_recalls,
+                COALESCE(sum(n) FILTER (WHERE mapping_status <> 'mapped'), 0)::int AS excluded_recalls,
+                (
+                    SELECT count(DISTINCT recalling_firm)::int
+                    FROM classified
+                    WHERE mapping_status <> 'mapped'
+                ) AS excluded_raw_firms,
+                COALESCE(jsonb_object_agg(mapping_status, n ORDER BY mapping_status), '{{}}'::jsonb) AS status_counts
+            FROM (
+                SELECT mapping_status, count(*)::int AS n
+                FROM classified
+                GROUP BY mapping_status
+            ) grouped
+            """
+        ).format(tbl=tbl, where=where)
+        coverage = self._rows(coverage_q, params)
+        mapped_recalls, excluded_recalls, excluded_raw_firms, status_counts = (
+            coverage[0] if coverage else (0, 0, 0, {})
+        )
+
+        items = [
+            FirmExposure(
+                rank=i,
+                recalling_firm=str(row[1]),
+                exposure_score=int(row[2] or 0),
+                total_recalls=int(row[3] or 0),
+                class_i_recalls=int(row[4] or 0),
+                class_ii_recalls=int(row[5] or 0),
+                class_iii_recalls=int(row[6] or 0),
+                unclassified_recalls=int(row[7] or 0),
+                top_reason_category=row[9],
+                top_reason_node_id=row[10],
+                top_reason_count=int(row[11]) if row[11] is not None else None,
+                evidence=list(row[12]) if row[12] else [],
+                metadata={
+                    "parent_group_id": int(row[0]),
+                    "parent_group_name": row[1],
+                    "member_firm_count": int(row[8] or 0),
+                    "member_breakdown": row[13] or [],
+                },
+            )
+            for i, row in enumerate(rows, start=1)
+        ]
+        return RawFirmExposureLeaderboard(
+            metric=metric,
+            items=items,
+            formula_version=PARENT_GROUP_EXPOSURE_FORMULA_VERSION,
+            formula=RAW_FIRM_EXPOSURE_FORMULA,
+            scope=PARENT_GROUP_EXPOSURE_SCOPE,
+            caveats=list(PARENT_GROUP_EXPOSURE_CAVEATS),
+            metadata={
+                "available": bool(items),
+                "backed_edge_count": backed_edge_count,
+                "mapped_recall_count": int(mapped_recalls or 0),
+                "excluded_recall_count": int(excluded_recalls or 0),
+                "excluded_raw_firm_count": int(excluded_raw_firms or 0),
+                "mapping_status_counts": status_counts or {},
+            },
         )
 
     def trend(
