@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-07-15T08:48Z · 89 files · 2 missing description
+> Last generated: 2026-08-06T09:33Z · 91 files · 2 missing description
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -46,6 +46,8 @@
 - [`docs/adr/0003-recall-profile-two-block-fact-vs-inferred.md`](docs/adr/0003-recall-profile-two-block-fact-vs-inferred.md) — C 端答案两块式呈现：FDA 事实为锚 + 标注推断的母公司汇总 — Status: accepted
 - [`docs/adr/0004-firm-parent-edges-require-citable-source.md`](docs/adr/0004-firm-parent-edges-require-citable-source.md) — firm→parent 归属边需可引用结构化出处 + 人工确认才生效；LLM/web 仅提名 — Status: accepted
 - [`docs/adr/0005-autonomy-boundary-reversible-vs-irreversible.md`](docs/adr/0005-autonomy-boundary-reversible-vs-irreversible.md) — 受托/自主 Agent 只可自主执行可逆动作；不可逆动作须人工确认 — Status: accepted
+- [`docs/plan/2026-08-06-openai-embedding-provider-restores-hybrid-retrieval.md`](docs/plan/2026-08-06-openai-embedding-provider-restores-hybrid-retrieval.md) — OpenAI embedding provider restores hybrid retrieval — Tracking issue: [#74](https://github.com/Wmx-5Percent/FDAgent/issues/74).
+- [`docs/plan/2026-08-06-worktree-reconciliation-and-main-acceptance.md`](docs/plan/2026-08-06-worktree-reconciliation-and-main-acceptance.md) — FDAgent worktree 收尾与主分支验收计划 — 状态快照：2026-08-06。本文是供并行窗口读取的执行边界与验收合同，不替代
 
 ## evals/
 - [`evals/README.md`](evals/README.md) — FDAgent Evaluation Contract — 定义本仓库 eval case 的稳定元数据、suite 标签和本地运行命令。
