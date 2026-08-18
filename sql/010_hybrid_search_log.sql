@@ -24,6 +24,13 @@ CREATE TABLE IF NOT EXISTS hybrid_search_log (
     error_message       text
 );
 
+ALTER TABLE hybrid_search_log
+    ADD COLUMN IF NOT EXISTS fusion_config jsonb NOT NULL DEFAULT '{}'::jsonb,
+    ADD COLUMN IF NOT EXISTS alias_generation jsonb NOT NULL DEFAULT '{}'::jsonb,
+    ADD COLUMN IF NOT EXISTS vector_trace jsonb NOT NULL DEFAULT '[]'::jsonb,
+    ADD COLUMN IF NOT EXISTS fts_trace jsonb NOT NULL DEFAULT '[]'::jsonb,
+    ADD COLUMN IF NOT EXISTS fused_trace jsonb NOT NULL DEFAULT '[]'::jsonb;
+
 CREATE INDEX IF NOT EXISTS hybrid_search_log_created_at_idx
     ON hybrid_search_log (created_at DESC);
 
@@ -80,3 +87,13 @@ COMMENT ON COLUMN hybrid_search_log.error_type IS
     'Exception class name for handled lab endpoint errors. NULL for successful runs. [project field, not from openFDA]';
 COMMENT ON COLUMN hybrid_search_log.error_message IS
     'Short safe error message for handled lab endpoint errors. NULL for successful runs. [project field, not from openFDA]';
+COMMENT ON COLUMN hybrid_search_log.fusion_config IS
+    'Weighted RRF configuration for this lab run, including RRF constant, vector/FTS weights, and candidate limits. [project field, not from openFDA]';
+COMMENT ON COLUMN hybrid_search_log.alias_generation IS
+    'Safe alias-generation status and provider/model metadata for this run. Does not include prompts, secrets, base URLs, headers, or raw provider errors. [project field, not from openFDA]';
+COMMENT ON COLUMN hybrid_search_log.vector_trace IS
+    'Top vector-channel trace rows: recall number, field, rank, distance, similarity, and weighted RRF contribution; no vectors or long FDA text. [project field, not from openFDA]';
+COMMENT ON COLUMN hybrid_search_log.fts_trace IS
+    'Top FTS-channel trace rows after query/alias aggregation: recall number, field, rank, FTS score, matched queries, and weighted RRF contribution; no long FDA text. [project field, not from openFDA]';
+COMMENT ON COLUMN hybrid_search_log.fused_trace IS
+    'Final fused top-k trace rows with rank, total RRF score, channel contributions, contribution percentages, and matched FTS queries. [project field, not from openFDA]';

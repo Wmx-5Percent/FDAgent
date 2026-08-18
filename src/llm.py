@@ -32,6 +32,7 @@ DEFAULT_OPENROUTER_TITLE_MODEL = "openai/gpt-4o-mini"
 DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_EMBED_MODEL = "text-embedding-3-small"
 DEFAULT_OPENROUTER_EMBED_MODEL = "openai/text-embedding-3-small"
+EMBEDDING_HEALTH_PROBE_INPUT = "FDAgent embedding health probe"
 SUPPORTED_EMBED_MODELS = {
     DEFAULT_EMBED_MODEL: 1536,
     DEFAULT_OPENROUTER_EMBED_MODEL: 1536,
@@ -451,6 +452,11 @@ def embed_text(client: OpenAI, config: EmbeddingConfig, text: str) -> list[float
             operation="embedding",
         )
     return list(embedding)
+
+
+def probe_embedding_provider(client: OpenAI, config: EmbeddingConfig) -> None:
+    """Verify that the configured embedding provider can return a compatible vector."""
+    embed_text(client, config, EMBEDDING_HEALTH_PROBE_INPUT)
 
 
 def can_fallback_to_fts(exc: BaseException) -> bool:

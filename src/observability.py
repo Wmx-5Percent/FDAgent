@@ -47,6 +47,11 @@ class HybridSearchLogEntry:
     timings_ms: dict[str, Any]
     request: dict[str, Any]
     response_metadata: dict[str, Any]
+    fusion_config: dict[str, Any] | None = None
+    alias_generation: dict[str, Any] | None = None
+    vector_trace: list[dict[str, Any]] | None = None
+    fts_trace: list[dict[str, Any]] | None = None
+    fused_trace: list[dict[str, Any]] | None = None
     error_type: str | None = None
     error_message: str | None = None
 
@@ -118,6 +123,7 @@ class HybridSearchLogger:
                         embedding_provider, embedding_model, retrieval_mode, fallback_reason,
                         vector_hit_count, fts_hit_count, fused_hit_count,
                         top_recall_numbers, timings_ms, request, response_metadata,
+                        fusion_config, alias_generation, vector_trace, fts_trace, fused_trace,
                         error_type, error_message
                     )
                     VALUES (
@@ -125,6 +131,7 @@ class HybridSearchLogger:
                         %s, %s, %s, %s,
                         %s, %s, %s,
                         %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s,
                         %s, %s
                     )
                     RETURNING id
@@ -145,6 +152,11 @@ class HybridSearchLogger:
                         Jsonb(entry.timings_ms),
                         Jsonb(entry.request),
                         Jsonb(entry.response_metadata),
+                        Jsonb(entry.fusion_config or {}),
+                        Jsonb(entry.alias_generation or {}),
+                        Jsonb(entry.vector_trace or []),
+                        Jsonb(entry.fts_trace or []),
+                        Jsonb(entry.fused_trace or []),
                         entry.error_type,
                         entry.error_message,
                     ],
@@ -153,6 +165,95 @@ class HybridSearchLogger:
         if row is None:
             raise RuntimeError("hybrid_search_log insert did not return an id")
         return int(row[0])
+
+    def list_runs(self, *, limit: int = 25, before_id: int | None = None) -> list[dict[str, Any]]:
+        limit = min(50, max(1, int(limit)))
+        where = "WHERE id < %s" if before_id is not None else ""
+        params: list[Any] = [before_id, limit] if before_id is not None else [limit]
+        with psycopg.connect(self.dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT id, created_at, query, field, k, retrieval_mode, fallback_reason,
+                           vector_hit_count, fts_hit_count, fused_hit_count, top_recall_numbers,
+                           timings_ms, request, response_metadata, fusion_config,
+                           alias_generation, error_type, error_message
+                    FROM hybrid_search_log
+                    {where}
+                    ORDER BY id DESC
+                    LIMIT %s
+                    """,
+                    params,
+                )
+                rows = cur.fetchall()
+        return [
+            {
+                "id": row[0],
+                "created_at": row[1].isoformat() if row[1] is not None else None,
+                "query": row[2],
+                "field": row[3],
+                "k": row[4],
+                "retrieval_mode": row[5],
+                "fallback_reason": row[6],
+                "vector_hit_count": row[7],
+                "fts_hit_count": row[8],
+                "fused_hit_count": row[9],
+                "top_recall_numbers": row[10],
+                "timings_ms": row[11],
+                "request": row[12],
+                "response_metadata": row[13],
+                "fusion_config": row[14],
+                "alias_generation": row[15],
+                "error_type": row[16],
+                "error_message": row[17],
+            }
+            for row in rows
+        ]
+
+    def get_run(self, run_id: int) -> dict[str, Any] | None:
+        with psycopg.connect(self.dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, created_at, query, field, k, filters,
+                           embedding_provider, embedding_model, retrieval_mode, fallback_reason,
+                           vector_hit_count, fts_hit_count, fused_hit_count, top_recall_numbers,
+                           timings_ms, request, response_metadata, fusion_config, alias_generation,
+                           vector_trace, fts_trace, fused_trace, error_type, error_message
+                    FROM hybrid_search_log
+                    WHERE id = %s
+                    """,
+                    [run_id],
+                )
+                row = cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row[0],
+            "created_at": row[1].isoformat() if row[1] is not None else None,
+            "query": row[2],
+            "field": row[3],
+            "k": row[4],
+            "filters": row[5],
+            "embedding_provider": row[6],
+            "embedding_model": row[7],
+            "retrieval_mode": row[8],
+            "fallback_reason": row[9],
+            "vector_hit_count": row[10],
+            "fts_hit_count": row[11],
+            "fused_hit_count": row[12],
+            "top_recall_numbers": row[13],
+            "timings_ms": row[14],
+            "request": row[15],
+            "response_metadata": row[16],
+            "fusion_config": row[17],
+            "alias_generation": row[18],
+            "vector_trace": row[19],
+            "fts_trace": row[20],
+            "fused_trace": row[21],
+            "error_type": row[22],
+            "error_message": row[23],
+        }
 
 
 def response_metadata(response: Mapping[str, Any], *, model: str | None = None,

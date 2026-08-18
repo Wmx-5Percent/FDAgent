@@ -4,7 +4,7 @@
 > Auto-generated map for fast agent navigation (progressive-disclosure layer 1).
 > Find the right file here **before** grepping the tree; open files on demand for full detail.
 > Regenerate after structural changes: `python scripts/gen_index.py` · verify in CI: `--check`.
-> Last generated: 2026-07-15T08:48Z · 89 files · 2 missing description
+> Last generated: 2026-08-06T11:30Z · 92 files · 2 missing description
 
 ## (root)
 - [`.dockerignore`](.dockerignore) — Keep the build context small and secrets/artifacts OUT of the image.
@@ -46,6 +46,9 @@
 - [`docs/adr/0003-recall-profile-two-block-fact-vs-inferred.md`](docs/adr/0003-recall-profile-two-block-fact-vs-inferred.md) — C 端答案两块式呈现：FDA 事实为锚 + 标注推断的母公司汇总 — Status: accepted
 - [`docs/adr/0004-firm-parent-edges-require-citable-source.md`](docs/adr/0004-firm-parent-edges-require-citable-source.md) — firm→parent 归属边需可引用结构化出处 + 人工确认才生效；LLM/web 仅提名 — Status: accepted
 - [`docs/adr/0005-autonomy-boundary-reversible-vs-irreversible.md`](docs/adr/0005-autonomy-boundary-reversible-vs-irreversible.md) — 受托/自主 Agent 只可自主执行可逆动作；不可逆动作须人工确认 — Status: accepted
+- [`docs/plan/2026-08-06-hybrid-search-aliases-weighted-rrf-and-debug-traces.md`](docs/plan/2026-08-06-hybrid-search-aliases-weighted-rrf-and-debug-traces.md) — Hybrid Search 动态 aliases、可解释融合与检索日志 — Tracking issue: [#76](https://github.com/Wmx-5Percent/FDAgent/issues/76).
+- [`docs/plan/2026-08-06-openai-embedding-provider-restores-hybrid-retrieval.md`](docs/plan/2026-08-06-openai-embedding-provider-restores-hybrid-retrieval.md) — OpenAI embedding provider restores hybrid retrieval — Tracking issue: [#74](https://github.com/Wmx-5Percent/FDAgent/issues/74).
+- [`docs/plan/2026-08-06-worktree-reconciliation-and-main-acceptance.md`](docs/plan/2026-08-06-worktree-reconciliation-and-main-acceptance.md) — FDAgent worktree 收尾与主分支验收计划 — 状态快照：2026-08-06。本文是供并行窗口读取的执行边界与验收合同，不替代
 
 ## evals/
 - [`evals/README.md`](evals/README.md) — FDAgent Evaluation Contract — 定义本仓库 eval case 的稳定元数据、suite 标签和本地运行命令。
@@ -93,7 +96,7 @@
 - [`src/analytics.py`](src/analytics.py) — Deterministic frequency/aggregation query engine over drug_enforcement.
   - symbols: `Kind`, `Filter`, `Group`, `FirmExposure`, `RawFirmExposureLeaderboard`, `SQLDebugQuery`, `RecallAnalytics`
 - [`src/api.py`](src/api.py) — FastAPI service exposing the deterministic NL->SQL analytics engine (Path 1, serving half).
-  - symbols: `lifespan`, `AskRequest`, `TitleRequest`, `TitleResponse`, `HybridSearchRequest`, `recall_verification_url`, `recall_detail_url`, `serialize_answer`, `health`, `hybrid_search_page`, `hybrid_search_endpoint`, `title_endpoint`
+  - symbols: `lifespan`, `AskRequest`, `TitleRequest`, `TitleResponse`, `HybridSearchRequest`, `HybridAliasRequest`, `HybridAliasOutput`, `recall_verification_url`, `recall_detail_url`, `serialize_answer`, `health`, `hybrid_search_page`
 - [`src/classify/__init__.py`](src/classify/__init__.py) — Offline recall taxonomy induction, labeling, and discovery utilities.
 - [`src/classify/audit.py`](src/classify/audit.py) — Audit taxonomy coverage and exact offline recall-label counts.
   - symbols: `taxonomy_nodes`, `descendant_node_ids`, `coverage_report`, `count_by_report`, `write_or_print`, `parse_args`, `clean_labeler`, `main`
@@ -127,7 +130,7 @@
 - [`src/observability.py`](src/observability.py) — Postgres-backed query logging for the /ask API.
   - symbols: `QueryLogEntry`, `HybridSearchLogEntry`, `QueryLogger`, `HybridSearchLogger`, `response_metadata`
 - [`src/retrieval.py`](src/retrieval.py) — Hybrid retrieval over the `embeddings` table — Path 2 / slice 2.2.
-  - symbols: `Hit`, `SearchResult`, `embed_query`, `search`, `parse_args`, `main`
+  - symbols: `Hit`, `SearchResult`, `default_fusion_config`, `embed_query`, `search`, `parse_args`, `main`
 - [`src/validation.py`](src/validation.py) — Validate semantic retrieval candidates and build semantic-count results.
   - symbols: `CandidateValidation`, `ValidationBatch`, `SemanticValidationError`, `ValidatedHit`, `SemanticCountGroup`, `SemanticCountResult`, `threshold_policy`, `bounded_candidate_limit`, `bounded_validation_limit`, `bounded_retrieval_pool_limit`, `select_validation_sample`, `snippet_is_grounded`
 

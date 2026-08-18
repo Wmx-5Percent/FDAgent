@@ -2243,6 +2243,7 @@ class NLEngine:
         self.embedding_error: llm.ProviderError | None = None
         try:
             self.embed_client = llm.create_embedding_client(self.embed_config)
+            llm.probe_embedding_provider(self.embed_client, self.embed_config)
         except llm.ProviderError as exc:
             self.embedding_error = exc
         with RecallAnalytics(dsn) as a:

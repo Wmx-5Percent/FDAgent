@@ -1083,6 +1083,11 @@ def _run_retrieval_case(case: Mapping[str, Any], *, dsn: str) -> EvalResult:
     query = str(case["query"])
     k = int(case.get("k", 10))
     field = str(case.get("field", "both"))
+    aliases = [str(item) for item in (case.get("aliases") or assertions.get("aliases") or [])]
+    vector_weight_percent = case.get(
+        "vector_weight_percent",
+        assertions.get("vector_weight_percent", 50),
+    )
     threshold = float(assertions.get("min_recall_at_k", case.get("min_recall_at_k", 1.0)))
     expected_mode = assertions.get("retrieval_mode", case.get("retrieval_mode"))
     simulated_error_name = (
@@ -1126,7 +1131,9 @@ def _run_retrieval_case(case: Mapping[str, Any], *, dsn: str) -> EvalResult:
             )
     with psycopg.connect(dsn) as conn:
         hits = retrieval.search(conn, client, query, k=k, field=field,
-                                embed_config=embed_config, embedding_error=embedding_error)
+                                embed_config=embed_config, embedding_error=embedding_error,
+                                fts_queries=aliases,
+                                vector_weight_percent=vector_weight_percent)
     retrieval_mode = getattr(hits, "retrieval_mode", None) or (
         hits[0].retrieval_mode if hits else "-"
     )
@@ -1187,6 +1194,46 @@ def _run_retrieval_case(case: Mapping[str, Any], *, dsn: str) -> EvalResult:
             expected_min = int(assertions[key])
             _require(actual >= expected_min,
                      f"{attr} expected >= {expected_min}, got {actual}")
+    fusion_config = getattr(hits, "fusion_config", {})
+    if "vector_weight_percent" in assertions:
+        _require(
+            int(fusion_config.get("vector_weight_percent", -1)) == int(assertions["vector_weight_percent"]),
+            f"vector_weight_percent expected {assertions['vector_weight_percent']!r}, "
+            f"got {fusion_config.get('vector_weight_percent')!r}",
+        )
+    if assertions.get("requires_rrf_contributions"):
+        rrf_k = int(fusion_config.get("rrf_k", retrieval.RRF_K))
+        vector_weight = float(fusion_config.get("vector_weight", 0.5))
+        fts_weight = float(fusion_config.get("fts_weight", 0.5))
+        for hit in hits:
+            expected_score = 0.0
+            if hit.vector_rank is not None:
+                expected_score += vector_weight / (rrf_k + hit.vector_rank)
+            if hit.fts_rank is not None:
+                expected_score += fts_weight / (rrf_k + hit.fts_rank)
+            _require(
+                abs(hit.rrf_score - expected_score) <= 1e-12,
+                f"{hit.recall_number}: rrf_score expected {expected_score}, got {hit.rrf_score}",
+            )
+            if hit.rrf_score > 0:
+                contribution_total = hit.vector_contribution_percent + hit.fts_contribution_percent
+                _require(
+                    abs(contribution_total - 100.0) <= 1e-6,
+                    f"{hit.recall_number}: contribution percent total expected 100, "
+                    f"got {contribution_total}",
+                )
+    if assertions.get("require_unique_matched_fts_queries"):
+        for hit in hits:
+            _require(
+                len(hit.matched_fts_queries) == len(set(hit.matched_fts_queries)),
+                f"{hit.recall_number}: duplicate matched_fts_queries {hit.matched_fts_queries}",
+            )
+    if expected_first := assertions.get("expected_first_recall_number"):
+        actual_first = hits[0].recall_number if hits else None
+        _require(
+            actual_first == expected_first,
+            f"expected first recall_number {expected_first!r}, got {actual_first!r}",
+        )
     vector_hit_count = getattr(hits, "vector_hit_count", None)
     fts_hit_count = getattr(hits, "fts_hit_count", None)
     fused_hit_count = getattr(hits, "fused_hit_count", None)
@@ -1215,6 +1262,8 @@ def _run_retrieval_case(case: Mapping[str, Any], *, dsn: str) -> EvalResult:
                 "matched_expected": sorted(matched),
                 "expected_count": len(expected),
                 "returned": returned,
+                "aliases": aliases,
+                "vector_weight_percent": fusion_config.get("vector_weight_percent"),
                 "vector_hit_count": vector_hit_count,
                 "fts_hit_count": fts_hit_count,
                 "fused_hit_count": fused_hit_count,

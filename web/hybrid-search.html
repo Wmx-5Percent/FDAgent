@@ -47,6 +47,12 @@
           <span>FTS aliases (optional, comma-separated)</span>
           <input id="aliasesInput" name="aliases" type="text"
             placeholder="too strong, over strength, high assay" />
+          <small id="aliasStatus" class="lab-field-note">Aliases auto-generate after typing stops.</small>
+        </label>
+        <label class="lab-field">
+          <span>Vector weight</span>
+          <input id="vectorWeightInput" name="vector_weight_percent" type="range" min="0" max="100" value="50" />
+          <small id="weightStatus" class="lab-field-note">Vector 50% / FTS 50%</small>
         </label>
         <label class="lab-field lab-field-wide lab-field-json">
           <span>Filters JSON (optional)</span>
@@ -82,6 +88,19 @@
         </div>
       </div>
       <dl class="lab-metadata" id="metadataGrid"></dl>
+    </section>
+
+    <section class="lab-card" id="historyCard">
+      <div class="lab-section-heading">
+        <div>
+          <h2>Recent runs</h2>
+          <p>Load saved traces without running embeddings or search again.</p>
+        </div>
+        <div class="lab-actions">
+          <button class="secondary" type="button" id="refreshHistory">Refresh history</button>
+        </div>
+      </div>
+      <div class="lab-history" id="historyList"></div>
     </section>
 
     <section class="lab-card" id="resultsCard" hidden>
