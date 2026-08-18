@@ -22,7 +22,7 @@ from datetime import date, datetime
 from html import escape
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Mapping, Optional
 from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException
@@ -158,6 +158,21 @@ HYBRID_FILTER_ALLOWED_OPS: dict[Kind, set[str]] = {
 HYBRID_FILTER_STRING_MAX_CHARS = 200
 HYBRID_FILTER_IN_MAX_ITEMS = 25
 HYBRID_FILTER_MAX_SERIALIZED_BYTES = 4096
+HYBRID_ALIAS_MAX_ITEMS = 8
+HYBRID_ALIAS_MAX_CHARS = 80
+HYBRID_ALIAS_STOPWORDS = {
+    "drug",
+    "drugs",
+    "recall",
+    "recalls",
+    "problem",
+    "problems",
+    "issue",
+    "issues",
+    "fda",
+    "product",
+    "products",
+}
 
 
 @asynccontextmanager
@@ -219,6 +234,29 @@ class HybridSearchRequest(BaseModel):
         max_length=20,
         description="Optional FTS aliases/synonyms to compare alongside the query.",
     )
+    vector_weight_percent: int = Field(
+        default=50,
+        ge=0,
+        le=100,
+        description="Weighted RRF vector contribution percent for the retrieval lab.",
+    )
+    alias_generation: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Optional safe UI alias-generation metadata for this lab run.",
+    )
+
+
+class HybridAliasRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=500,
+                       description="Natural-language retrieval query to expand for FTS.")
+    field: Literal["reason_for_recall", "product_description", "both"] = Field(
+        default="both",
+        description="Which embedded recall text field aliases should target.",
+    )
+
+
+class HybridAliasOutput(BaseModel):
+    aliases: list[str] = Field(default_factory=list, max_length=8)
 
 
 def _json_safe(v: Any) -> Any:
@@ -611,6 +649,71 @@ def _clean_aliases(values: list[str]) -> list[str]:
     return aliases[:20]
 
 
+def _clean_generated_aliases(values: list[str], query: str) -> list[str]:
+    aliases: list[str] = []
+    seen = {query.casefold().strip()}
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        alias = " ".join(value.split()).strip(" ,.;:-")
+        key = alias.casefold()
+        if (
+            not alias
+            or key in seen
+            or key in HYBRID_ALIAS_STOPWORDS
+            or len(alias) > HYBRID_ALIAS_MAX_CHARS
+        ):
+            continue
+        aliases.append(alias)
+        seen.add(key)
+        if len(aliases) >= HYBRID_ALIAS_MAX_ITEMS:
+            break
+    return aliases
+
+
+def _safe_alias_generation_payload(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    allowed: dict[str, Any] = {}
+    for key in ("status", "source", "provider", "model", "message"):
+        raw = value.get(key)
+        if isinstance(raw, str):
+            allowed[key] = raw[:160]
+    aliases = value.get("aliases")
+    if isinstance(aliases, list):
+        allowed["aliases"] = _clean_aliases([item for item in aliases if isinstance(item, str)])[:8]
+    return allowed
+
+
+def _alias_generation_for_run(req: HybridSearchRequest, aliases: list[str]) -> dict[str, Any]:
+    provided = _safe_alias_generation_payload(req.alias_generation)
+    if provided:
+        return {**provided, "aliases": aliases[:HYBRID_ALIAS_MAX_ITEMS]}
+    status = "manual" if aliases else "none"
+    return {"status": status, "source": "request", "aliases": aliases[:HYBRID_ALIAS_MAX_ITEMS]}
+
+
+def _aliases_from_text(raw: str, query: str) -> list[str]:
+    text = raw.strip()
+    if not text:
+        return []
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        parsed = None
+    values: list[str] = []
+    if isinstance(parsed, dict) and isinstance(parsed.get("aliases"), list):
+        values = [item for item in parsed["aliases"] if isinstance(item, str)]
+    elif isinstance(parsed, list):
+        values = [item for item in parsed if isinstance(item, str)]
+    else:
+        for line in text.splitlines():
+            item = line.strip().strip("-*0123456789. )(\t")
+            if item:
+                values.append(item)
+    return _clean_generated_aliases(values, query)
+
+
 def _filters_for_request(raw_filters: dict[str, Any]) -> list[Filter]:
     if not isinstance(raw_filters, dict):
         raise ValueError("filters must be an object")
@@ -733,7 +836,9 @@ def _hybrid_request_payload(
         "query": req.query,
         "field": req.field,
         "k": req.k,
+        "vector_weight_percent": req.vector_weight_percent,
         "aliases": _clean_aliases(req.aliases),
+        "alias_generation": _safe_alias_generation_payload(req.alias_generation),
         "filters": filters_payload,
     }
 
@@ -783,6 +888,11 @@ def _serialize_hybrid_hit(hit: retrieval.Hit, rank: int,
         "vector_similarity": _round_float(hit.vector_similarity),
         "fts_rank": hit.fts_rank,
         "fts_score": _round_float(hit.fts_score),
+        "vector_rrf_contribution": _round_float(hit.vector_rrf_contribution, 8),
+        "fts_rrf_contribution": _round_float(hit.fts_rrf_contribution, 8),
+        "vector_contribution_percent": _round_float(hit.vector_contribution_percent),
+        "fts_contribution_percent": _round_float(hit.fts_contribution_percent),
+        "matched_fts_queries": list(hit.matched_fts_queries),
         "classification": details.get("classification") or hit.classification,
         "status": details.get("status"),
         "recalling_firm": details.get("recalling_firm") or hit.recalling_firm,
@@ -812,8 +922,10 @@ def _hybrid_response_metadata(
         "query": req.query,
         "field": req.field,
         "k": req.k,
+        "vector_weight_percent": req.vector_weight_percent,
         "aliases": aliases,
         "fts_queries": list(getattr(hits, "fts_queries", [])),
+        "fusion_config": dict(getattr(hits, "fusion_config", {})),
         "retrieval_mode": getattr(hits, "retrieval_mode", "hybrid"),
         "fallback_reason": getattr(hits, "embedding_fallback_reason", None),
         "embedding_provider": embed_config.provider,
@@ -838,6 +950,8 @@ def _log_hybrid_search(
     error_message: str | None = None,
 ) -> int:
     engine = _require_engine()
+    aliases = _clean_aliases(req.aliases)
+    alias_generation = _alias_generation_for_run(req, aliases)
     retrieval_mode = (
         getattr(hits, "retrieval_mode", None)
         if hits is not None else response_meta.get("retrieval_mode")
@@ -869,6 +983,15 @@ def _log_hybrid_search(
             filters_valid=filters_valid,
         ),
         response_metadata=response_meta,
+        fusion_config=(
+            dict(getattr(hits, "fusion_config", {}))
+            if hits is not None
+            else retrieval.default_fusion_config(vector_weight_percent=req.vector_weight_percent)
+        ),
+        alias_generation=alias_generation,
+        vector_trace=list(getattr(hits, "vector_trace", [])) if hits is not None else [],
+        fts_trace=list(getattr(hits, "fts_trace", [])) if hits is not None else [],
+        fused_trace=list(getattr(hits, "fused_trace", [])) if hits is not None else [],
         error_type=error_type,
         error_message=error_message,
     ))
@@ -1234,6 +1357,119 @@ def hybrid_search_page() -> FileResponse:
     return FileResponse(WEB_DIR / "hybrid-search.html")
 
 
+@app.post("/hybrid-search/aliases")
+def hybrid_search_aliases(req: HybridAliasRequest) -> dict[str, Any]:
+    engine = _require_engine()
+    if engine.chat_client is None:
+        return {
+            "query": req.query,
+            "field": req.field,
+            "aliases": [],
+            "status": "unavailable",
+            "provider": engine.chat_config.provider,
+            "model": engine.chat_config.model,
+            "message": "alias provider unavailable",
+        }
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Generate concise English full-text-search aliases for FDA drug recall "
+                "retrieval. Return only specific defect concepts, synonyms, regulatory "
+                "phrases, or assay/specification terms. Do not include generic words "
+                "such as drug, recall, problem, issue, FDA, or product. Keep aliases short."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Query: {req.query}\n"
+                f"Embedded field: {req.field}\n"
+                "Return up to 8 English aliases useful for Postgres English FTS."
+            ),
+        },
+    ]
+    try:
+        result = llm.structured_completion(
+            engine.chat_client,
+            engine.chat_config,
+            messages,
+            HybridAliasOutput,
+            temperature=0,
+            max_tokens=320,
+        )
+    except llm.ProviderError:
+        try:
+            raw = llm.chat_completion_text(
+                engine.chat_client,
+                engine.chat_config,
+                [
+                    messages[0],
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Query: {req.query}\n"
+                            f"Embedded field: {req.field}\n"
+                            "Return up to 8 aliases as short newline-separated English phrases."
+                        ),
+                    },
+                ],
+                temperature=0,
+                max_tokens=600,
+            )
+            aliases = _aliases_from_text(raw, req.query)
+            if aliases:
+                return {
+                    "query": req.query,
+                    "field": req.field,
+                    "aliases": aliases,
+                    "status": "generated",
+                    "provider": engine.chat_config.provider,
+                    "model": engine.chat_config.model,
+                }
+        except llm.ProviderError:
+            pass
+        return {
+            "query": req.query,
+            "field": req.field,
+            "aliases": [],
+            "status": "degraded",
+            "provider": engine.chat_config.provider,
+            "model": engine.chat_config.model,
+            "message": "alias provider failed",
+        }
+    aliases = _clean_generated_aliases(result.aliases, req.query)
+    return {
+        "query": req.query,
+        "field": req.field,
+        "aliases": aliases,
+        "status": "generated",
+        "provider": engine.chat_config.provider,
+        "model": engine.chat_config.model,
+    }
+
+
+@app.get("/hybrid-search/logs")
+def hybrid_search_logs(limit: int = 25, before_id: int | None = None) -> dict[str, Any]:
+    limit = min(50, max(1, int(limit)))
+    before = int(before_id) if before_id is not None else None
+    runs = _require_hybrid_search_logger().list_runs(limit=limit, before_id=before)
+    return {
+        "limit": limit,
+        "before_id": before,
+        "runs": runs,
+        "next_before_id": runs[-1]["id"] if len(runs) == limit else None,
+    }
+
+
+@app.get("/hybrid-search/logs/{run_id}")
+def hybrid_search_log_detail(run_id: int) -> dict[str, Any]:
+    run = _require_hybrid_search_logger().get_run(int(run_id))
+    if run is None:
+        raise HTTPException(status_code=404, detail="hybrid search log not found")
+    return run
+
+
 @app.post("/hybrid-search")
 def hybrid_search_endpoint(req: HybridSearchRequest) -> dict[str, Any]:
     start = perf_counter()
@@ -1256,6 +1492,7 @@ def hybrid_search_endpoint(req: HybridSearchRequest) -> dict[str, Any]:
                 embed_config=engine.embed_config,
                 embedding_error=engine.embedding_error,
                 fts_queries=aliases,
+                vector_weight_percent=req.vector_weight_percent,
             )
             details_by_recall = _load_hybrid_hit_details(
                 analytics.conn,
@@ -1291,6 +1528,8 @@ def hybrid_search_endpoint(req: HybridSearchRequest) -> dict[str, Any]:
             "k": req.k,
             "filters": _filter_debug_payload(filters),
             "aliases": aliases,
+            "alias_generation": _alias_generation_for_run(req, aliases),
+            "fusion_config": dict(getattr(hits, "fusion_config", {})),
             "retrieval_mode": getattr(hits, "retrieval_mode", "hybrid"),
             "embedding_provider": engine.embed_config.provider,
             "embedding_model": engine.embed_config.model,

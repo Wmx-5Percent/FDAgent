@@ -28,7 +28,7 @@
   },
   "cases": [
     {
-      "id": "provider-openrouter-query-embedding-config",
+      "id": "provider-openai-query-embedding-config",
       "kind": "embedding_provider_config",
       "suite": [
         "rag",
@@ -39,34 +39,23 @@
       "requires_embedding": false,
       "requires_db": false,
       "env": {
-        "EMBED_PROVIDER": "openrouter",
-        "EMBED_MODEL": "openai/text-embedding-3-small",
-        "OPENROUTER_API_KEY": "dummy-openrouter-key",
-        "OPENROUTER_BASE_URL": "https://openrouter.ai/api/v1",
-        "OPENROUTER_APP_TITLE": "FDAgent Eval",
-        "OPENAI_API_KEY": "dummy-openai-key-that-must-not-be-used"
+        "EMBED_PROVIDER": "openai",
+        "EMBED_MODEL": "text-embedding-3-small",
+        "OPENAI_API_KEY": "dummy-openai-key",
+        "OPENROUTER_API_KEY": "dummy-openrouter-key-that-must-not-be-used"
       },
       "unset_env": [
         "OPENAI_EMBED_MODEL",
         "OPENROUTER_EMBED_MODEL"
       ],
       "assert": {
-        "provider": "openrouter",
-        "model": "openai/text-embedding-3-small",
-        "base_url": "https://openrouter.ai/api/v1",
+        "provider": "openai",
+        "model": "text-embedding-3-small",
         "dimension": 1536,
         "configured": true,
-        "client_api_key": "dummy-openrouter-key",
-        "client_not_api_key": "dummy-openai-key-that-must-not-be-used",
-        "client_base_url": "https://openrouter.ai/api/v1",
-        "client_default_headers_include": [
-          "X-OpenRouter-Title"
-        ],
-        "request_model": "openai/text-embedding-3-small",
-        "request_encoding_format": "float",
-        "request_extra_headers_include": [
-          "X-OpenRouter-Title"
-        ]
+        "client_api_key": "dummy-openai-key",
+        "client_not_api_key": "dummy-openrouter-key-that-must-not-be-used",
+        "request_model": "text-embedding-3-small"
       }
     },
     {
@@ -85,11 +74,11 @@
       "requires_db": true,
       "assert": {
         "expected_recall_numbers": [
-          "D-0580-2026",
-          "D-0412-2025",
-          "D-0416-2025"
+          "D-012-2014",
+          "D-1033-2014",
+          "D-0661-2021"
         ],
-        "min_recall_at_k": 0.34,
+        "min_recall_at_k": 1.0,
         "min_mrr_at_k": 0.1,
         "retrieval_mode": "hybrid"
       }
@@ -110,13 +99,13 @@
       "requires_db": true,
       "assert": {
         "expected_recall_numbers": [
-          "D-416-2014",
-          "D-324-2016",
-          "D-335-2016",
-          "D-415-2014",
-          "D-308-2016"
+          "D-0110-2016",
+          "D-0065-2016",
+          "D-0118-2016",
+          "D-0055-2016",
+          "D-0056-2016"
         ],
-        "min_recall_at_k": 0.4,
+        "min_recall_at_k": 1.0,
         "min_mrr_at_k": 0.1,
         "retrieval_mode": "hybrid"
       }
@@ -137,15 +126,60 @@
       "requires_db": true,
       "assert": {
         "expected_recall_numbers": [
+          "D-0119-2021",
+          "D-0890-2018",
+          "D-0891-2018",
+          "D-0859-2017",
+          "D-0020-2023"
+        ],
+        "min_recall_at_k": 1.0,
+        "min_mrr_at_k": 0.1,
+        "retrieval_mode": "hybrid"
+      }
+    },
+    {
+      "id": "rag-hybrid-lab-weighted-alias-superpotent-subpotent",
+      "kind": "retrieval_recall",
+      "query": "superpotent subpotent assay too strong too weak",
+      "field": "both",
+      "k": 10,
+      "aliases": [
+        "superpotent",
+        "subpotent",
+        "low potency",
+        "high potency",
+        "assay failure",
+        "out of specification potency",
+        "oversized tablet",
+        "superpotent"
+      ],
+      "vector_weight_percent": 10,
+      "suite": [
+        "rag",
+        "regression"
+      ],
+      "risk": "hybrid_lab_weighted_rrf_alias_aggregation",
+      "requires_llm": false,
+      "requires_embedding": true,
+      "requires_db": true,
+      "assert": {
+        "expected_recall_numbers": [
           "D-0081-2018",
           "D-057-2013",
           "D-166-2013",
           "D-0048-2025",
           "D-0119-2021"
         ],
-        "min_recall_at_k": 0.4,
-        "min_mrr_at_k": 0.1,
-        "retrieval_mode": "hybrid"
+        "min_recall_at_k": 0.6,
+        "min_mrr_at_k": 0.5,
+        "retrieval_mode": "hybrid",
+        "vector_weight_percent": 10,
+        "expected_first_recall_number": "D-0119-2021",
+        "requires_rrf_contributions": true,
+        "require_unique_matched_fts_queries": true,
+        "min_vector_hit_count": 50,
+        "min_fts_hit_count": 50,
+        "min_fused_hit_count": 50
       }
     },
     {
